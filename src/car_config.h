@@ -142,6 +142,11 @@
 #define HUMP_OFF_DEG         (1.5f)
 #define IMPACT_G             (1.50f)   /* horizontal jerk -> collision  */
 #define OVERTILT_DEG         (35.0f)
+/* The tilt must stay beyond OVERTILT_DEG this long before it counts.
+ * Starting, braking and the self-test push accelerate the car hard for
+ * well under this time, and the accelerometer cannot tell that from tilt
+ * (measured: false over-tilt trips on motor jerks). TUNE.             */
+#define OVERTILT_HOLD_MS     (200U)
 
 /* ------------------------------------------------------------------ */
 /* Ultrasonic + servo (Section 6.3)                                    */

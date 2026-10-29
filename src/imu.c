@@ -9,6 +9,8 @@
  */
 #include <math.h>
 
+#include <tm/tmonitor.h>
+
 #include "port.h"
 #include "i2c_drv.h"
 
@@ -151,6 +153,7 @@ void imu_task(INT stacd, void *exinf)
     float    hump_max = 0.0f;
     float    run_peak = 0.0f;
     uint32_t fails = 0U;
+    uint32_t tilt_ms = 0U;     /* time spent beyond OVERTILT_DEG */
 
     (void)stacd;
     (void)exinf;
@@ -222,9 +225,26 @@ void imu_task(INT stacd, void *exinf)
             rate += 0.3f * ((dh / ((float)PERIOD_IMU_MS / 1000.0f)) - rate);
             prev_hdg = hdg;
 
+            /* Over-tilt only counts once it has lasted OVERTILT_HOLD_MS:
+             * motor jerks (start, brake, self-test push) look like tilt
+             * to the accelerometer but are much shorter.               */
             if ((fabsf(pitch_deg) > OVERTILT_DEG) || (fabsf(roll_deg) > OVERTILT_DEG))
             {
-                (void)tk_set_flg(g_evt_flg, EVT_OVERTILT);
+                tilt_ms += PERIOD_IMU_MS;
+                if (tilt_ms >= OVERTILT_HOLD_MS)
+                {
+                    if (tilt_ms < (OVERTILT_HOLD_MS + PERIOD_IMU_MS))
+                    {
+                        /* once per tilt: the angles that tripped it */
+                        tm_printf((UB *)"imu: over-tilt pitch %d roll %d (x0.1 deg)\n",
+                                  (int)(pitch_deg * 10.0f), (int)(roll_deg * 10.0f));
+                    }
+                    (void)tk_set_flg(g_evt_flg, EVT_OVERTILT);
+                }
+            }
+            else
+            {
+                tilt_ms = 0U;
             }
 
             /* --- hump: integrate sin(pitch) over encoder distance --- */
