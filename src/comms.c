@@ -1,15 +1,32 @@
-/**
- * @file    comms.c
- * @brief   WiFi/MQTT link (Buddy 1) on the INF2004 micro T-Kernel template.
+/** @file    comms.c
+ *  @brief   WiFi / MQTT link (Buddy 1) on the INF2004 micro T-Kernel
+ *           template (FR6, FR7, NFR4, NFR7).
  *
- *  The template owns the CYW43 radio and lwIP (NO_SYS=1) in its own task
- *  (lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c, core 0, priority 4).
- *  That task calls mqtt_utk_start() every poll (~2 ms) while the link is
- *  up. This file REPLACES the template's demo mqtt_utk.c, so every lwIP /
- *  MQTT call below runs on the task that owns lwIP - which NO_SYS requires.
- *  Other tasks only copy frames into pub_q via comms_publish().
+ *  NOTE: The template's CYW43 task owns the radio and lwIP (NO_SYS = 1),
+ *  and lwIP may only be called from that one task. While the WiFi link is
+ *  up the task calls mqtt_utk_start() every poll (about 2 ms). This file
+ *  replaces the template's demo mqtt_utk.c, so the hook below is the
+ *  Comms task context of the Week 6 design: every lwIP call happens here,
+ *  and other tasks only copy frames into the publish queue.
  *
- *  Every payload is a binary frame - see proto.h for the topic table.
+ *  Tribunal 1 decisions implemented here:
+ *   - A remote e-stop sets EVT_ESTOP directly when it arrives, so the
+ *     Safety Monitor sees it on its next 50 ms check (FR7, 100 ms).
+ *   - The publish queue holds 1 s of telemetry plus events and drops the
+ *     oldest frame when full; publishing never blocks a caller.
+ *   - WiFi loss is only reported (FC_WIFI_LOSS); it never stops the car.
+ *
+ *  NOTE: (void) casts mark return values that are deliberately ignored.
+ *  (UB *) casts pass string literals to tm_printf(), which takes UB *,
+ *  and (int) casts match its %d / %x conversions.
+ *
+ *  NOTE: The bit-field structs below keep flags in bool bit-fields and
+ *  small numbers in uint8_t bit-fields (an implementation-defined base
+ *  type in C99 6.7.2.1 that GCC supports), so each struct is one byte.
+ *  They are RAM-only and never sent, so their bit order does not matter
+ *  (Barr-C 5.5 applies to data that leaves the processor, see proto.c).
+ *  A uint8_t bit-field reads as an int, so it is copied into an unsigned
+ *  local before any unsigned arithmetic (Barr-C 5.3c).
  */
 #include <string.h>
 
@@ -18,353 +35,795 @@
 #include <tm/tmonitor.h>
 
 #include "port.h"
+
 #include "app.h"
 #include "barcode_map.h"
 #include "comms.h"
 #include "mqtt_utk.h"
+#include "proto.h"
+#include "telemetry.h"
 
-#define SUBTOPIC_LEN     (16U)
-#define PAYLOAD_MAX      (32U)     /* largest frame = TELEM (32 bytes)  */
-#define TOPIC_LEN        (48U)
-#define IN_BUF_LEN       (32U)
-#define HEARTBEAT_MS     (1000U)
-#define CFG_RETRY_MS     (5000U)
-#define CONNECT_TIMEOUT_MS (8000U)
-#define HOOK_STALE_MS    (500U)    /* hook not called -> link is down   */
-#define KEEPALIVE_S      (10U)
+/* Timing (ms). */
+#define HEARTBEAT_MS         (1000U)
+#define CFG_RETRY_MS         (5000U)
+#define CONNECT_TIMEOUT_MS   (8000U)
+#define HOOK_STALE_MS        (500U)   /* hook not called -> link is down */
+#define BACKOFF_BASE_MS      (500U)   /* doubles per failed attempt      */
+#define BACKOFF_STEP_MAX     (3U)     /* 500 << 3 = MQTT_BACKOFF_MAX_MS  */
+#define KEEPALIVE_S          (10U)
+#define SUBSCRIBE_QOS        (1U)
+#define PUBLISH_QOS          (0U)
+#define PUBLISH_RETAIN       (0U)
+#define DRAIN_PER_POLL       (4U)     /* keeps the radio poll short      */
 
-#define T_CMD            MQTT_TOPIC_ROOT "/cmd"
-#define T_CONFIG         MQTT_TOPIC_ROOT "/config/barcode"
+/* Publish queue: 1-byte topic header + packed frame per message.
+ * NOTE: A T-Kernel message buffer stores each message as a 4-byte length
+ * header plus the message rounded up to 4 bytes (messagebuf.h), so a
+ * 19-byte telemetry message takes 24 bytes and a 5-byte event 12. */
+#define PUB_HEADER_LEN       (1U)
+#define PUB_MSG_MAX_LEN      (PUB_HEADER_LEN + PROTO_MSG_MAX_LEN)
+#define MBF_TELEM_SLOT       (24U)
+#define MBF_EVENT_SLOT       (12U)
+#define PUB_Q_BYTES          (MQTT_OFFLINE_BUF * (MBF_TELEM_SLOT +        \
+                                                  MBF_EVENT_SLOT))
 
+#define RX_BUF_LEN           (PROTO_CONFIG_LEN)   /* largest inbound frame */
+
+/* Positions and weights of the digits in __TIME__ ("HH:MM:SS"). */
+#define BUILD_HOUR_POS       (0U)
+#define BUILD_MIN_POS        (3U)
+#define BUILD_SEC_POS        (6U)
+#define DIGIT_BASE           (10)
+#define HHMM_HOUR_WEIGHT     (100)
+
+#define TOPIC_CMD            MQTT_TOPIC_ROOT "/cmd"
+#define TOPIC_CONFIG         MQTT_TOPIC_ROOT "/config/barcode"
+#define TOPIC_HEARTBEAT      MQTT_TOPIC_ROOT "/heartbeat"
+#define TOPIC_CFG_GET        MQTT_TOPIC_ROOT "/config/get"
+#define TOPIC_CFG_ACK        MQTT_TOPIC_ROOT "/config/ack"
+
+/** Link states (2 bits). */
+typedef enum
+{
+    LINK_IDLE = 0,
+    LINK_CONNECTING,
+    LINK_ONLINE,
+    LINK_BACKOFF
+} link_state_t;
+
+/** Link status, packed into one byte (Change Requirement 1).
+ *  NOTE: Only the CYW43 task writes it (the hook and the lwIP callbacks
+ *  it runs). Other tasks only read b_connected, and a byte load is a
+ *  single access, so no lock is needed. */
 typedef struct
 {
-    char    sub[SUBTOPIC_LEN];
-    uint8_t len;
-    uint8_t data[PAYLOAD_MAX];
-} pub_msg_t;
+    uint8_t state         : 2;   /* link_state_t                          */
+    bool    b_connected   : 1;   /* MQTT CONNACK accepted                 */
+    bool    b_failed      : 1;   /* connect attempt rejected              */
+    bool    b_cfg_ack_due : 1;   /* a table arrived: send config/ack      */
+    bool    b_has_pending : 1;   /* g_pending holds an unsent frame       */
+    uint8_t backoff_step  : 2;   /* retry delay = 500 ms << step          */
+} link_status_t;
 
-typedef enum { CS_IDLE = 0, CS_CONNECTING, CS_ONLINE, CS_BACKOFF } comms_state_t;
-
-static ID                g_pub_q;
-static mqtt_client_t    *g_mqtt;
-static comms_state_t     g_cs = CS_IDLE;
-static volatile bool     g_connected;
-static volatile bool     g_failed;
-static volatile uint32_t g_last_hook_ms;
-static char              g_in_topic[TOPIC_LEN];
-static uint8_t           g_in_buf[IN_BUF_LEN];
-static uint32_t          g_in_len;
-static bool              g_cfg_ack_due;
-static pub_msg_t         g_pending;        /* frame lwIP could not take yet */
-static bool              g_has_pending;
-
-bool comms_is_online(void)
+/** Inbound topics (2 bits). */
+typedef enum
 {
-    return g_connected && ((now_ms() - g_last_hook_ms) < HOOK_STALE_MS);
+    RX_NONE = 0,
+    RX_CMD,
+    RX_CONFIG
+} rx_topic_t;
+
+/** Inbound message being collected (one byte, CYW43 task only). */
+typedef struct
+{
+    uint8_t topic      : 2;      /* rx_topic_t                            */
+    uint8_t len        : 2;      /* bytes in g_rx_buf (0..RX_BUF_LEN)     */
+    bool    b_overflow : 1;      /* longer than any valid frame           */
+} rx_status_t;
+
+static char const * const g_pub_topics[COMMS_TOPIC_COUNT] =
+{
+    MQTT_TOPIC_ROOT "/telemetry",
+    MQTT_TOPIC_ROOT "/event"
+};
+
+static ID                       g_pub_q         = 0;
+static mqtt_client_t *          gp_mqtt         = NULL;
+static volatile link_status_t   g_link          =
+    { LINK_IDLE, false, false, false, false, 0U };
+static rx_status_t              g_rx            = { RX_NONE, 0U, false };
+static uint8_t                  g_rx_buf[RX_BUF_LEN];
+static uint8_t                  g_pending[PUB_MSG_MAX_LEN];
+static uint8_t                  g_pending_len   = 0U;
+static uint8_t                  g_hb_seq        = 0U;
+static volatile uint8_t         g_drop_count    = 0U;   /* wraps         */
+static uint8_t                  g_drop_reported = 0U;
+
+/* NOTE: Hook-only time stamps are 16-bit: every interval they measure is
+ * under 65 s and the hook runs every 2 ms while they are in use. The
+ * last-call time stays 32-bit because other tasks compare it after a WiFi
+ * outage of any length, where a 16-bit value could wrap and look recent. */
+static volatile uint32_t        g_last_hook_ms  = 0U;
+static uint16_t                 g_state_ms      = 0U;
+static uint16_t                 g_hb_ms         = 0U;
+static uint16_t                 g_cfg_req_ms    = 0U;
+
+static void     link_reset (void);
+static void     link_idle (void);
+static void     link_connecting (void);
+static void     link_go_online (void);
+static void     link_online (void);
+static void     link_backoff (void);
+static void     link_start_backoff (void);
+static void     link_connect (void);
+static void     link_disconnect (void);
+static bool     link_is_connected (void);
+static void     queue_drain (void);
+static void     housekeeping_send (void);
+static bool     frame_publish (char const * p_topic, uint8_t const * p_data,
+                               uint32_t len);
+static void     boot_event_post (void);
+static int32_t  digits_read (char const * p_text);
+static void     rx_handle_cmd (void);
+static void     rx_handle_config (void);
+static uint16_t stamp_now (void);
+static uint32_t stamp_elapsed (uint16_t stamp);
+static void     on_connection (mqtt_client_t * p_client, void * p_arg,
+                               mqtt_connection_status_t status);
+static void     on_incoming_publish (void * p_arg, char const * p_topic,
+                                     u32_t total_len);
+static void     on_incoming_data (void * p_arg, u8_t const * p_data,
+                                  u16_t len, u8_t flags);
+
+/*!
+ * @brief  Create the publish queue. Call from usermain() before the tasks
+ *         start.
+ */
+void
+comms_init (void)
+{
+    T_CMBF create;
+
+    (void) memset(&create, 0, sizeof(create));
+    create.mbfatr = TA_TFIFO;
+    create.bufsz  = (SZ) PUB_Q_BYTES;             /* 360: fits SZ          */
+    create.maxmsz = (INT) PUB_MSG_MAX_LEN;        /* 19: fits INT          */
+    g_pub_q       = tk_cre_mbf(&create);
 }
 
-void comms_init(void)
+/*!
+ * @brief  Queue a packed frame for publishing. Never blocks (NFR7): when
+ *         the queue is full the oldest frame is dropped.
+ *
+ *  NOTE: The telemetry task is the only caller, so the drop counter has a
+ *  single writer.
+ *
+ * @param  topic   Topic to publish on.
+ * @param  p_data  Packed frame (copied).
+ * @param  len     Frame length, 1..PROTO_MSG_MAX_LEN.
+ * @return True if the frame was queued.
+ */
+bool
+comms_publish (comms_topic_t topic, uint8_t const * p_data, uint32_t len)
 {
-    T_CMBF cmbf;
+    uint8_t msg[PUB_MSG_MAX_LEN];
+    bool    b_queued = false;
 
-    (void)memset(&cmbf, 0, sizeof(cmbf));
-    cmbf.mbfatr = TA_TFIFO;
-    /* ~1 s of telemetry + events while offline (NFR7) */
-    cmbf.bufsz  = (SZ)((MQTT_OFFLINE_BUF * 2U) * (sizeof(pub_msg_t) + 8U));
-    cmbf.maxmsz = (INT)sizeof(pub_msg_t);
-    g_pub_q = tk_cre_mbf(&cmbf);
-}
-
-bool comms_publish(const char *p_subtopic, const uint8_t *p_data, uint32_t len)
-{
-    pub_msg_t m;
-
-    if (len > PAYLOAD_MAX)
+    if ((g_pub_q > 0) && (topic < COMMS_TOPIC_COUNT) && (len > 0U) &&
+        (len <= PROTO_MSG_MAX_LEN))
     {
-        return false;
-    }
-    (void)strncpy(m.sub, p_subtopic, SUBTOPIC_LEN - 1U);
-    m.sub[SUBTOPIC_LEN - 1U] = '\0';
-    m.len = (uint8_t)len;
-    (void)memcpy(m.data, p_data, len);
-    /* never block a caller on the network (NFR7) */
-    return (E_OK == tk_snd_mbf(g_pub_q, &m, (INT)sizeof(m), TMO_POL));
-}
+        /* len <= PROTO_MSG_MAX_LEN, so msg_len fits an INT. */
+        INT const msg_len = (INT) (PUB_HEADER_LEN + len);
 
-/* ---------------- lwIP MQTT callbacks (same task as the hook) ------- */
-static void on_connection(mqtt_client_t *client, void *arg, mqtt_connection_status_t status)
-{
-    (void)client;
-    (void)arg;
-    g_connected = (MQTT_CONNECT_ACCEPTED == status);
-    if (!g_connected)
-    {
-        g_failed = true;
-    }
-}
+        msg[0] = (uint8_t) topic;                 /* 0 or 1                */
+        (void) memcpy(&msg[PUB_HEADER_LEN], p_data, len);
 
-static void on_incoming_publish(void *arg, const char *topic, u32_t tot_len)
-{
-    (void)arg;
-    (void)tot_len;
-    (void)strncpy(g_in_topic, topic, TOPIC_LEN - 1U);
-    g_in_topic[TOPIC_LEN - 1U] = '\0';
-    g_in_len = 0U;
-}
-
-/* Payloads can arrive in several chunks: collect until the LAST flag. */
-static void on_incoming_data(void *arg, const u8_t *data, u16_t len, u8_t flags)
-{
-    uint32_t room = IN_BUF_LEN - g_in_len;
-    uint32_t n = (len < room) ? len : room;
-
-    (void)arg;
-    (void)memcpy(&g_in_buf[g_in_len], data, n);
-    g_in_len += n;
-    if (0U == (flags & MQTT_DATA_FLAG_LAST))
-    {
-        return;
-    }
-
-    if ((0 == strcmp(g_in_topic, T_CMD)) && (1U == g_in_len) &&
-        (PROTO_CMD == (g_in_buf[0] & PROTO_CMD_MASK)))
-    {
-        uint8_t c = (uint8_t)(g_in_buf[0] & 0x0FU);
-
-        if (c <= (uint8_t)RCMD_MOTOR_TEST)
+        if (E_OK == tk_snd_mbf(g_pub_q, msg, msg_len, TMO_POL))
         {
-            remote_cmd_t rc = (remote_cmd_t)c;
-            (void)tk_snd_mbf(g_remote_cmd_q, &rc, (INT)sizeof(rc), TMO_POL);
+            b_queued = true;
+        }
+        else
+        {
+            uint8_t discard[PUB_MSG_MAX_LEN];
+
+            /* Full: drop the oldest frame and keep the newest. */
+            (void) tk_rcv_mbf(g_pub_q, discard, TMO_POL);
+            g_drop_count++;
+            b_queued = (E_OK == tk_snd_mbf(g_pub_q, msg, msg_len, TMO_POL));
         }
     }
-    else if (0 == strcmp(g_in_topic, T_CONFIG))
-    {
-        uint32_t n_set = barcode_map_apply(g_in_buf, g_in_len);
 
-        tm_printf((UB *)"mqtt: barcode table received, %d letters\n", (int)n_set);
-        g_cfg_ack_due = true;
+    return (b_queued);
+}
+
+/*!
+ * @brief  Report whether the MQTT session is up.
+ * @return True while the session is up and the radio task is running.
+ */
+bool
+comms_is_online (void)
+{
+    uint32_t const idle_ms     = now_ms() - g_last_hook_ms;
+    bool const     b_connected = g_link.b_connected;
+
+    return (b_connected && (idle_ms < HOOK_STALE_MS));
+}
+
+/*!
+ * @brief  Hook called by the template's CYW43 task on every poll while the
+ *         WiFi link is up. Runs the link state machine.
+ *
+ *  NOTE: The name and signature are fixed by the template (mqtt_utk.h),
+ *  so this public function does not carry the comms_ prefix.
+ */
+void
+mqtt_utk_start (void)
+{
+    uint32_t const now     = now_ms();
+    uint32_t const idle_ms = now - g_last_hook_ms;
+
+    /* A gap in the calls means the WiFi link dropped: the TCP session is
+     * gone, so start again from IDLE. */
+    if ((LINK_IDLE != g_link.state) && (idle_ms > HOOK_STALE_MS))
+    {
+        link_reset();
+    }
+
+    g_last_hook_ms = now;
+
+    switch (g_link.state)
+    {
+        case LINK_IDLE:
+            link_idle();
+        break;
+
+        case LINK_CONNECTING:
+            link_connecting();
+        break;
+
+        case LINK_ONLINE:
+            link_online();
+        break;
+
+        case LINK_BACKOFF:
+            link_backoff();
+        break;
+
+        default:
+            link_reset();
+        break;
+    }
+}
+
+/*!
+ * @brief  Drop the session and return to IDLE.
+ */
+static void
+link_reset (void)
+{
+    link_disconnect();
+    g_link.state = LINK_IDLE;
+}
+
+/*!
+ * @brief  IDLE: start a connection attempt.
+ */
+static void
+link_idle (void)
+{
+    link_connect();
+    g_link.state = LINK_CONNECTING;
+    g_state_ms   = stamp_now();
+}
+
+/*!
+ * @brief  CONNECTING: wait for the CONNACK, or give up and back off.
+ */
+static void
+link_connecting (void)
+{
+    /* is_connected also catches a CONNACK the callback reported late. */
+    bool const b_connected = g_link.b_connected;
+    bool const b_failed    = g_link.b_failed;
+
+    if (b_connected || link_is_connected())
+    {
+        link_go_online();
+    }
+    else if (b_failed || (stamp_elapsed(g_state_ms) > CONNECT_TIMEOUT_MS))
+    {
+        uint32_t const step = g_link.backoff_step;
+
+        link_disconnect();                        /* abandon this attempt  */
+        tm_printf((UB *) "mqtt: connect failed, retry in %d ms\n",
+                  (int) (BACKOFF_BASE_MS << step));
+        link_start_backoff();
     }
     else
     {
-        /* not ours, or malformed */
+        /* Still waiting for the CONNACK. */
     }
-    g_in_len = 0U;
 }
 
-static void mqtt_connect(void)
+/*!
+ * @brief  Connected: subscribe, announce the build and go ONLINE. If a
+ *         subscribe request cannot be queued the session is useless (no
+ *         commands, no table), so it is dropped and retried.
+ */
+static void
+link_go_online (void)
 {
-    struct mqtt_connect_client_info_t ci;
-    ip_addr_t broker;
-    err_t     err;
+    err_t const cmd_err = mqtt_subscribe(gp_mqtt, TOPIC_CMD, SUBSCRIBE_QOS,
+                                         NULL, NULL);
+    err_t const cfg_err = mqtt_subscribe(gp_mqtt, TOPIC_CONFIG,
+                                         SUBSCRIBE_QOS, NULL, NULL);
 
-    (void)memset(&ci, 0, sizeof(ci));
-    ci.client_id   = MQTT_CLIENT_ID;
-    ci.keep_alive  = KEEPALIVE_S;
+    if ((ERR_OK == cmd_err) && (ERR_OK == cfg_err))
+    {
+        /* Wrapping difference of two 8-bit counters. */
+        uint8_t const dropped = (uint8_t) (g_drop_count - g_drop_reported);
+
+        g_link.b_connected   = true;
+        g_link.backoff_step  = 0U;
+        g_drop_reported      = (uint8_t) (g_drop_reported + dropped);
+        tm_printf((UB *) "mqtt: connected, %d frames dropped while offline\n",
+                  (int) dropped);
+
+        /* The retained CONFIG frame arrives after the subscribe. */
+        boot_event_post();
+        g_hb_ms      = stamp_now();
+        g_cfg_req_ms = stamp_now();
+        g_link.state = LINK_ONLINE;
+    }
+    else
+    {
+        tm_printf((UB *) "mqtt: subscribe failed\n");
+        link_disconnect();
+        link_start_backoff();
+    }
+}
+
+/*!
+ * @brief  ONLINE: publish queued frames and housekeeping messages.
+ */
+static void
+link_online (void)
+{
+    if (link_is_connected())
+    {
+        queue_drain();
+        housekeeping_send();
+    }
+    else
+    {
+        link_disconnect();
+        link_start_backoff();
+    }
+}
+
+/*!
+ * @brief  BACKOFF: wait 500 ms, 1 s, 2 s, then 4 s between attempts.
+ */
+static void
+link_backoff (void)
+{
+    uint32_t const step     = g_link.backoff_step;
+    uint32_t const delay_ms = BACKOFF_BASE_MS << step;
+
+    if (stamp_elapsed(g_state_ms) >= delay_ms)
+    {
+        if (step < BACKOFF_STEP_MAX)
+        {
+            /* step < 3, so step + 1 fits the 2-bit field. */
+            g_link.backoff_step = (uint8_t) (step + 1U);
+        }
+
+        g_link.state = LINK_IDLE;
+    }
+}
+
+/*!
+ * @brief  Enter BACKOFF now.
+ */
+static void
+link_start_backoff (void)
+{
+    g_link.state = LINK_BACKOFF;
+    g_state_ms   = stamp_now();
+}
+
+/*!
+ * @brief  Start a connection attempt to the broker.
+ */
+static void
+link_connect (void)
+{
+    struct mqtt_connect_client_info_t info;
+    ip_addr_t                         broker;
+    err_t                             result = ERR_ARG;
+
+    (void) memset(&info, 0, sizeof(info));
+    (void) memset(&broker, 0, sizeof(broker));
+    info.client_id  = MQTT_CLIENT_ID;
+    info.keep_alive = KEEPALIVE_S;
 #ifdef MQTT_PASSWORD
-    ci.client_user = MQTT_USER;
-    ci.client_pass = MQTT_PASSWORD;
+    info.client_user = MQTT_USER;
+    info.client_pass = MQTT_PASSWORD;
 #endif
 
-    g_connected = false;
-    g_failed = false;
-    if (NULL == g_mqtt)
+    g_link.b_connected = false;
+    g_link.b_failed    = false;
+
+    if (NULL == gp_mqtt)
     {
-        g_mqtt = mqtt_client_new();
+        gp_mqtt = mqtt_client_new();
     }
     else
     {
-        /* Drop any half-finished or forgotten session first. Without this a
-         * late CONNACK leaves lwIP connected while we retry: the retry gets
-         * ERR_ISCONN, and the live session is never used for publishing. */
-        mqtt_disconnect(g_mqtt);
+        /* Drop any half-finished session first. Without this a late
+         * CONNACK leaves lwIP connected while we retry: the retry gets
+         * ERR_ISCONN and the live session is never used. */
+        mqtt_disconnect(gp_mqtt);
     }
-    if ((NULL == g_mqtt) || !ip4addr_aton(MQTT_BROKER_IP, ip_2_ip4(&broker)))
+
+    if ((NULL != gp_mqtt) &&
+        (0 != ip4addr_aton(MQTT_BROKER_IP, ip_2_ip4(&broker))))
     {
-        g_failed = true;
-        return;
+        IP_SET_TYPE(&broker, IPADDR_TYPE_V4);
+        mqtt_set_inpub_callback(gp_mqtt, on_incoming_publish,
+                                on_incoming_data, NULL);
+        result = mqtt_client_connect(gp_mqtt, &broker, MQTT_BROKER_PORT,
+                                     on_connection, NULL, &info);
     }
-    IP_SET_TYPE(&broker, IPADDR_TYPE_V4);
-    mqtt_set_inpub_callback(g_mqtt, on_incoming_publish, on_incoming_data, NULL);
-    err = mqtt_client_connect(g_mqtt, &broker, MQTT_BROKER_PORT, on_connection, NULL, &ci);
-    if (ERR_ISCONN == err)
+
+    if (ERR_ISCONN == result)
     {
-        g_connected = (0U != mqtt_client_is_connected(g_mqtt));   /* already up */
+        g_link.b_connected = link_is_connected();
     }
-    else if (ERR_OK != err)
+    else if (ERR_OK != result)
     {
-        g_failed = true;
+        g_link.b_failed = true;
     }
     else
     {
-        /* CONNACK will arrive through on_connection() */
+        /* The CONNACK arrives through on_connection(). */
     }
-    tm_printf((UB *)"mqtt: connecting to " MQTT_BROKER_IP "\n");
+
+    tm_printf((UB *) "mqtt: connecting to " MQTT_BROKER_IP "\n");
 }
 
-static bool publish_now(const char *p_sub, const uint8_t *p_data, uint32_t len)
+/*!
+ * @brief  Close the session, if there is a client.
+ */
+static void
+link_disconnect (void)
 {
-    char   topic[TOPIC_LEN];
-    size_t root = sizeof(MQTT_TOPIC_ROOT) - 1U;
-    size_t sub = strlen(p_sub);
-
-    if ((root + 1U + sub + 1U) > sizeof(topic))
+    if (NULL != gp_mqtt)
     {
-        return true;                       /* malformed: drop, don't retry */
+        mqtt_disconnect(gp_mqtt);
     }
-    (void)memcpy(topic, MQTT_TOPIC_ROOT, root);
-    topic[root] = '/';
-    (void)memcpy(&topic[root + 1U], p_sub, sub + 1U);
-    /* ERR_MEM = lwIP's MQTT output buffer is full: caller retries later */
-    return (ERR_OK == mqtt_publish(g_mqtt, topic, p_data, (u16_t)len, 0U, 0U, NULL, NULL));
+
+    g_link.b_connected = false;
 }
 
-static void put_u32(uint8_t *p, uint32_t v)
+/*!
+ * @brief  Ask lwIP whether the MQTT session is connected.
+ * @return False if there is no client yet.
+ */
+static bool
+link_is_connected (void)
 {
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
-}
+    bool b_connected = false;
 
-/* Hook called by the template's CYW43 task on every poll while the WiFi
- * link is up (replaces the template's demo mqtt_utk.c). */
-void mqtt_utk_start(void)
-{
-    static uint32_t t_state;
-    static uint32_t backoff = 500U;
-    static uint32_t t_hb;
-    static uint32_t hb_seq;
-    static uint32_t t_cfg_req;
-    uint32_t        t = now_ms();
-
-    /* link was down for a while: the old TCP session is gone */
-    if ((CS_IDLE != g_cs) && ((t - g_last_hook_ms) > HOOK_STALE_MS))
+    if (NULL != gp_mqtt)
     {
-        if ((NULL != g_mqtt) && mqtt_client_is_connected(g_mqtt))
+        b_connected = (0U != mqtt_client_is_connected(gp_mqtt));
+    }
+
+    return (b_connected);
+}
+
+/*!
+ * @brief  Publish up to DRAIN_PER_POLL queued frames. A frame lwIP cannot
+ *         take yet (ERR_MEM) is kept in g_pending and retried next poll.
+ */
+static void
+queue_drain (void)
+{
+    uint32_t count  = 0U;
+    bool     b_stop = false;
+
+    for (count = 0U; (count < DRAIN_PER_POLL) && (!b_stop); count++)
+    {
+        if (!g_link.b_has_pending)
         {
-            mqtt_disconnect(g_mqtt);
-        }
-        g_connected = false;
-        g_cs = CS_IDLE;
-    }
-    g_last_hook_ms = t;
+            INT const len = tk_rcv_mbf(g_pub_q, g_pending, TMO_POL);
 
-    switch (g_cs)
-    {
-        case CS_IDLE:
-            mqtt_connect();
-            g_cs = CS_CONNECTING;
-            t_state = t;
-            break;
-
-        case CS_CONNECTING:
-            /* is_connected also catches a CONNACK the callback reported late */
-            if (g_connected || (0U != mqtt_client_is_connected(g_mqtt)))
+            if (len > (INT) PUB_HEADER_LEN)       /* 1: fits INT           */
             {
-                g_connected = true;
-                /* the retained CONFIG frame arrives right after this */
-                (void)mqtt_subscribe(g_mqtt, T_CMD, 1U, NULL, NULL);
-                (void)mqtt_subscribe(g_mqtt, T_CONFIG, 1U, NULL, NULL);
-                tm_printf((UB *)"mqtt: connected\n");
-                {
-                    /* firmware build time ("HH:MM:SS"), so the web app
-                     * shows which build is actually running */
-                    static const char bt[] = __TIME__;
-                    int16_t hhmm = (int16_t)(((bt[0] - '0') * 1000) + ((bt[1] - '0') * 100) +
-                                             ((bt[3] - '0') * 10) + (bt[4] - '0'));
-                    int16_t ss = (int16_t)(((bt[6] - '0') * 10) + (bt[7] - '0'));
-                    telem_event(EV_BOOT, 0U, hhmm, ss);
-                }
-                backoff = 500U;
-                t_cfg_req = t;
-                g_cs = CS_ONLINE;
-            }
-            else if (g_failed || ((t - t_state) > CONNECT_TIMEOUT_MS))
-            {
-                mqtt_disconnect(g_mqtt);           /* abandon this attempt cleanly */
-                g_connected = false;
-                tm_printf((UB *)"mqtt: connect failed, retry in %d ms\n", (int)backoff);
-                g_cs = CS_BACKOFF;
-                t_state = t;
+                /* len <= PUB_MSG_MAX_LEN, so it fits a uint8_t. */
+                g_pending_len        = (uint8_t) len;
+                g_link.b_has_pending = true;
             }
             else
             {
-                /* waiting for CONNACK */
+                b_stop = true;                    /* queue empty           */
             }
-            break;
-
-        case CS_BACKOFF:
-            if ((t - t_state) >= backoff)
-            {
-                backoff = ((backoff * 2U) > MQTT_BACKOFF_MAX_MS) ? MQTT_BACKOFF_MAX_MS : (backoff * 2U);
-                g_cs = CS_IDLE;
-            }
-            break;
-
-        case CS_ONLINE:
-        {
-            uint32_t  k;
-
-            if (!mqtt_client_is_connected(g_mqtt))
-            {
-                mqtt_disconnect(g_mqtt);
-                g_connected = false;
-                g_cs = CS_BACKOFF;
-                t_state = t;
-                break;
-            }
-            /* drain at most a few per poll so the radio keeps being serviced;
-             * a frame lwIP cannot take yet (ERR_MEM) is kept and retried */
-            for (k = 0U; k < 4U; k++)
-            {
-                if (!g_has_pending)
-                {
-                    if (tk_rcv_mbf(g_pub_q, &g_pending, TMO_POL) <= 0)
-                    {
-                        break;
-                    }
-                    g_has_pending = true;
-                }
-                if (!publish_now(g_pending.sub, g_pending.data, g_pending.len))
-                {
-                    break;                        /* buffer full: next poll */
-                }
-                g_has_pending = false;
-            }
-
-            if ((t - t_hb) >= HEARTBEAT_MS)
-            {
-                uint8_t hb[5];
-
-                t_hb = t;
-                hb_seq++;
-                hb[0] = PROTO_HB;
-                put_u32(&hb[1], hb_seq);
-                publish_now("heartbeat", hb, sizeof(hb));
-            }
-
-            /* no retained table yet: ask the web app for one */
-            if (!barcode_map_is_loaded() && ((t - t_cfg_req) >= CFG_RETRY_MS))
-            {
-                const uint8_t get = PROTO_CFG_GET;
-
-                t_cfg_req = t;
-                publish_now("config/get", &get, 1U);
-            }
-            if (g_cfg_ack_due)
-            {
-                uint8_t ack[5];
-
-                g_cfg_ack_due = false;
-                ack[0] = PROTO_CFG_ACK;
-                put_u32(&ack[1], barcode_map_mask());
-                publish_now("config/ack", ack, sizeof(ack));
-            }
-            break;
         }
 
-        default:
-            g_cs = CS_IDLE;
-            break;
+        if (g_link.b_has_pending)
+        {
+            uint32_t const topic    = g_pending[0];
+            uint32_t const data_len = (uint32_t) g_pending_len -
+                                      PUB_HEADER_LEN;  /* widen, then >= 1 */
+
+            /* COMMS_TOPIC_COUNT is 2, so the cast keeps its value. */
+            if ((topic >= (uint32_t) COMMS_TOPIC_COUNT) ||
+                frame_publish(g_pub_topics[topic], &g_pending[PUB_HEADER_LEN],
+                              data_len))
+            {
+                g_link.b_has_pending = false;     /* sent, or unknown: drop */
+            }
+            else
+            {
+                b_stop = true;                    /* lwIP buffer full      */
+            }
+        }
     }
 }
+
+/*!
+ * @brief  Heartbeat (1 Hz), config request and config acknowledgement.
+ */
+static void
+housekeeping_send (void)
+{
+    if (stamp_elapsed(g_hb_ms) >= HEARTBEAT_MS)
+    {
+        g_hb_ms = stamp_now();
+        g_hb_seq++;                               /* 8-bit, wraps          */
+        (void) frame_publish(TOPIC_HEARTBEAT, &g_hb_seq, PROTO_HB_LEN);
+    }
+
+    /* Still on the built-in table: ask the web app for one. */
+    if ((!barcode_map_is_loaded()) &&
+        (stamp_elapsed(g_cfg_req_ms) >= CFG_RETRY_MS))
+    {
+        g_cfg_req_ms = stamp_now();
+        (void) frame_publish(TOPIC_CFG_GET, NULL, 0U);
+    }
+
+    if (g_link.b_cfg_ack_due)
+    {
+        uint8_t const ack = proto_pack_cfg_ack(barcode_map_table(),
+                                               barcode_map_is_loaded());
+
+        if (frame_publish(TOPIC_CFG_ACK, &ack, PROTO_CFG_ACK_LEN))
+        {
+            g_link.b_cfg_ack_due = false;
+        }
+    }
+}
+
+/*!
+ * @brief  Publish one frame now (QoS 0, not retained).
+ * @param  p_topic  Full topic name.
+ * @param  p_data   Payload, or NULL when len is 0.
+ * @param  len      Payload length, 0..PROTO_MSG_MAX_LEN.
+ * @return False if lwIP could not take it (ERR_MEM): retry later.
+ */
+static bool
+frame_publish (char const * p_topic, uint8_t const * p_data, uint32_t len)
+{
+    /* len <= PROTO_MSG_MAX_LEN, so it fits a u16_t. */
+    err_t const result = mqtt_publish(gp_mqtt, p_topic, p_data, (u16_t) len,
+                                      PUBLISH_QOS, PUBLISH_RETAIN, NULL, NULL);
+
+    return (ERR_OK == result);
+}
+
+/*!
+ * @brief  Report the firmware build time, so the web app shows which build
+ *         is running.
+ */
+static void
+boot_event_post (void)
+{
+    static char const build_time[] = __TIME__;   /* "HH:MM:SS"             */
+    int32_t const     hhmm = (digits_read(&build_time[BUILD_HOUR_POS]) *
+                              HHMM_HOUR_WEIGHT) +
+                             digits_read(&build_time[BUILD_MIN_POS]);
+    int32_t const     secs = digits_read(&build_time[BUILD_SEC_POS]);
+
+    /* hhmm <= 2359 and secs <= 59, so both fit an int16_t. */
+    telemetry_post_event(EV_BOOT, 0U, (int16_t) hhmm, (int16_t) secs);
+}
+
+/*!
+ * @brief  Read two decimal digits.
+ * @param  p_text  First of two '0'..'9' characters.
+ * @return Their value, 0..99.
+ */
+static int32_t
+digits_read (char const * p_text)
+{
+    return (((p_text[0] - '0') * DIGIT_BASE) + (p_text[1] - '0'));
+}
+
+/*!
+ * @brief  A CMD frame arrived. An e-stop sets EVT_ESTOP before anything
+ *         else (FR7); every command is then passed to the Navigation FSM.
+ *         A command that does not fit in the full queue is dropped, but
+ *         an e-stop has already reached Safety through the flag.
+ */
+static void
+rx_handle_cmd (void)
+{
+    proto_cmd_t cmd = PROTO_CMD_STOP;
+
+    uint32_t const len = g_rx.len;
+
+    if (proto_unpack_cmd(g_rx_buf, len, &cmd))
+    {
+        /* proto_cmd_t values match remote_cmd_t and fit a byte. */
+        uint8_t const cmd_byte = (uint8_t) cmd;
+
+        if (PROTO_CMD_ESTOP == cmd)
+        {
+            (void) tk_set_flg(g_evt_flg, EVT_ESTOP);
+            tm_printf((UB *) "comms: e-stop received at %d us\n",
+                      (int) port_time_us_32());
+        }
+
+        (void) tk_snd_mbf(g_remote_cmd_q, &cmd_byte, (INT) sizeof(cmd_byte),
+                          TMO_POL);
+    }
+}
+
+/*!
+ * @brief  A CONFIG frame arrived: replace the table and acknowledge it.
+ */
+static void
+rx_handle_config (void)
+{
+    uint16_t table = 0U;
+
+    uint32_t const len = g_rx.len;
+
+    if (proto_unpack_config(g_rx_buf, len, &table))
+    {
+        barcode_map_apply(table);
+        g_link.b_cfg_ack_due = true;
+        tm_printf((UB *) "mqtt: barcode table received (0x%x)\n",
+                  (int) table);
+    }
+}
+
+/*!
+ * @brief  Time stamp: the low 16 bits of the millisecond clock.
+ * @return Milliseconds, modulo 65536.
+ */
+static uint16_t
+stamp_now (void)
+{
+    /* Deliberate truncation: only differences of stamps are used. */
+    return ((uint16_t) now_ms());
+}
+
+/*!
+ * @brief  Milliseconds since a stamp_now() value.
+ * @param  stamp  Earlier stamp.
+ * @return Elapsed time; correct for intervals under 65.5 s.
+ */
+static uint32_t
+stamp_elapsed (uint16_t stamp)
+{
+    /* Modular 16-bit difference, widened for unsigned comparisons. */
+    return ((uint32_t) (uint16_t) (stamp_now() - stamp));
+}
+
+/* ---------------- lwIP callbacks (run on the CYW43 task) -------------- */
+
+/*!
+ * @brief  CONNACK received, or the connection was refused or lost.
+ * @param  p_client  MQTT client (unused).
+ * @param  p_arg     Callback argument (unused).
+ * @param  status    Connection result.
+ */
+static void
+on_connection (mqtt_client_t * p_client, void * p_arg,
+               mqtt_connection_status_t status)
+{
+    (void) p_client;
+    (void) p_arg;
+
+    if (MQTT_CONNECT_ACCEPTED == status)
+    {
+        g_link.b_connected = true;
+    }
+    else
+    {
+        g_link.b_connected = false;
+        g_link.b_failed    = true;
+    }
+}
+
+/*!
+ * @brief  Start of an inbound PUBLISH: remember which topic it is for.
+ * @param  p_arg      Callback argument (unused).
+ * @param  p_topic    Topic name.
+ * @param  total_len  Payload length.
+ */
+static void
+on_incoming_publish (void * p_arg, char const * p_topic, u32_t total_len)
+{
+    (void) p_arg;
+
+    if (0 == strcmp(p_topic, TOPIC_CMD))
+    {
+        g_rx.topic = RX_CMD;
+    }
+    else if (0 == strcmp(p_topic, TOPIC_CONFIG))
+    {
+        g_rx.topic = RX_CONFIG;
+    }
+    else
+    {
+        g_rx.topic = RX_NONE;
+    }
+
+    g_rx.len        = 0U;
+    g_rx.b_overflow = (total_len > RX_BUF_LEN);
+}
+
+/*!
+ * @brief  Payload bytes of an inbound PUBLISH. They can arrive in several
+ *         chunks: collect them until the LAST flag, then dispatch.
+ * @param  p_arg   Callback argument (unused).
+ * @param  p_data  Chunk of payload.
+ * @param  len     Chunk length.
+ * @param  flags   MQTT_DATA_FLAG_LAST on the final chunk.
+ */
+static void
+on_incoming_data (void * p_arg, u8_t const * p_data, u16_t len, u8_t flags)
+{
+    uint32_t const held      = g_rx.len;         /* 0..RX_BUF_LEN          */
+    uint32_t const chunk_len = len;
+    uint32_t const room      = RX_BUF_LEN - held;
+    uint32_t const count     = (chunk_len < room) ? chunk_len : room;
+    bool const     b_last    = (0U != (flags & MQTT_DATA_FLAG_LAST));
+
+    (void) p_arg;
+
+    if (chunk_len > room)
+    {
+        g_rx.b_overflow = true;
+    }
+
+    (void) memcpy(&g_rx_buf[held], p_data, count);
+    g_rx.len = (uint8_t) (held + count);          /* <= RX_BUF_LEN         */
+
+    if (b_last && (!g_rx.b_overflow))
+    {
+        if (RX_CMD == g_rx.topic)
+        {
+            rx_handle_cmd();
+        }
+        else if (RX_CONFIG == g_rx.topic)
+        {
+            rx_handle_config();
+        }
+        else
+        {
+            /* Not ours. */
+        }
+    }
+
+    if (b_last)
+    {
+        g_rx.len        = 0U;
+        g_rx.b_overflow = false;
+    }
+}
+
+/*** end of file ***/

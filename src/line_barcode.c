@@ -287,7 +287,7 @@ void line_barcode_task(INT stacd, void *exinf)
                     }
                     else
                     {
-                        telem_event(EV_BARCODE, (uint8_t)'?', -1, (int16_t)n_edges);
+                        telemetry_post_event(EV_BARCODE, (uint8_t)'?', -1, (int16_t)n_edges);
                     }
                     bs = BS_WAIT;
                     n_edges = 0U;

@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* Barr-C 5.4: single-precision floating point type name. */
+typedef float float32_t;
+
 /* 1 MHz system timer. time_us_64() is provided by the template
  * (lib/libwifi/sysdepend/pico_rp2040/cyw43_utk_compat.c).            */
 uint64_t time_us_64(void);

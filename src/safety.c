@@ -24,6 +24,7 @@ void safety_clear(void)
     (void)tk_clr_flg(g_evt_flg,
                      ~(UINT)(EVT_COLLISION | EVT_LINE_LOST | EVT_ESTOP | EVT_OVERTILT));
     g_latched = false;
+    fault_clear_all();   /* live bits are re-set by Telemetry within 100 ms */
 }
 
 static void trip(fault_code_t code, int16_t detail)
@@ -33,7 +34,7 @@ static void trip(fault_code_t code, int16_t detail)
     {
         g_latched = true;
         stop();
-        telem_event(EV_FAULT, (uint8_t)code, detail, 0);
+        telemetry_post_event(EV_FAULT, (uint8_t)code, detail, 0);
     }
 }
 
@@ -76,7 +77,14 @@ void safety_task(INT stacd, void *exinf)
             else if (((t - boot_ms) > BOOT_GRACE_MS) &&
                      ((t - last_seen[i]) > SAFETY_HB_TIMEOUT_MS))
             {
-                trip(FC_HEARTBEAT, (int16_t)i);   /* v1 = missing HB_* bit */
+                if (0U != (HB_WARN & (1U << i)))
+                {
+                    fault_set(FC_TELEM_LATE);         /* warning only */
+                }
+                else
+                {
+                    trip(FC_HEARTBEAT, (int16_t)i);   /* v1 = missing HB_* bit */
+                }
             }
             else
             {

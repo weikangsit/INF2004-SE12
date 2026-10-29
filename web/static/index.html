@@ -34,9 +34,10 @@
   </section>
 
   <section class="panel" aria-labelledby="h-cfg">
-    <h2 id="h-cfg">Barcode actions (A&ndash;Z)</h2>
+    <h2 id="h-cfg">Barcode actions (A&ndash;D)</h2>
     <p class="hint">Choose what each letter makes the car do. Letters left as &ldquo;&mdash;&rdquo; are ignored
-      (the car keeps following the line). The table is sent as a 12-byte retained frame, so the car
+      (the car keeps following the line). Until a table arrives the car uses its built-in one
+      (A left, B right, C straight, D U-turn). The table is sent as a 2-byte retained frame, so the car
       also receives it when it reconnects.</p>
     <div class="row">
       <label>Fill all with
@@ -64,11 +65,12 @@
       <div class="card"><span>Motion</span><b id="t-motion">&ndash;</b></div>
       <div class="card"><span>Distance travelled</span><b id="t-dist">&ndash;</b></div>
       <div class="card"><span>Motor duty L / R</span><b id="t-duty">&ndash;</b></div>
-      <div class="card"><span>Line</span><b id="t-line">&ndash;</b></div>
+      <div class="card"><span>Line sensors</span><b id="t-line">&ndash;</b></div>
       <div class="card"><span>Last barcode</span><b id="t-bc">&ndash;</b></div>
       <div class="card"><span>Highest hump</span><b id="t-hump">&ndash;</b></div>
       <div class="card"><span>Uptime</span><b id="t-up">&ndash;</b></div>
       <div class="card"><span>Health</span><b id="t-flags">&ndash;</b></div>
+      <div class="card"><span>Faults</span><b id="t-faults">&ndash;</b></div>
     </div>
     <div class="charts">
       <figure><figcaption>Speed (m/s)</figcaption><canvas id="c-speed" width="360" height="110"></canvas></figure>

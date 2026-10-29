@@ -12,6 +12,8 @@ import time
 import shutil
 from pathlib import Path
 
+import proto_ref
+
 HERE = Path(__file__).resolve().parent
 MQTT_PORT, WEB_PORT, PW = 18883, 18080, "testpw"
 
@@ -128,21 +130,6 @@ def pub(c, topic, payload, retain=False):
     c.send(pkt(0x30 | int(retain), s(topic.encode()) + payload))
 
 
-def config_frame(m):
-    """Same algorithm as proto.js / barcode_map.c."""
-    b = bytearray(12)
-    b[0] = 1
-    mask = 0
-    for n in range(26):
-        code = m.get(chr(65 + n))
-        if code is None:
-            continue
-        mask |= 1 << n
-        b[5 + (2 * n >> 3)] |= code << (2 * n & 7)
-    b[1:5] = struct.pack("<I", mask)
-    return bytes(b)
-
-
 def main():
     work = Path(tempfile.mkdtemp(dir=os.environ.get("KIROCREW_SCRATCH")))
     shutil.copy(HERE / "server.py", work / "server.py")
@@ -171,8 +158,9 @@ def main():
         web = Ws(origin=f"http://127.0.0.1:{WEB_PORT}")
         assert web.status == 101 and mqtt_login(web, "web-1") == 0
         sub(web, "robot/12/#")
-        cfg = {"A": 0, "B": 1, "C": 2, "D": 3, "Z": 3, "M": 1}
-        frame = config_frame(cfg)
+        cfg = {"A": 1, "B": 2, "C": 0, "D": 3}
+        frame = proto_ref.encode_config(cfg)
+        assert len(frame) == 2
         pub(web, "robot/12/config/barcode", frame, retain=True)
         read_publish(web)                        # own echo
         car = Tcp()
@@ -180,16 +168,31 @@ def main():
         sub(car, "robot/12/config/barcode")
         t, p, r = read_publish(car)
         assert t == "robot/12/config/barcode" and p == frame and r
-        print("PASS car received retained 12-byte config:", p.hex())
+        print("PASS car received retained 2-byte config:", p.hex())
 
-        # 5. car telemetry (32 bytes) reaches the browser untouched
-        tel = struct.pack("<BBBBhhhhHhHbbibbHI", 0x10, 2, 0b1101, 1, 300, 310, 45, -12, 1234, 50,
-                          253, 40, 42, 1500, 0, ord("B"), 87, 65000)
-        assert len(tel) == 32
+        # 5. car telemetry (18 bytes) reaches the browser untouched
+        tel = proto_ref.encode_telem({"state": 2, "motionClass": 1, "lineBits": 1,
+                                      "barcode": 4 | 1, "faultMask": 1 << 4,
+                                      "speedL": 30, "speedR": 31, "dutyL": 45,
+                                      "dutyR": -12, "pitch": 9, "roll": -3,
+                                      "heading": 123, "turnRate": 5, "range": 25,
+                                      "distance": 150, "hump": 17, "uptime": 650})
+        assert len(tel) == 18
         pub(car, "robot/12/telemetry", tel)
         t, p, _ = read_publish(web)
         assert t == "robot/12/telemetry" and p == tel
-        print("PASS browser received 32-byte telemetry")
+        print("PASS browser received 18-byte telemetry")
+
+        # 5b. zero-length config/get and a 1-byte command pass through
+        pub(car, "robot/12/config/get", b"")
+        t, p, _ = read_publish(web)
+        assert t == "robot/12/config/get" and p == b""
+        sub(car, "robot/12/cmd")
+        pub(web, "robot/12/cmd", proto_ref.encode_cmd("estop"))
+        read_publish(web)                        # own echo
+        t, p, _ = read_publish(car)
+        assert t == "robot/12/cmd" and p == b"\x42"
+        print("PASS empty config/get and 1-byte e-stop command delivered")
         (work / "telem.bin").write_bytes(tel)
         (work / "config.bin").write_bytes(frame)
 

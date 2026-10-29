@@ -131,7 +131,7 @@ static obstacle_kind_t scan_and_plan(bool retry_done)
     m.clear_right_cm = coarse[0];               /* ray at 30 deg  */
     post(&m);
     /* code = closest-point bearing (deg), v1 = range, v2 = width (0.1 cm) */
-    telem_event(EV_OBSTACLE, (uint8_t)m.angle_deg,
+    telemetry_post_event(EV_OBSTACLE, (uint8_t)m.angle_deg,
                 (int16_t)fminf(m.range_cm * 10.0f, 32767.0f), (int16_t)(m.width_cm * 10.0f));
 
     /* ---- PLAN ---- */

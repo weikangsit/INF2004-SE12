@@ -1,0 +1,425 @@
+/** @file    proto.c
+ *  @brief   Packs and unpacks the binary MQTT payloads (see proto.h).
+ *
+ *  Every payload is a little-endian bit stream: the first field starts at
+ *  bit 0 of byte 0, and each field is written least significant bit first.
+ *  A signed field is stored as two's complement in its own width. Each
+ *  layout below is mirrored in web/static/proto.js and checked by
+ *  web/test_proto.py.
+ */
+#include <string.h>
+
+#include "proto.h"
+
+#define BITS_PER_BYTE        (8U)
+#define EVENT_KIND_BITS      (4U)
+#define TELEM_FIELD_COUNT    (18U)
+#define EVENT_FIELDS_MAX     (3U)   /* fields of any kind except BARCODE */
+#define BARCODE_FIELD_COUNT  (5U)
+#define EVENT_INPUT_COUNT    (3U)   /* code, value1, value2              */
+
+#define CMD_TAG              (0x40U)   /* bits 3..7 of a CMD byte       */
+#define CMD_TAG_MASK         (0xF8U)
+#define CMD_ID_MASK          (0x07U)
+
+#define CFG_RESERVED_MASK    (0xF000U)
+#define ACK_FROM_MQTT_SHIFT  (4U)
+
+/* Unit conversions of the generic event inputs. */
+#define TENTHS_PER_UNIT      (10)      /* x0.1 cm or x0.1 mm -> cm or mm */
+#define TENTHS_PER_HALF      (5)       /* x0.1 mm -> 0.5 mm steps        */
+#define HHMM_SPLIT           (100)     /* HHMM -> hours, minutes         */
+
+/** One field of a packed layout. */
+typedef struct
+{
+    uint8_t width;      /* bits                                         */
+    bool    b_signed;   /* two's complement if true                     */
+} field_t;
+
+/** Fields of one EVENT kind (after the 4-bit kind). */
+typedef struct
+{
+    uint8_t count;
+    field_t fields[EVENT_FIELDS_MAX];
+} event_layout_t;
+
+/** Telemetry layout: the order matches proto_telem_t. */
+static field_t const g_telem_layout[TELEM_FIELD_COUNT] =
+{
+    { 4U,  false },   /* state          */
+    { 2U,  false },   /* motion_class   */
+    { 2U,  false },   /* line_bits      */
+    { 3U,  false },   /* barcode        */
+    { 16U, false },   /* fault_mask     */
+    { 2U,  false },   /* status         */
+    { 8U,  true  },   /* speed_l_cms    */
+    { 8U,  true  },   /* speed_r_cms    */
+    { 8U,  true  },   /* duty_l_pct     */
+    { 8U,  true  },   /* duty_r_pct     */
+    { 9U,  true  },   /* pitch_half_deg */
+    { 9U,  true  },   /* roll_deg       */
+    { 9U,  false },   /* heading_deg    */
+    { 9U,  true  },   /* turn_rate_dps  */
+    { 9U,  false },   /* range_cm       */
+    { 14U, true  },   /* distance_cm    */
+    { 8U,  false },   /* hump_half_mm   */
+    { 16U, false }    /* uptime_ticks   */
+};
+
+/** EVENT layouts, indexed by proto_event_t. The BARCODE kind is listed
+ *  separately because it has more fields than the others. */
+static event_layout_t const g_event_layout[EV_KIND_COUNT] =
+{
+    { 0U, { { 0U, false } } },                                  /* unused  */
+    { 1U, { { 4U, false } } },                                  /* STATE   */
+    { 0U, { { 0U, false } } },                                  /* BARCODE */
+    { 1U, { { 8U, false } } },                                  /* HUMP    */
+    { 3U, { { 8U, false }, { 9U, false }, { 7U, false } } },    /* OBSTACLE*/
+    { 2U, { { 4U, false }, { 4U, false } } },                   /* FAULT   */
+    { 2U, { { 9U, false }, { 9U, false } } },                   /* XCHECK  */
+    { 2U, { { 8U, false }, { 14U, true } } },                   /* SUMMARY */
+    { 3U, { { 3U, false }, { 9U, true }, { 9U, true } } },      /* ENC_CAL */
+    { 3U, { { 2U, false }, { 13U, true }, { 13U, true } } },    /* MOTOR   */
+    { 3U, { { 5U, false }, { 6U, false }, { 6U, false } } }     /* BOOT    */
+};
+
+/** BARCODE: symbol, valid, configured, action, edge count. */
+static field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
+{
+    { 2U, false }, { 1U, false }, { 1U, false }, { 2U, false }, { 6U, false }
+};
+
+static void     bits_put (uint8_t * p_frame, uint32_t * p_pos,
+                          int32_t value, field_t const * p_field);
+static uint32_t pack_fields (uint8_t * p_frame, uint32_t start_pos,
+                             int32_t const * p_values,
+                             field_t const * p_fields, uint32_t count);
+static uint32_t event_values (proto_event_t kind, uint8_t code,
+                              int16_t value1, int16_t value2,
+                              int32_t * p_values);
+
+/*!
+ * @brief  Pack one telemetry frame.
+ * @param  p_telem  Values in wire units (clamped to each field's range).
+ * @param  p_frame  Output, at least PROTO_TELEM_LEN bytes.
+ * @return Number of bytes written (PROTO_TELEM_LEN).
+ */
+uint32_t
+proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame)
+{
+    int32_t const values[TELEM_FIELD_COUNT] =
+    {
+        p_telem->state,        p_telem->motion_class,  p_telem->line_bits,
+        p_telem->barcode,      p_telem->fault_mask,    p_telem->status,
+        p_telem->speed_l_cms,  p_telem->speed_r_cms,   p_telem->duty_l_pct,
+        p_telem->duty_r_pct,   p_telem->pitch_half_deg, p_telem->roll_deg,
+        p_telem->heading_deg,  p_telem->turn_rate_dps, p_telem->range_cm,
+        p_telem->distance_cm,  p_telem->hump_half_mm,  p_telem->uptime_ticks
+    };
+
+    (void) memset(p_frame, 0, PROTO_TELEM_LEN);
+    (void) pack_fields(p_frame, 0U, values, g_telem_layout,
+                       TELEM_FIELD_COUNT);
+
+    return (PROTO_TELEM_LEN);
+}
+
+/*!
+ * @brief  Pack one EVENT frame: 4-bit kind, then the fields of that kind.
+ * @param  kind     Event kind.
+ * @param  code     Kind-specific code (see proto_event_t).
+ * @param  value1   Kind-specific value 1.
+ * @param  value2   Kind-specific value 2.
+ * @param  p_frame  Output, at least PROTO_EVENT_MAX_LEN bytes.
+ * @return Number of bytes written, or 0 for an unknown kind.
+ */
+uint32_t
+proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
+                  int16_t value2, uint8_t * p_frame)
+{
+    static field_t const kind_field = { EVENT_KIND_BITS, false };
+    int32_t              values[BARCODE_FIELD_COUNT];
+    uint32_t const       count = event_values(kind, code, value1, value2,
+                                              values);
+    uint32_t             pos   = 0U;
+    uint32_t             len   = 0U;
+
+    if (0U != count)
+    {
+        (void) memset(p_frame, 0, PROTO_EVENT_MAX_LEN);
+        bits_put(p_frame, &pos, (int32_t) kind, &kind_field);  /* 1..10 */
+
+        if (EV_BARCODE == kind)
+        {
+            pos = pack_fields(p_frame, pos, values, g_barcode_layout, count);
+        }
+        else
+        {
+            pos = pack_fields(p_frame, pos, values,
+                              g_event_layout[kind].fields, count);
+        }
+
+        len = (pos + BITS_PER_BYTE - 1U) / BITS_PER_BYTE;
+    }
+
+    return (len);
+}
+
+/*!
+ * @brief  Build the CFG_ACK byte: bits 0..3 letters in use, bit 4 set when
+ *         the table came over MQTT (clear = built-in defaults).
+ * @param  table        Packed table (PROTO_CFG_* layout).
+ * @param  b_from_mqtt  True if the table was received over MQTT.
+ * @return The CFG_ACK byte.
+ */
+uint8_t
+proto_pack_cfg_ack (uint16_t table, bool b_from_mqtt)
+{
+    uint32_t ack = (uint32_t) table & PROTO_CFG_VALID_MASK;
+
+    if (b_from_mqtt)
+    {
+        ack |= (1U << ACK_FROM_MQTT_SHIFT);
+    }
+
+    /* At most 5 bits are set, so the value fits in a byte. */
+    return ((uint8_t) ack);
+}
+
+/*!
+ * @brief  Validate and decode a CMD frame.
+ * @param  p_frame  Received bytes.
+ * @param  len      Number of received bytes.
+ * @param  p_cmd    Output command, written only on success.
+ * @return True if the frame is a valid command.
+ */
+bool
+proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
+{
+    bool b_ok = false;
+
+    if ((PROTO_CMD_LEN == len) &&
+        (CMD_TAG == ((uint32_t) p_frame[0] & CMD_TAG_MASK)))
+    {
+        uint32_t id = (uint32_t) p_frame[0] & CMD_ID_MASK;
+
+        /* PROTO_CMD_COUNT is 6, so the cast keeps its value. */
+        if (id < (uint32_t) PROTO_CMD_COUNT)
+        {
+            /* id is below PROTO_CMD_COUNT, so it is a valid enum value. */
+            *p_cmd = (proto_cmd_t) id;
+            b_ok = true;
+        }
+    }
+
+    return (b_ok);
+}
+
+/*!
+ * @brief  Validate and decode a CONFIG frame (A-D action table).
+ * @param  p_frame  Received bytes.
+ * @param  len      Number of received bytes.
+ * @param  p_table  Output 12-bit table, written only on success.
+ * @return True if the frame is valid (right length, reserved bits zero).
+ */
+bool
+proto_unpack_config (uint8_t const * p_frame, uint32_t len,
+                     uint16_t * p_table)
+{
+    bool b_ok = false;
+
+    if (PROTO_CONFIG_LEN == len)
+    {
+        uint32_t word = (uint32_t) p_frame[0] |
+                        ((uint32_t) p_frame[1] << BITS_PER_BYTE);
+
+        if (0U == (word & CFG_RESERVED_MASK))
+        {
+            /* Masked to 12 bits, so it fits a uint16_t. */
+            *p_table = (uint16_t) (word & PROTO_CFG_TABLE_MASK);
+            b_ok = true;
+        }
+    }
+
+    return (b_ok);
+}
+
+/*!
+ * @brief  Convert the generic event inputs to the field values of a kind.
+ * @param  kind      Event kind.
+ * @param  code      Kind-specific code.
+ * @param  value1    Kind-specific value 1.
+ * @param  value2    Kind-specific value 2.
+ * @param  p_values  Output, at least BARCODE_FIELD_COUNT entries.
+ * @return Number of fields, or 0 for an unknown kind.
+ */
+static uint32_t
+event_values (proto_event_t kind, uint8_t code, int16_t value1,
+              int16_t value2, int32_t * p_values)
+{
+    uint32_t count = 0U;
+
+    switch (kind)
+    {
+        case EV_BARCODE:
+        {
+            /* Unsigned difference: a code below 'A' wraps to a large
+             * value, so one comparison checks both ends of A..D. */
+            uint32_t const index   = (uint32_t) code - (uint32_t) 'A';
+            bool const     b_valid = (index < PROTO_LETTER_COUNT);
+
+            /* index < 4 when valid, so it fits an int32_t. */
+            p_values[0] = b_valid ? (int32_t) index : 0;
+            p_values[1] = b_valid ? 1 : 0;
+            p_values[2] = (value1 >= 0) ? 1 : 0;
+            p_values[3] = (value1 >= 0) ? value1 : 0;
+            p_values[4] = value2;
+            count = BARCODE_FIELD_COUNT;
+        }
+        break;
+
+        case EV_HUMP:
+            p_values[0] = (value1 + (TENTHS_PER_HALF / 2)) / TENTHS_PER_HALF;
+            count = 1U;
+        break;
+
+        case EV_OBSTACLE:
+            p_values[0] = code;
+            p_values[1] = value1 / TENTHS_PER_UNIT;   /* 511+ = no echo */
+            p_values[2] = value2 / TENTHS_PER_UNIT;
+            count = 3U;
+        break;
+
+        case EV_SUMMARY:
+            p_values[0] = (value1 + (TENTHS_PER_HALF / 2)) / TENTHS_PER_HALF;
+            p_values[1] = value2;
+            count = 2U;
+        break;
+
+        case EV_MOTOR_TEST:
+            p_values[0] = (int32_t) code - 1;     /* phases 1..4 -> 0..3   */
+            p_values[1] = value1;
+            p_values[2] = value2;
+            count = 3U;
+        break;
+
+        case EV_BOOT:
+            p_values[0] = value1 / HHMM_SPLIT;
+            p_values[1] = value1 % HHMM_SPLIT;
+            p_values[2] = value2;
+            count = 3U;
+        break;
+
+        case EV_STATE:
+        case EV_FAULT:
+        case EV_TURN_XCHECK:
+        case EV_ENC_CAL:
+        {
+            /* Code first (unless the kind has none), then value1, value2. */
+            int32_t const raw[EVENT_INPUT_COUNT] = { code, value1, value2 };
+            uint32_t const first = (EV_TURN_XCHECK == kind) ? 1U : 0U;
+            uint32_t       idx   = 0U;
+
+            count = g_event_layout[kind].count;
+            for (idx = 0U; idx < count; idx++)
+            {
+                p_values[idx] = raw[first + idx];
+            }
+        }
+        break;
+
+        default:
+            count = 0U;
+        break;
+    }
+
+    return (count);
+}
+
+/*!
+ * @brief  Pack a list of fields starting at a bit position.
+ * @param  p_frame    Frame, already zeroed.
+ * @param  start_pos  Bit position of the first field.
+ * @param  p_values   One value per field.
+ * @param  p_fields   Field widths and signedness.
+ * @param  count      Number of fields.
+ * @return Bit position after the last field.
+ */
+static uint32_t
+pack_fields (uint8_t * p_frame, uint32_t start_pos, int32_t const * p_values,
+             field_t const * p_fields, uint32_t count)
+{
+    uint32_t pos = start_pos;
+    uint32_t idx = 0U;
+
+    for (idx = 0U; idx < count; idx++)
+    {
+        bits_put(p_frame, &pos, p_values[idx], &p_fields[idx]);
+    }
+
+    return (pos);
+}
+
+/*!
+ * @brief  Clamp a value to its field range and write it LSB first.
+ * @param  p_frame  Frame, already zeroed.
+ * @param  p_pos    Bit position, advanced by the field width.
+ * @param  value    Value to store.
+ * @param  p_field  Width and signedness of the field.
+ */
+static void
+bits_put (uint8_t * p_frame, uint32_t * p_pos, int32_t value,
+          field_t const * p_field)
+{
+    uint32_t const width   = p_field->width;    /* 1..16 bits            */
+    uint32_t const span    = 1U << width;
+    int32_t        low     = 0;
+    int32_t        high    = 0;
+    int32_t        clamped = value;
+    uint32_t       raw     = 0U;
+    uint32_t       bit     = 0U;
+
+    if (p_field->b_signed)
+    {
+        /* span <= 65536, so span / 2 fits an int32_t. */
+        high = (int32_t) (span / 2U) - 1;
+        low  = -high - 1;
+    }
+    else
+    {
+        high = (int32_t) (span - 1U);
+    }
+
+    if (value < low)
+    {
+        clamped = low;
+    }
+    else if (value > high)
+    {
+        clamped = high;
+    }
+    else
+    {
+        /* Already in range. */
+    }
+
+    /* Two's complement within the field: add span to negative values.
+     * The result is 0..span-1, so it fits a uint32_t. */
+    raw = (clamped < 0) ? (uint32_t) (clamped + (int32_t) span) :
+                          (uint32_t) clamped;
+
+    for (bit = 0U; bit < width; bit++)
+    {
+        if (0U != ((raw >> bit) & 1U))
+        {
+            /* The shift is 0..7, so the bit fits a uint8_t. */
+            p_frame[*p_pos / BITS_PER_BYTE] |=
+                (uint8_t) (1U << (*p_pos % BITS_PER_BYTE));
+        }
+
+        (*p_pos)++;
+    }
+}
+
+/*** end of file ***/

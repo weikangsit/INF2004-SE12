@@ -248,7 +248,7 @@ void imu_task(INT stacd, void *exinf)
                     in_hump = false;
                     run_peak = fmaxf(run_peak, hump_max);
                     post_evt(MEVT_HUMP_END, hump_max);
-                    telem_event(EV_HUMP, 0U, (int16_t)(hump_max * 10.0f), 0);
+                    telemetry_post_event(EV_HUMP, 0U, (int16_t)(hump_max * 10.0f), 0);
                 }
             }
 

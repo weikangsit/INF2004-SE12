@@ -254,6 +254,8 @@ set(APP_SOURCES
     src/ultrasonic.c
     src/nav_fsm.c
     src/comms.c          # replaces the template's demo mqtt_utk.c
+    src/proto.c          # packed MQTT payloads (Change Requirement 1)
+    src/fault.c          # shared fault bitmask
     src/telemetry.c
     src/safety.c
 )

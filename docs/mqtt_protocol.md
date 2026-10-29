@@ -1,0 +1,156 @@
+# MQTT protocol - Group 12 robot car (Buddy 1)
+
+All payloads are packed binary frames (Change Requirement 1). There is no
+JSON or text. Every frame is a little-endian bit stream:
+
+* the first field starts at bit 0 of byte 0;
+* each field is written least significant bit first;
+* a signed field is two's complement in its own width;
+* the car clamps out-of-range values to the field range before packing.
+
+The firmware packer is `src/proto.c`, the browser decoder is
+`web/static/proto.js`, and `web/proto_ref.py` is a Python reference.
+`web/test_proto.py` checks that all three have the same layouts, and runs
+the compiled `proto.c` in a Cortex-M0+ emulator against the reference.
+
+Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
+`/mqtt` on 8080 for the browser). Client id `robocar-g12`, keep-alive 10 s.
+
+## Topics
+
+| Topic (`robot/12/...`) | Direction | Bytes | QoS / retain | Rate |
+|---|---|---|---|---|
+| `telemetry` | car -> web | 18 | 0 / no | 10 Hz |
+| `event` | car -> web | 1-4 | 0 / no | on change |
+| `heartbeat` | car -> web | 1 | 0 / no | 1 Hz |
+| `config/barcode` | web -> car | 2 | car subscribes QoS 1; web publishes **retained** | on change |
+| `config/get` | car -> web | 0 | 0 / no | every 5 s until a table arrives |
+| `config/ack` | car -> web | 1 | 0 / no | after each table |
+| `cmd` | web -> car | 1 | car subscribes QoS 1 | on demand |
+
+## telemetry (18 bytes = 144 bits)
+
+| Bits | Field | Width | Signed | Unit / meaning |
+|---|---|---|---|---|
+| 0-3 | state | 4 | no | nav state 0..8 (INIT, READY, LINE_FOLLOW, BARCODE_ACT, HUMP_REPORT, OBSTACLE_AVOID, LINE_REACQUIRE, MISSION_DONE, FAULT) |
+| 4-5 | motion class | 2 | no | 0 still, 1 moving, 2 turning, 3 hump |
+| 6-7 | line sensors | 2 | no | bit 0 left black, bit 1 right black |
+| 8-10 | last barcode | 3 | no | bits 0-1 letter - 'A', bit 2 valid (0 = none) |
+| 11-26 | fault mask | 16 | no | bit n = `fault_code_t` n (below) |
+| 27-28 | status | 2 | no | bit 0 safety latched, bit 1 barcode table came over MQTT |
+| 29-36 | speed left | 8 | yes | cm/s (+/-1.27 m/s) |
+| 37-44 | speed right | 8 | yes | cm/s |
+| 45-52 | duty left | 8 | yes | percent -100..100 |
+| 53-60 | duty right | 8 | yes | percent |
+| 61-69 | pitch | 9 | yes | 0.5 deg (+/-90 deg) |
+| 70-78 | roll | 9 | yes | 1 deg (+/-180 deg) |
+| 79-87 | heading | 9 | no | 1 deg, 0..359 |
+| 88-96 | turn rate | 9 | yes | deg/s (+/-255) |
+| 97-105 | front range | 9 | no | cm 0..510, **511 = no valid echo** |
+| 106-119 | distance | 14 | yes | cm (+/-81.9 m) |
+| 120-127 | hump peak | 8 | no | 0.5 mm (0..127.5 mm) |
+| 128-143 | uptime | 16 | no | 100 ms ticks (wraps after 109 min) |
+
+### Fault mask bits (`src/fault.h`)
+
+| Bit | Code | Meaning | Kind |
+|---|---|---|---|
+| 0 | FC_STALL | no encoder edges while driving | latched |
+| 1 | FC_ENCODER | encoder self-test failed | latched |
+| 2 | FC_IMU | IMU reads failing | live |
+| 3 | FC_NO_ECHO | last front ping had no echo | live |
+| 4 | FC_WIFI_LOSS | MQTT link down (never brakes the car) | live, warning |
+| 5 | FC_COLLISION | IMU impact | latched |
+| 6 | FC_OVERTILT | pitch or roll beyond 35 deg | latched |
+| 7 | FC_LINE_LOST | line-lost timeout | latched |
+| 8 | FC_ESTOP | emergency stop | latched |
+| 9 | FC_HEARTBEAT | a supervised task missed its deadline | latched |
+| 10 | FC_SENSOR | line sensor calibration failed | latched |
+| 11 | FC_NO_ROUTE | no way around an obstacle | latched |
+| 12 | FC_REACQUIRE | line not found after a bypass | latched |
+| 13 | FC_SELFTEST | power-on self-test timed out | latched |
+| 14 | FC_TELEM_LATE | telemetry task missed its deadline | warning, sent once |
+| 15 | FC_SOFTWARE | impossible state reached | latched |
+
+"Live" bits are refreshed every 100 ms by the telemetry task. Latched bits
+stay set until the operator resets (`safety_clear()`).
+
+## event (1-4 bytes)
+
+Bits 0-3 hold the kind; the kind's fields follow from bit 4. The length is
+fixed per kind, and the decoder rejects any other length.
+
+| Kind | Name | Fields after the kind (width, s = signed) | Bytes |
+|---|---|---|---|
+| 1 | STATE | state 4 | 1 |
+| 2 | BARCODE | letter-'A' 2, valid 1, configured 1, action 2, edge count 6 | 2 |
+| 3 | HUMP | height 8 (0.5 mm) | 2 |
+| 4 | OBSTACLE | bearing 8 (deg), range 9 (cm, 511 = no echo), width 7 (cm) | 4 |
+| 5 | FAULT | fault code 4, detail 4 (missing heartbeat task) | 2 |
+| 6 | TURN_XCHECK | encoder turn 9 (deg), IMU turn 9 (deg) | 3 |
+| 7 | SUMMARY | hump peak 8 (0.5 mm), distance 14s (cm) | 4 |
+| 8 | ENC_CAL | result 3 (0 ok, bit0/bit1 encoder silent, 4 rotated), left 9s, right 9s | 4 |
+| 9 | MOTOR_TEST | phase 2 (0..3 = L+, L-, R+, R-), left counts 13s, right counts 13s | 4 |
+| 10 | BOOT | hours 5, minutes 6, seconds 6 (firmware build time) | 3 |
+
+Every EV_FAULT also sets its bit in the fault mask, and a failed ENC_CAL
+sets FC_ENCODER.
+
+## heartbeat (1 byte)
+
+8-bit sequence number, incremented every second and wrapping. The web app
+shows the car offline after 3 s without one.
+
+## config/barcode (2 bytes, retained)
+
+| Bits | Meaning |
+|---|---|
+| 0-3 | letter valid (bit n = letter 'A'+n) |
+| 4-11 | 2-bit action per letter, letter n in bits 4+2n..5+2n: 00 straight, 01 left, 10 right, 11 U-turn |
+| 12-15 | reserved, must be 0 (otherwise the frame is rejected) |
+
+The car starts with a built-in table (Week 6 FR2: A left, B right, C
+straight, D U-turn = frame `9f 0c`), so it can run without WiFi. A received
+table replaces it completely. The car asks for one on `config/get` (empty
+payload) every 5 s until a table arrives.
+
+## config/ack (1 byte)
+
+Bits 0-3 are the letters configured in the table now in use; bit 4 is set if
+that table came over MQTT (clear = built-in table); bits 5-7 are 0.
+
+## cmd (1 byte)
+
+Bits 3-7 must be `01000` (0x40), and bits 0-2 hold the command. Any other
+byte or length is ignored.
+
+| Byte | Command | Accepted in |
+|---|---|---|
+| 0x40 | start | READY |
+| 0x41 | stop (back to READY) | while driving |
+| 0x42 | **e-stop** | any state |
+| 0x43 | finish run | while driving |
+| 0x44 | reset fault | FAULT, MISSION_DONE |
+| 0x45 | bench motor test | READY, FAULT, MISSION_DONE |
+
+On an e-stop the MQTT link sets `EVT_ESTOP` itself, before passing the
+command to the Navigation FSM. The Safety Monitor (priority 1) therefore
+brakes on its next 50 ms check, without waiting for the Navigation task
+(FR7, Tribunal 1). The link also logs the arrival time over USB, so the
+time from receipt to brake can be measured.
+
+## Buffers and overflow
+
+| Buffer | Holds | Size | When full |
+|---|---|---|---|
+| publish queue (`comms.c`) | 1-byte topic + frame | 360 B: 1 s of telemetry (10 x 24 B) + 10 events (10 x 12 B) | the **oldest** frame is dropped (count logged on reconnect) |
+| `telemetry_q` (events from all tasks) | packed event, 1-4 B | 16 slots (192 B) | the **oldest** event is dropped |
+| `remote_cmd_q` | 1-byte command | 4 slots | the new command is dropped; an e-stop still reaches Safety through `EVT_ESTOP` |
+| lwIP MQTT output ring | encoded packets | 2048 B | the frame stays queued and is retried on the next 2 ms poll |
+| inbound payload | 2 B (largest valid frame) | - | longer payloads are discarded |
+
+Publishing never blocks a control task: `comms_publish()` only copies into
+the queue. Every lwIP call runs on the template's CYW43 task, through the
+`mqtt_utk_start()` hook. When the link is down the hook stops being called;
+after 500 ms without a call, `comms_is_online()` reports offline and
+FC_WIFI_LOSS is set. Reconnection backs off 0.5 s, 1 s, 2 s, then 4 s.

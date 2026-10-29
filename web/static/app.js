@@ -38,7 +38,7 @@
   }
   function sendConfig() {
     const frame = P.encodeConfig(config);
-    sentMask = new DataView(frame.buffer).getUint32(1, true);
+    sentMask = P.configMask(frame);
     mqtt.publish(ROOT + "/config/barcode", frame, true);
     $("cfg-state").textContent = "sent " + popcount(sentMask) + " letters, waiting for the car to confirm\u2026";
     logEvent("config sent (" + popcount(sentMask) + " letters)");
@@ -68,12 +68,16 @@
     $("t-motion").textContent = t.motion;
     $("t-dist").textContent = t.distance.toFixed(2) + " m";
     $("t-duty").textContent = t.dutyL + "% / " + t.dutyR + "%";
-    $("t-line").textContent = !t.lineSeen && t.linePos === 0 ? "centred / none" : ["left", "centre", "right"][t.linePos + 1] + (t.lineSeen ? "" : " (searching)");
-    $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(config[t.barcode]) : "\u2013";
+    $("t-line").textContent = "L " + (t.lineLeft ? "black" : "white") + " \u00b7 R " + (t.lineRight ? "black" : "white");
+    const table = t.cfgFromMqtt ? config : P.DEFAULT_TABLE;   // car's built-in table until one arrives
+    $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(table[t.barcode]) : "\u2013";
     $("t-hump").textContent = t.humpPeak.toFixed(1) + " mm";
     $("t-up").textContent = fmtTime(t.uptime);
-    $("t-flags").textContent = [t.imuOk ? "IMU ok" : "IMU FAIL", t.safetyLatched ? "SAFETY STOP" : "safe",
-                                t.cfgLoaded ? "table loaded" : "no table"].join(" \u00b7 ");
+    $("t-flags").textContent = [t.safetyLatched ? "SAFETY STOP" : "safe",
+                                t.cfgFromMqtt ? "table from web" : "built-in table"].join(" \u00b7 ");
+    const ff = $("t-faults");
+    ff.textContent = t.faults.length ? t.faults.join(", ") : "none";
+    ff.className = t.tripped ? "bad" : (t.faults.length ? "warn" : "");
     $("tlm-bits").textContent = P.bits(raw);
     push(hist.speed, v); push(hist.pitch, t.pitch); push(hist.obst, t.obstacle == null ? NaN : t.obstacle);
   }
@@ -135,16 +139,18 @@
       const map = P.decodeConfig(u8);
       if (map && retained) { config = map; renderConfig(); }   // broker copy is the source of truth
     } else if (sub === "config/get") {
-      if (u8.length === 1 && u8[0] === P.T.CFG_GET) {
+      if (u8.length === 0) {
         logEvent("car asked for the barcode table");
         if (Object.values(config).some((v) => v != null)) sendConfig();
       }
     } else if (sub === "config/ack") {
-      const m = P.decodeAck(u8);
-      if (m !== null) {
+      const ack = P.decodeAck(u8);
+      if (ack !== null) {
+        const m = ack.mask;
         ackMask = m;
-        const want = new DataView(P.encodeConfig(config).buffer).getUint32(1, true);
-        $("cfg-state").textContent = m === want ? "car confirmed all " + popcount(m) + " letters"
+        const want = P.configMask(P.encodeConfig(config));
+        $("cfg-state").textContent = !ack.fromMqtt ? "car is using its built-in table"
+          : m === want ? "car confirmed all " + popcount(m) + " letters"
           : "car has " + popcount(m) + " letters; differs from this page";
         logEvent("car confirmed table (" + popcount(m) + " letters)");
         renderConfig();

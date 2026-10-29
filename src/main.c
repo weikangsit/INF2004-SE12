@@ -139,7 +139,7 @@ EXPORT INT usermain(void)
     g_motion_evt_q = make_mbf((INT)sizeof(motion_evt_t),   8);
     g_obstacle_q   = make_mbf((INT)sizeof(obstacle_msg_t), 4);
     g_scan_req_q   = make_mbf((INT)sizeof(scan_req_t),     2);
-    g_remote_cmd_q = make_mbf((INT)sizeof(remote_cmd_t),   4);
+    g_remote_cmd_q = make_mbf((INT)sizeof(uint8_t),        4);  /* 1-byte cmd */
     g_telemetry_q  = make_mbf((INT)sizeof(telem_msg_t),    16);
     g_hb_flg       = make_flg();
     g_evt_flg      = make_flg();
@@ -149,6 +149,7 @@ EXPORT INT usermain(void)
     cm.mtxatr = TA_INHERIT;
     g_state_mtx = tk_cre_mtx(&cm);
 
+    fault_init();
     barcode_map_init();
     comms_init();
     hal_isr_init();     /* after the event flag exists - the ISR uses it */

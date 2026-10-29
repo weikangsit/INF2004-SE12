@@ -12,7 +12,10 @@
 #include <tk/tkernel.h>
 
 #include "car_config.h"
+#include "comms.h"        /* comms_is_online()         */
+#include "fault.h"        /* fault_code_t, fault mask  */
 #include "proto.h"
+#include "telemetry.h"    /* telemetry_post_event()    */
 
 /* ------------------------------------------------------------------ */
 /* Heartbeat bits in hb_flg - one per supervised task                  */
@@ -24,9 +27,13 @@
 #define HB_NAV       (1U << 4)
 #define HB_COMMS     (1U << 5)   /* unused: radio task is template-owned */
 #define HB_TELEM     (1U << 6)
-/* Supervised by the Safety Monitor. Comms is not: WiFi loss must never
- * stop the car (NFR7), and its task belongs to the template.          */
-#define HB_ALL       (0x7FU & ~HB_COMMS)
+/* Supervised by the Safety Monitor. A missed HB_TRIP deadline brakes the
+ * car. Telemetry is only a warning (FC_TELEM_LATE), and Comms is not
+ * supervised at all: network trouble must never stop the car (NFR7,
+ * Tribunal 1). The radio task belongs to the template.                */
+#define HB_TRIP      (HB_LINE | HB_MOTION | HB_IMU | HB_US | HB_NAV)
+#define HB_WARN      (HB_TELEM)
+#define HB_ALL       (HB_TRIP | HB_WARN)
 
 /* Bits in evt_flg (ISR -> task signals and safety events)              */
 #define EVT_BARCODE_EDGE   (1U << 0)  /* ISR: barcode edge stored        */
@@ -132,10 +139,11 @@ typedef enum
     RCMD_MOTOR_TEST    /* bench test: each wheel alone, open loop */
 } remote_cmd_t;
 
-/* Binary event frame (proto.h EVENT), queued on telemetry_q */
+/* Packed event frame (proto.h EVENT, 1..4 bytes), queued on telemetry_q.
+ * Messages are sent with their real length; this is the largest. */
 typedef struct
 {
-    uint8_t frame[PROTO_EVENT_LEN];
+    uint8_t frame[PROTO_EVENT_MAX_LEN];
 } telem_msg_t;
 
 /* ------------------------------------------------------------------ */
@@ -191,7 +199,6 @@ motion_state_t *state_raw(void);          /* only between lock/unlock */
 uint32_t now_ms(void);
 void     period_wait(uint64_t *p_next_us, uint32_t period_ms);
 void     heartbeat(uint32_t bit);
-void     telem_event(proto_event_t kind, uint8_t code, int16_t v1, int16_t v2);
 
 /* Task entry points */
 void line_barcode_task(INT stacd, void *exinf);
@@ -208,10 +215,6 @@ void moveBackward(float dist_m);
 void turnLeft(float angle_deg, bool end_on_line);
 void turnRight(float angle_deg, bool end_on_line);
 void stop(void);
-
-/* Comms entry used by the telemetry publisher: binary payload, copied */
-bool comms_publish(const char *p_subtopic, const uint8_t *p_data, uint32_t len);
-bool comms_is_online(void);
 
 /* Safety latch query, used by Motion Control and Nav */
 bool safety_is_latched(void);

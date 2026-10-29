@@ -26,7 +26,7 @@
 #define BARCODE_STRAIGHT_M   (0.10f)
 #define REVERSE_RETRY_M      (0.10f)
 #ifndef REQUIRE_WIFI_AT_INIT
-#define REQUIRE_WIFI_AT_INIT (1)
+#define REQUIRE_WIFI_AT_INIT (0)   /* built-in A-D table: WiFi optional */
 #endif
 
 typedef struct
@@ -80,7 +80,7 @@ static void enter(nav_state_t s, const char *p_reason)
             hal_led_set(comms_is_online() ? LED_GREEN : LED_AMBER);
             break;
     }
-    telem_event(EV_STATE, (uint8_t)s, 0, 0);
+    telemetry_post_event(EV_STATE, (uint8_t)s, 0, 0);
 }
 
 static void cruise(void)
@@ -92,7 +92,7 @@ static void fault(fault_code_t code)
 {
     stop();
     enter(NAV_FAULT, "fault");
-    telem_event(EV_FAULT, (uint8_t)code, 0, 0);
+    telemetry_post_event(EV_FAULT, (uint8_t)code, 0, 0);
 }
 
 /* Turn by `deg` toward `left`. */
@@ -130,7 +130,8 @@ void nav_fsm_task(INT stacd, void *exinf)
         bar_cmd_t      bar;
         motion_evt_t   mev;
         obstacle_msg_t obs;
-        remote_cmd_t   rc;
+        remote_cmd_t   rc = RCMD_STOP;
+        uint8_t        rc_byte = 0U;
         UINT           lev = 0U;
         bool           have_bar;
         bool           have_mev;
@@ -147,7 +148,11 @@ void nav_fsm_task(INT stacd, void *exinf)
         have_bar = (tk_rcv_mbf(g_bar_cmd_q, &bar, TMO_POL) > 0);
         have_mev = (tk_rcv_mbf(g_motion_evt_q, &mev, TMO_POL) > 0);
         have_obs = (tk_rcv_mbf(g_obstacle_q, &obs, TMO_POL) > 0);
-        have_rc  = (tk_rcv_mbf(g_remote_cmd_q, &rc, TMO_POL) > 0);
+        have_rc  = (tk_rcv_mbf(g_remote_cmd_q, &rc_byte, TMO_POL) > 0);
+        if (have_rc)
+        {
+            rc = (remote_cmd_t)rc_byte;   /* comms only queues valid 0..5 */
+        }
         (void)tk_wai_flg(g_line_evt_flg, 0xFFFFU, TWF_ORW | TWF_CLR, &lev, TMO_POL);
 
         if (have_mev && (MEVT_DONE == mev.id))
@@ -187,7 +192,7 @@ void nav_fsm_task(INT stacd, void *exinf)
                 stop();
                 enter(NAV_MISSION_DONE, "finish");
                 state_read(&st);
-                telem_event(EV_SUMMARY, 0U, (int16_t)(st.hump_peak_mm * 10.0f),
+                telemetry_post_event(EV_SUMMARY, 0U, (int16_t)(st.hump_peak_mm * 10.0f),
                             (int16_t)(st.dist_m * 100.0f));
                 continue;
             }
@@ -278,10 +283,10 @@ void nav_fsm_task(INT stacd, void *exinf)
                 }
                 else if ((NAV_LINE_FOLLOW == g_state) && have_bar)
                 {
-                    barcode_action_t act = barcode_map_get(bar);
+                    barcode_map_action_t act = barcode_map_get(bar);
 
                     /* v1 = wire action code 0..3, -1 = letter not configured */
-                    telem_event(EV_BARCODE, (uint8_t)bar, (int16_t)((int16_t)act - 1), 0);
+                    telemetry_post_event(EV_BARCODE, (uint8_t)bar, (int16_t)((int16_t)act - 1), 0);
 
                     switch (act)
                     {
@@ -430,7 +435,7 @@ void nav_fsm_task(INT stacd, void *exinf)
                 break;
 
             default:
-                fault(FC_NONE);
+                fault(FC_SOFTWARE);
                 break;
         }
     }

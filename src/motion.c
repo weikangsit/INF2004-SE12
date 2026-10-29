@@ -340,7 +340,7 @@ void motion_task(INT stacd, void *exinf)
                     float enc_turn = frac * cmd.angle;
                     if (fabsf(imu_turn - enc_turn) > TURN_XCHECK_DEG)
                     {
-                        telem_event(EV_TURN_XCHECK, 0U, (int16_t)enc_turn, (int16_t)imu_turn);
+                        telemetry_post_event(EV_TURN_XCHECK, 0U, (int16_t)enc_turn, (int16_t)imu_turn);
                     }
                 }
                 break;
@@ -364,7 +364,7 @@ void motion_task(INT stacd, void *exinf)
              * Each phase reports the raw counts of both encoders. */
             if ((t - cmd_start_ms) >= MOTOR_TEST_MS)
             {
-                telem_event(EV_MOTOR_TEST, (uint8_t)(test_phase + 1U),
+                telemetry_post_event(EV_MOTOR_TEST, (uint8_t)(test_phase + 1U),
                             (int16_t)(cl - cal_l0), (int16_t)(cr - cal_r0));
                 hal_motor_brake();
                 if (test_phase < 3U)
@@ -418,7 +418,7 @@ void motion_task(INT stacd, void *exinf)
                     /* Equal forward drive made the car rotate: one motor is
                      * wired backwards (fix *_FWD_ON_A). Keep the old signs. */
                     ms = MS_FAULT;
-                    telem_event(EV_ENC_CAL, 4U, (int16_t)spin, 0);
+                    telemetry_post_event(EV_ENC_CAL, 4U, (int16_t)spin, 0);
                     post_evt(MEVT_STALL, 0.0f);
                 }
                 else
@@ -426,7 +426,7 @@ void motion_task(INT stacd, void *exinf)
                     g_sign_l = (raw_l > 0) ? 1 : -1;
                     g_sign_r = (raw_r > 0) ? 1 : -1;
                     ms = MS_STOPPED;
-                    telem_event(EV_ENC_CAL, 0U, (int16_t)g_sign_l, (int16_t)g_sign_r);
+                    telemetry_post_event(EV_ENC_CAL, 0U, (int16_t)g_sign_l, (int16_t)g_sign_r);
                     post_evt(MEVT_DONE, 0.0f);
                 }
             }
@@ -439,7 +439,7 @@ void motion_task(INT stacd, void *exinf)
                 duty_l = 0.0f;
                 duty_r = 0.0f;
                 ms = MS_FAULT;
-                telem_event(EV_ENC_CAL, silent, (int16_t)raw_l, (int16_t)raw_r);
+                telemetry_post_event(EV_ENC_CAL, silent, (int16_t)raw_l, (int16_t)raw_r);
                 post_evt(MEVT_STALL, 0.0f);
             }
             else
@@ -486,7 +486,7 @@ void motion_task(INT stacd, void *exinf)
                 duty_r = 0.0f;
                 ms = MS_FAULT;
                 post_evt(MEVT_STALL, 0.0f);
-                telem_event(EV_FAULT, (uint8_t)FC_STALL, 0, 0);
+                telemetry_post_event(EV_FAULT, (uint8_t)FC_STALL, 0, 0);
             }
             else
             {

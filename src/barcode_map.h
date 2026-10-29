@@ -1,7 +1,11 @@
-/**
- * @file    barcode_map.h
- * @brief   Letter -> action table for decoded Code 39 barcodes (A-Z),
- *          loaded from the binary CONFIG frame (see proto.h).
+/** @file    barcode_map.h
+ *  @brief   Barcode letter -> action table for the letters A-D.
+ *
+ *  The whole table is one 16-bit word (see the PROTO_CFG_* layout in
+ *  proto.h, plus a "received over MQTT" bit), so a reader always sees a
+ *  complete table. Built-in defaults follow Week 6 FR2 (A left, B right,
+ *  C straight, D U-turn), so the car can run without WiFi. A table
+ *  received over MQTT replaces the defaults.
  */
 #ifndef BARCODE_MAP_H
 #define BARCODE_MAP_H
@@ -16,16 +20,14 @@ typedef enum
     BA_LEFT,         /* wire code 01 */
     BA_RIGHT,        /* wire code 10 */
     BA_UTURN         /* wire code 11 */
-} barcode_action_t;
+} barcode_map_action_t;
 
-void             barcode_map_init(void);
-barcode_action_t barcode_map_get(char letter);
-
-/* Apply a 12-byte CONFIG frame. Returns letters set, 0 if malformed.
- * The frame replaces the whole table (unset letters become BA_NONE).  */
-uint32_t         barcode_map_apply(const uint8_t *p_frame, uint32_t len);
-
-uint32_t         barcode_map_mask(void);     /* bit n = 'A'+n set */
-bool             barcode_map_is_loaded(void);
+void                 barcode_map_init (void);
+barcode_map_action_t barcode_map_get (char letter);
+void                 barcode_map_apply (uint16_t table);
+uint16_t             barcode_map_table (void);
+bool                 barcode_map_is_loaded (void);
 
 #endif /* BARCODE_MAP_H */
+
+/*** end of file ***/
