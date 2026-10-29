@@ -130,16 +130,28 @@
     if (state === "online") mqtt.subscribe(ROOT + "/#");   // retained table arrives first
   };
 
+  // A frame this page cannot decode almost always means the car runs a
+  // different firmware version (e.g. 32-byte telemetry from before the
+  // packed protocol). Say so once per topic instead of dropping it silently.
+  const badFrames = new Set();
+  let badMsg = "";
+  function badFrame(sub, u8, expected) {
+    const msg = sub + " frame is " + u8.length + " bytes, this page expects " + expected +
+                " - car firmware and web app are different versions (rebuild and flash the car)";
+    badMsg = "(" + msg + ")";
+    if (!badFrames.has(sub)) { badFrames.add(sub); logEvent(msg, true); }
+  }
+
   mqtt.onmessage = (topic, u8, retained) => {
     const sub = topic.slice(ROOT.length + 1);
     if (sub === "telemetry") {
       const t = P.decodeTelem(u8);
-      if (t) showTelem(t, u8);
+      if (t) showTelem(t, u8); else badFrame(sub, u8, 18);
     } else if (sub === "event") {
       const e = P.decodeEvent(u8);
-      if (e) logEvent(e.text, e.fault);
+      if (e) logEvent(e.text, e.fault); else badFrame(sub, u8, "1-4");
     } else if (sub === "heartbeat") {
-      if (P.decodeHb(u8) !== null) lastHb = Date.now();
+      if (P.decodeHb(u8) !== null) lastHb = Date.now(); else badFrame(sub, u8, 1);
     } else if (sub === "config/barcode") {
       const map = P.decodeConfig(u8);
       if (map && retained) { config = map; renderConfig(); }   // broker copy is the source of truth
@@ -190,7 +202,7 @@
     const age = Date.now() - lastHb, p = $("car-pill");
     p.className = "pill " + (age < 3000 ? "on" : "off");
     p.textContent = age < 3000 ? "car online" : "car offline";
-    $("tlm-age").textContent = lastTlm ? "(" + ((Date.now() - lastTlm) / 1000).toFixed(1) + " s ago)" : "";
+    $("tlm-age").textContent = lastTlm ? "(" + ((Date.now() - lastTlm) / 1000).toFixed(1) + " s ago)" : badMsg;
     chart("c-speed", hist.speed, "#3b9eff");
     chart("c-pitch", hist.pitch, "#d29922");
     chart("c-obst", hist.obst, "#3fb950");
