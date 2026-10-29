@@ -274,8 +274,15 @@ void motion_task(INT stacd, void *exinf)
 
                 if (cmd.follow_line && fresh)
                 {
-                    /* pos -1: line under left sensor -> slow left wheel */
-                    float steer = (float)line.pos * K_LINE_STEER;
+                    /* Steer TOWARD the sensor that sees black (LINE_STEER_DIR
+                     * = +1), and slow down while correcting:
+                     *   pos -1 (left black)  -> slow left wheel:  steer left
+                     *   pos +1 (right black) -> slow right wheel: steer right */
+                    float steer = (float)(LINE_STEER_DIR * line.pos) * K_LINE_STEER;
+                    if (0 != line.pos)
+                    {
+                        v = fminf(v, SPEED_STEER_MPS);
+                    }
                     tgt_l = v + steer;
                     tgt_r = v - steer;
                 }
@@ -476,17 +483,29 @@ void motion_task(INT stacd, void *exinf)
 
             if (edge_l < cmd_start_ms) { edge_l = cmd_start_ms; }
             if (edge_r < cmd_start_ms) { edge_r = cmd_start_ms; }
+            /* The ISR can stamp an edge AFTER t was sampled at the top of
+             * this loop, so edge may be t+1. Unsigned (t - edge) would then
+             * wrap to ~4e9 ms and look like a 300 ms stall: clamp it.     */
+            if ((int32_t)(t - edge_l) < 0) { edge_l = t; }
+            if ((int32_t)(t - edge_r) < 0) { edge_r = t; }
 
             if (((fabsf(duty_l) > STALL_MIN_DUTY) && ((t - edge_l) > STALL_TIMEOUT_MS)) ||
                 ((fabsf(duty_r) > STALL_MIN_DUTY) && ((t - edge_r) > STALL_TIMEOUT_MS)) ||
                 ((0U != cmd_limit_ms) && ((t - cmd_start_ms) > cmd_limit_ms)))
             {
+                /* v1 bits: 1 = left wheel no edges, 2 = right wheel no
+                 * edges, 4 = command time limit; v2 = motion state.   */
+                uint16_t why = (uint16_t)(
+                    (((fabsf(duty_l) > STALL_MIN_DUTY) && ((t - edge_l) > STALL_TIMEOUT_MS)) ? 1U : 0U) |
+                    (((fabsf(duty_r) > STALL_MIN_DUTY) && ((t - edge_r) > STALL_TIMEOUT_MS)) ? 2U : 0U) |
+                    (((0U != cmd_limit_ms) && ((t - cmd_start_ms) > cmd_limit_ms)) ? 4U : 0U));
+
                 hal_motor_brake();
                 duty_l = 0.0f;
                 duty_r = 0.0f;
-                ms = MS_FAULT;
                 post_evt(MEVT_STALL, 0.0f);
-                telemetry_post_event(EV_FAULT, (uint8_t)FC_STALL, 0, 0);
+                telemetry_post_event(EV_FAULT, (uint8_t)FC_STALL, (int16_t)why, (int16_t)ms);
+                ms = MS_FAULT;
             }
             else
             {

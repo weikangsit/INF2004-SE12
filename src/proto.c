@@ -76,7 +76,7 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
     { 0U, { { 0U, false } } },                                  /* BARCODE */
     { 1U, { { 8U, false } } },                                  /* HUMP    */
     { 3U, { { 8U, false }, { 9U, false }, { 7U, false } } },    /* OBSTACLE*/
-    { 2U, { { 4U, false }, { 4U, false } } },                   /* FAULT   */
+    { 3U, { { 4U, false }, { 4U, false }, { 3U, false } } },    /* FAULT   */
     { 2U, { { 9U, false }, { 9U, false } } },                   /* XCHECK  */
     { 2U, { { 8U, false }, { 14U, true } } },                   /* SUMMARY */
     { 3U, { { 3U, false }, { 9U, true }, { 9U, true } } },      /* ENC_CAL */

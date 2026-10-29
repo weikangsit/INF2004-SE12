@@ -68,7 +68,12 @@
     $("t-motion").textContent = t.motion;
     $("t-dist").textContent = t.distance.toFixed(2) + " m";
     $("t-duty").textContent = t.dutyL + "% / " + t.dutyR + "%";
-    $("t-line").textContent = "L " + (t.lineLeft ? "black" : "white") + " \u00b7 R " + (t.lineRight ? "black" : "white");
+    for (const [id, black] of [["t-ir-l", t.irLBlack], ["t-ir-r", t.irRBlack]]) {
+      const el = $(id);
+      el.textContent = black ? "BLACK" : "white";
+      el.classList.toggle("black", black);
+    }
+    $("t-line").textContent = t.linePos === -1 ? "left black \u2192 steer left (slow)" : t.linePos === 1 ? "right black \u2192 steer right (slow)" : t.lineSeen ? "junction (both black)" : "centred \u2192 straight";
     const table = t.cfgFromMqtt ? config : P.DEFAULT_TABLE;   // car's built-in table until one arrives
     $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(table[t.barcode]) : "\u2013";
     $("t-hump").textContent = t.humpPeak.toFixed(1) + " mm";

@@ -29,9 +29,6 @@
 #define RANGE_MAX_CM         (510.0f)  /* 511 is reserved for no echo    */
 #define RANGE_NO_ECHO_CM     (900.0f)  /* us_front_cm() reports 999      */
 #define SCALE_LIMIT          (32767.0f) /* keeps lroundf() in int16 range */
-#define LINE_POS_LEFT        (-1)      /* line_pos: line under left     */
-#define LINE_POS_CENTRE      (0)
-#define LINE_POS_RIGHT       (1)
 
 static void     live_faults_refresh (float32_t front_cm);
 static void     frame_fill (proto_telem_t * p_telem, float32_t front_cm);
@@ -224,9 +221,8 @@ frame_fill (proto_telem_t * p_telem, float32_t front_cm)
 /*!
  * @brief  The two digital line sensors as two bits (1 = black).
  *
- *  The Line task publishes pos (-1 / 0 / +1) and line_seen; together they
- *  give back both raw sensor levels:
- *  pos -1 left only, +1 right only, 0 + seen both, 0 + not seen neither.
+ *  The Line task stores the raw readings in ir_black in every state, in
+ *  the same bit order as the telemetry field (LINE_IR_* = PROTO_LINE_*).
  *
  * @param  p_state  Snapshot of the shared state record.
  * @return PROTO_LINE_LEFT / PROTO_LINE_RIGHT bits.
@@ -234,21 +230,21 @@ frame_fill (proto_telem_t * p_telem, float32_t front_cm)
 static uint8_t
 line_bits_get (motion_state_t const * p_state)
 {
-    bool const b_both = (LINE_POS_CENTRE == p_state->line_pos) &&
-                        (p_state->line_seen);
-    uint8_t    bits   = 0U;
+    uint32_t const raw  = p_state->ir_black;
+    uint32_t       bits = 0U;
 
-    if ((LINE_POS_LEFT == p_state->line_pos) || b_both)
+    if (0U != (raw & LINE_IR_LEFT))
     {
         bits |= PROTO_LINE_LEFT;
     }
 
-    if ((LINE_POS_RIGHT == p_state->line_pos) || b_both)
+    if (0U != (raw & LINE_IR_RIGHT))
     {
         bits |= PROTO_LINE_RIGHT;
     }
 
-    return (bits);
+    /* At most two bits are set, so the value fits a uint8_t. */
+    return ((uint8_t) bits);
 }
 
 /*!

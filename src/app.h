@@ -43,6 +43,11 @@
 #define EVT_ESTOP          (1U << 4)  /* Nav (remote) -> Safety          */
 #define EVT_OVERTILT       (1U << 5)  /* IMU -> Safety                   */
 
+/* Bits of motion_state_t.ir_black: raw digital line sensors, 1 = black.
+ * Same bit order as the telemetry line field (proto.h PROTO_LINE_*).   */
+#define LINE_IR_LEFT       (1U << 0)
+#define LINE_IR_RIGHT      (1U << 1)
+
 /* Bits in line_evt_flg (Line -> Nav)                                   */
 #define LEVT_JUNCTION      (1U << 0)
 #define LEVT_LOST          (1U << 1)
@@ -167,6 +172,7 @@ typedef struct
     /* written by Line / Barcode */
     int8_t  line_pos;
     bool    line_seen;
+    uint8_t ir_black;      /* raw line sensors, 2 bits: LINE_IR_*       */
     char    last_barcode;
     /* written by Navigation FSM */
     uint8_t sys_state;

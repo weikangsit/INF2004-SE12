@@ -166,6 +166,13 @@ void line_barcode_task(INT stacd, void *exinf)
         l  = ir_black(PIN_IR_L);
         rr = ir_black(PIN_IR_R);
 
+        /* raw sensor readings for telemetry, published in every state:
+         * one bit per sensor (Change Requirement 1)                      */
+        state_lock();
+        state_raw()->ir_black = (uint8_t)((l ? LINE_IR_LEFT : 0U) |
+                                          (rr ? LINE_IR_RIGHT : 0U));
+        state_unlock();
+
         if (g_cal_request)
         {
             g_cal_request = false;
@@ -176,6 +183,10 @@ void line_barcode_task(INT stacd, void *exinf)
         }
 
         /* ---------------- line region ---------------- */
+        /* Calibration only gates the power-on self-test (g_ready). The
+         * line position is computed and sent to Motion Control in EVERY
+         * state, so a missed or repeated calibration can never silently
+         * turn line following off.                                      */
         switch (ls)
         {
             case LS_CALIBRATE:
@@ -191,17 +202,27 @@ void line_barcode_task(INT stacd, void *exinf)
                 }
                 else if ((now_ms() - t_state_ms) > CAL_WINDOW_MS)
                 {
-                    (void)tk_set_flg(g_line_evt_flg, LEVT_SENSOR_FAIL);
-                    ls = LS_ERROR;     /* GP21 re-requests calibration */
+                    if (!g_ready)
+                    {
+                        (void)tk_set_flg(g_line_evt_flg, LEVT_SENSOR_FAIL);
+                    }
+                    ls = LS_FOLLOW;    /* keep following regardless */
                 }
                 break;
 
             case LS_FOLLOW:
-            {
+            case LS_IDLE:
+            case LS_ERROR:
+            default:
+                break;
+        }
+
+        {
                 /* The two sensors straddle the line:
                  *   both white  -> centred: drive straight ahead (pos 0)
-                 *   left black  -> line drifting left: steer left  (-1)
-                 *   right black -> line drifting right: steer right (+1)
+                 *   left black  -> pos -1, Motion steers LEFT (slower)
+                 *   right black -> pos +1, Motion steers RIGHT (slower)
+                 *   (direction set by LINE_STEER_DIR in car_config.h)
                  *   both black  -> junction                              */
                 line_pos_t msg;
 
@@ -232,13 +253,6 @@ void line_barcode_task(INT stacd, void *exinf)
                 state_raw()->line_pos  = msg.pos;
                 state_raw()->line_seen = msg.line_seen;
                 state_unlock();
-                break;
-            }
-
-            case LS_IDLE:
-            case LS_ERROR:
-            default:
-                break;
         }
 
         /* ---------------- barcode region ---------------- */

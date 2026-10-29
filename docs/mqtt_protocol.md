@@ -34,7 +34,7 @@ Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 |---|---|---|---|---|
 | 0-3 | state | 4 | no | nav state 0..8 (INIT, READY, LINE_FOLLOW, BARCODE_ACT, HUMP_REPORT, OBSTACLE_AVOID, LINE_REACQUIRE, MISSION_DONE, FAULT) |
 | 4-5 | motion class | 2 | no | 0 still, 1 moving, 2 turning, 3 hump |
-| 6-7 | line sensors | 2 | no | bit 0 left black, bit 1 right black |
+| 6-7 | line sensors | 2 | no | raw digital readings, bit 0 left black, bit 1 right black (`motion_state_t.ir_black`, updated every 5 ms in every line-task state) |
 | 8-10 | last barcode | 3 | no | bits 0-1 letter - 'A', bit 2 valid (0 = none) |
 | 11-26 | fault mask | 16 | no | bit n = `fault_code_t` n (below) |
 | 27-28 | status | 2 | no | bit 0 safety latched, bit 1 barcode table came over MQTT |
@@ -86,7 +86,7 @@ fixed per kind, and the decoder rejects any other length.
 | 2 | BARCODE | letter-'A' 2, valid 1, configured 1, action 2, edge count 6 | 2 |
 | 3 | HUMP | height 8 (0.5 mm) | 2 |
 | 4 | OBSTACLE | bearing 8 (deg), range 9 (cm, 511 = no echo), width 7 (cm) | 4 |
-| 5 | FAULT | fault code 4, detail 4 (missing heartbeat task) | 2 |
+| 5 | FAULT | fault code 4, detail 4, motion state 3. Detail: missing heartbeat task, or for a stall bit 0 left wheel silent, bit 1 right wheel silent, bit 2 time limit. Motion state (stall only): 1 straight, 2 reverse, 3 turn left, 4 turn right, 5 U-turn | 2 |
 | 6 | TURN_XCHECK | encoder turn 9 (deg), IMU turn 9 (deg) | 3 |
 | 7 | SUMMARY | hump peak 8 (0.5 mm), distance 14s (cm) | 4 |
 | 8 | ENC_CAL | result 3 (0 ok, bit0/bit1 encoder silent, 4 rotated), left 9s, right 9s | 4 |

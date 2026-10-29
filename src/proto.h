@@ -83,7 +83,9 @@ typedef enum
     EV_HUMP,         /* value1 = height x0.1 mm                           */
     EV_OBSTACLE,     /* code = bearing deg, value1 = range x0.1 cm,
                         value2 = width x0.1 cm                            */
-    EV_FAULT,        /* code = fault_code_t, value1 = detail              */
+    EV_FAULT,        /* code = fault_code_t, value1 = detail (stall: bit0
+                        left, bit1 right wheel silent, bit2 time limit;
+                        heartbeat: task bit), value2 = motion state 0..7 */
     EV_TURN_XCHECK,  /* value1 = encoder deg, value2 = IMU deg            */
     EV_SUMMARY,      /* value1 = hump peak x0.1 mm, value2 = distance cm  */
     EV_ENC_CAL,      /* code 0 ok, bit0/bit1 encoder silent, 4 = rotated;

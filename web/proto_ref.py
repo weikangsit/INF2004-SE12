@@ -24,7 +24,7 @@ EVENT_LAYOUT = {
                     ("action", 2, 0), ("edges", 6, 0)]),
     3: ("HUMP", [("height", 8, 0)]),
     4: ("OBSTACLE", [("bearing", 8, 0), ("range", 9, 0), ("width", 7, 0)]),
-    5: ("FAULT", [("code", 4, 0), ("detail", 4, 0)]),
+    5: ("FAULT", [("code", 4, 0), ("detail", 4, 0), ("state", 3, 0)]),
     6: ("TURN_XCHECK", [("encoder", 9, 0), ("imu", 9, 0)]),
     7: ("SUMMARY", [("hump", 8, 0), ("distance", 14, 1)]),
     8: ("ENC_CAL", [("result", 3, 0), ("left", 9, 1), ("right", 9, 1)]),

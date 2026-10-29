@@ -17,9 +17,11 @@ current representation until they make their own change.
 |---|---|---|---|
 | Nav state | 9 states (0..8) | 4 | unsigned field, telemetry bits 0-3 |
 | Motion class | 0..3 | 2 | unsigned field |
-| Line sensors | 2 x black/white | 2 | one bit per digital sensor |
+| Line sensors | 2 x black/white | 2 | one bit per digital sensor; also one 2-bit field (`ir_black`) in the shared state record instead of two `bool`s |
 | Last barcode | none, A..D | 3 | 2-bit letter + valid bit |
 | Faults | 16 conditions | 16 | one bit each in a shared mask (`fault.h`) |
+| Stall reason | left / right wheel, time limit | 3 | bits of the FAULT event detail field |
+| Stalled motion state | 5 driving states | 3 | FAULT event field |
 | Status | latched, table source | 2 | one bit each |
 | Wheel speed (x2) | +/-1.27 m/s, 1 cm/s | 8 | signed field. One encoder count per 10 ms is already 14 mm/s, so 1 cm/s steps lose nothing |
 | Motor duty (x2) | -100..100 % | 8 | signed field |

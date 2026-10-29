@@ -25,7 +25,7 @@
     2: ["BARCODE", [["symbol", 2, 0], ["valid", 1, 0], ["configured", 1, 0], ["action", 2, 0], ["edges", 6, 0]]],
     3: ["HUMP", [["height", 8, 0]]],
     4: ["OBSTACLE", [["bearing", 8, 0], ["range", 9, 0], ["width", 7, 0]]],
-    5: ["FAULT", [["code", 4, 0], ["detail", 4, 0]]],
+    5: ["FAULT", [["code", 4, 0], ["detail", 4, 0], ["state", 3, 0]]],
     6: ["TURN_XCHECK", [["encoder", 9, 0], ["imu", 9, 0]]],
     7: ["SUMMARY", [["hump", 8, 0], ["distance", 14, 1]]],
     8: ["ENC_CAL", [["result", 3, 0], ["left", 9, 1], ["right", 9, 1]]],
@@ -44,6 +44,12 @@
                   "reacquire failed", "self-test", "telemetry late", "software"];
   const WARNINGS = (1 << 4) | (1 << 14);   // WiFi loss, telemetry late: reported only
   const HB_TASKS = ["line", "motion", "imu", "ultrasonic", "nav", "comms", "telemetry"];
+  const FC_STALL = 0, FC_HEARTBEAT = 9;
+  // motion.c states that can stall (EV_FAULT stall: value2)
+  const MOTION_STATES = ["stopped", "driving straight", "reversing", "turning left", "turning right", "U-turning"];
+  // EV_FAULT stall detail bits (motion.c): which wheel had no encoder edges, or the time limit
+  const stallReason = (d) => [d & 1 ? "LEFT wheel stopped" : "", d & 2 ? "RIGHT wheel stopped" : "",
+                              d & 4 ? "time limit" : ""].filter(Boolean).join(", ");
   const CMDS = { start: 0, stop: 1, estop: 2, finish: 3, reset: 4, motor_test: 5 };
   const CMD_TAG = 0x40;
   const LETTERS = "ABCD";
@@ -109,7 +115,10 @@
     return {
       state: STATES[r.state] || "?" + r.state,
       motion: MOTION[r.motionClass],
-      lineLeft: !!(r.lineBits & LINE_LEFT), lineRight: !!(r.lineBits & LINE_RIGHT),
+      // raw digital line sensors (1 bit each) and what Line/Motion make of them
+      irLBlack: !!(r.lineBits & LINE_LEFT), irRBlack: !!(r.lineBits & LINE_RIGHT),
+      lineSeen: (r.lineBits & (LINE_LEFT | LINE_RIGHT)) !== 0,
+      linePos: r.lineBits === LINE_LEFT ? -1 : r.lineBits === LINE_RIGHT ? 1 : 0,
       barcode: r.barcode & BAR_VALID ? LETTERS[r.barcode & 3] : "",
       faultMask: r.faultMask, faults: faultNames(r.faultMask),
       tripped: (r.faultMask & ~WARNINGS) !== 0,
@@ -132,17 +141,19 @@
       case 2: return !f.valid ? "barcode unreadable or not A-D (" + f.edges + " edges)"
                 : "barcode " + LETTERS[f.symbol] + " -> " + (f.configured ? ACTIONS[f.action] : "not configured");
       case 3: return "hump height " + (f.height / 2).toFixed(1) + " mm";
-      case 4: return "obstacle at " + f.bearing + "°, " +
+      case 4: return "obstacle at " + f.bearing + "\u00b0, " +
                 (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
       case 5: return "FAULT: " + (FAULTS[f.code] || f.code) +
-                (f.code === 9 ? " (" + (HB_TASKS[f.detail] || f.detail) + ")" : "");
-      case 6: return "turn check: encoder " + f.encoder + "° vs IMU " + f.imu + "°";
+                (f.code === FC_HEARTBEAT ? " (" + (HB_TASKS[f.detail] || f.detail) + ")" : "") +
+                (f.code === FC_STALL && f.detail ? " (" + stallReason(f.detail) + " while " +
+                  (MOTION_STATES[f.state] || "state " + f.state) + ")" : "");
+      case 6: return "turn check: encoder " + f.encoder + "\u00b0 vs IMU " + f.imu + "\u00b0";
       case 7: return "run summary: hump peak " + (f.hump / 2).toFixed(1) + " mm, distance " +
                 (f.distance / 100).toFixed(2) + " m";
       case 8: return f.result === 0
                 ? "encoder self-test ok: left counts " + (f.left > 0 ? "+" : "-") + ", right counts " + (f.right > 0 ? "+" : "-")
                 : f.result === 4
-                ? "self-test FAILED: car turned " + f.left + "° when both wheels were driven forward - one motor is wired backwards (flip LEFT_FWD_ON_A or RIGHT_FWD_ON_A)"
+                ? "self-test FAILED: car turned " + f.left + "\u00b0 when both wheels were driven forward - one motor is wired backwards (flip LEFT_FWD_ON_A or RIGHT_FWD_ON_A)"
                 : "encoder self-test FAILED: " + ["", "left", "right", "both"][f.result & 3] +
                   " encoder silent (counts L " + f.left + ", R " + f.right + ")";
       case 9: {
