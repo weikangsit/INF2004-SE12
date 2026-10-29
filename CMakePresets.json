@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "pico",
+      "displayName": "Pico W (micro T-Kernel template)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
+      "cacheVariables": {
+        "CMAKE_MAKE_PROGRAM": "$env{USERPROFILE}/.pico-sdk/ninja/v1.13.2/ninja.exe",
+        "WIFI_SSID": "Kuro",
+        "MQTT_BROKER_IP": "172.20.10.6"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "pico", "configurePreset": "pico" }
+  ]
+}

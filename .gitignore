@@ -1,0 +1,3 @@
+build/
+web/retained.bin
+web/__pycache__/

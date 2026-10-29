@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Group 12 Robot Car - Control</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Group 12 Robot Car</h1>
+  <form id="conn" class="conn" autocomplete="off">
+    <label>Broker <input id="url" size="28" aria-label="Broker WebSocket URL"></label>
+    <label>Password <input id="pw" type="password" size="10" aria-label="Broker password"></label>
+    <button id="connect" type="submit">Connect</button>
+  </form>
+  <div class="status" role="status" aria-live="polite">
+    <span id="broker-pill" class="pill off">broker offline</span>
+    <span id="car-pill" class="pill off">car offline</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel" aria-labelledby="h-cmd">
+    <h2 id="h-cmd">Commands</h2>
+    <div class="row">
+      <button data-cmd="start">Start</button>
+      <button data-cmd="stop">Stop</button>
+      <button data-cmd="finish">Finish run</button>
+      <button data-cmd="reset">Reset fault</button>
+      <button data-cmd="motor_test" title="Left wheel alone for 1 s, then right wheel alone (wheels off the ground)">Motor test</button>
+      <button data-cmd="estop" class="danger">EMERGENCY STOP</button>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-cfg">
+    <h2 id="h-cfg">Barcode actions (A&ndash;Z)</h2>
+    <p class="hint">Choose what each letter makes the car do. Letters left as &ldquo;&mdash;&rdquo; are ignored
+      (the car keeps following the line). The table is sent as a 12-byte retained frame, so the car
+      also receives it when it reconnects.</p>
+    <div class="row">
+      <label>Fill all with
+        <select id="fill">
+          <option value="">&mdash;</option><option value="0">1. Straight</option><option value="1">2. Left</option>
+          <option value="2">3. Right</option><option value="3">4. U-turn</option>
+        </select></label>
+      <button id="fill-btn" type="button">Apply</button>
+      <button id="send-cfg" class="primary" type="button">Send to car</button>
+      <span id="cfg-state" class="muted" aria-live="polite"></span>
+    </div>
+    <div id="letters" class="letters"></div>
+    <div class="bits"><span class="muted">Frame:</span> <code id="cfg-bits"></code></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-tlm">
+    <h2 id="h-tlm">Live telemetry <span id="tlm-age" class="muted"></span></h2>
+    <div class="cards">
+      <div class="card big"><span>Speed</span><b id="t-speed">&ndash;</b><small id="t-speed-lr"></small></div>
+      <div class="card big"><span>Pitch</span><b id="t-pitch">&ndash;</b><small id="t-roll"></small></div>
+      <div class="card big"><span>Yaw (heading)</span><b id="t-yaw">&ndash;</b><small id="t-rate"></small></div>
+      <div class="card big"><span>Obstacle ahead</span><b id="t-obst">&ndash;</b>
+        <div class="meter" aria-hidden="true"><i id="t-obst-bar"></i></div></div>
+      <div class="card"><span>State</span><b id="t-state">&ndash;</b></div>
+      <div class="card"><span>Motion</span><b id="t-motion">&ndash;</b></div>
+      <div class="card"><span>Distance travelled</span><b id="t-dist">&ndash;</b></div>
+      <div class="card"><span>Motor duty L / R</span><b id="t-duty">&ndash;</b></div>
+      <div class="card"><span>Line</span><b id="t-line">&ndash;</b></div>
+      <div class="card"><span>Last barcode</span><b id="t-bc">&ndash;</b></div>
+      <div class="card"><span>Highest hump</span><b id="t-hump">&ndash;</b></div>
+      <div class="card"><span>Uptime</span><b id="t-up">&ndash;</b></div>
+      <div class="card"><span>Health</span><b id="t-flags">&ndash;</b></div>
+    </div>
+    <div class="charts">
+      <figure><figcaption>Speed (m/s)</figcaption><canvas id="c-speed" width="360" height="110"></canvas></figure>
+      <figure><figcaption>Pitch (&deg;)</figcaption><canvas id="c-pitch" width="360" height="110"></canvas></figure>
+      <figure><figcaption>Obstacle (cm)</figcaption><canvas id="c-obst" width="360" height="110"></canvas></figure>
+    </div>
+    <div class="bits"><span class="muted">Last telemetry frame:</span> <code id="tlm-bits"></code></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-log">
+    <h2 id="h-log">Events</h2>
+    <ol id="log" class="log" aria-live="polite"></ol>
+  </section>
+</main>
+
+<script src="proto.js"></script>
+<script src="mqtt.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
