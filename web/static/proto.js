@@ -54,6 +54,7 @@
     return {
       state: STATES[v.getUint8(1)] || "?" + v.getUint8(1),
       lineSeen: !!(flags & 1), safetyLatched: !!(flags & 2), imuOk: !!(flags & 4), cfgLoaded: !!(flags & 8),
+      irLBlack: !!(flags & 16), irRBlack: !!(flags & 32),
       motion: MOTION[v.getUint8(3)] || "?",
       speedL: v.getInt16(4, true) / 1000, speedR: v.getInt16(6, true) / 1000,        // m/s
       pitch: v.getInt16(8, true) / 10, roll: v.getInt16(10, true) / 10,              // deg
@@ -79,7 +80,9 @@
                  : "barcode " + String.fromCharCode(code) + " -> " + (v1 < 0 ? "not configured" : ACTIONS[v1]); break;
       case 3: text = "hump height " + (v1 / 10).toFixed(1) + " mm"; break;
       case 4: text = "obstacle at " + code + "\u00b0, " + (v1 / 10).toFixed(1) + " cm, width " + (v2 / 10).toFixed(1) + " cm"; break;
-      case 5: text = "FAULT: " + (FAULTS[code] || code) + (code === 6 ? " (" + (HB_TASKS[v1] || v1) + ")" : ""); break;
+      case 5: text = "FAULT: " + (FAULTS[code] || code) + (code === 6 ? " (" + (HB_TASKS[v1] || v1) + ")" : "")
+        + (code === 1 && v1 ? " (" + [v1 & 1 ? "LEFT wheel stopped" : "", v1 & 2 ? "RIGHT wheel stopped" : "", v1 & 4 ? "time limit" : ""].filter(Boolean).join(", ")
+           + " while " + (["stopped", "driving straight", "reversing", "turning left", "turning right", "U-turning"][v2] || "state " + v2) + ")" : ""); break;
       case 6: text = "turn check: encoder " + v1 + "\u00b0 vs IMU " + v2 + "\u00b0"; break;
       case 7: text = "run summary: hump peak " + (v1 / 10).toFixed(1) + " mm, distance " + (v2 / 100).toFixed(2) + " m"; break;
       case 8: text = code === 0

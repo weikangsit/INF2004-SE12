@@ -16,7 +16,9 @@
 /* ------------------------------------------------------------------ */
 #define PIN_ENC_R_A          (0U)   /* GROVE 1 - right encoder A       */
 #define PIN_ENC_R_B          (1U)   /* GROVE 1 - right encoder B       */
-#define PIN_IR_R             (2U)   /* GROVE 2 - right line sensor D0  */
+#define PIN_IR_R             (3U)   /* GROVE 2 - right line sensor D0
+                                       (2nd signal wire; GP2 read
+                                       constant white, so D0 is on GP3) */
 #define PIN_US_TRIG          (4U)   /* GROVE 3 - HC-SR04 Trig          */
 #define PIN_US_ECHO          (5U)   /* GROVE 3 - HC-SR04 Echo          */
 #define PIN_IR_BC            (6U)   /* GROVE 5 - barcode sensor D0     */
@@ -33,7 +35,7 @@
 #define PIN_BTN_CAL          (21U)  /* On-board button, active low     */
 #define PIN_IR_L             (27U)  /* GROVE 6 - left line sensor D0   */
 #define PIN_ENC_L_B          (28U)  /* GROVE 7 - left encoder B        */
-/* GP3 and GP26 are deliberately left unconnected (shared Grove pins). */
+/* GP2 and GP26 are deliberately left unconnected (shared Grove pins). */
 
 /* LM393 D0 level that means "black" (TCRT5000 modules output HIGH when
  * no IR is reflected). TUNE: flip if your modules are inverted.       */
@@ -98,12 +100,23 @@
 #define PID_KD               (0.00f)
 #define PID_KFF              (2.20f)   /* feed-forward duty per m/s     */
 
-#define SPEED_CRUISE_MPS     (0.30f)   /* 30 cm/s (NFR1)                */
-#define SPEED_HUMP_MPS       (0.15f)
-#define SPEED_SEARCH_MPS     (0.12f)
-#define SPEED_TURN_MPS       (0.15f)
+/* Overall speed scale: every driving speed below (and the steering
+ * differential) is multiplied by this. 1.0 = original speeds.      */
+#define SPEED_SCALE          (0.75f)
 
-#define K_LINE_STEER         (0.10f)   /* m/s differential per line step */
+#define SPEED_CRUISE_MPS     (0.30f * SPEED_SCALE)   /* 22.5 cm/s     */
+#define SPEED_HUMP_MPS       (0.15f * SPEED_SCALE)
+#define SPEED_SEARCH_MPS     (0.12f * SPEED_SCALE)
+#define SPEED_TURN_MPS       (0.15f * SPEED_SCALE)
+
+#define K_LINE_STEER         (0.10f * SPEED_SCALE)   /* m/s differential per line step */
+/* +1: steer TOWARD the sensor that sees black (left black -> steer
+ *     left, right black -> steer right).
+ * -1: steer AWAY from it.                                            */
+#define LINE_STEER_DIR       (1)
+/* Forward speed while a line sensor sees black (correcting). Inner
+ * wheel runs at this minus K_LINE_STEER, outer wheel plus it.        */
+#define SPEED_STEER_MPS      (0.18f * SPEED_SCALE)
 #define K_DIST_EQ            (2.00f)   /* m/s per m of wheel mismatch    */
 #define K_HEADING            (0.004f)  /* m/s per degree heading error   */
 #define TURN_EARLY_FRACTION  (0.60f)   /* new branch accepted after 60 % */

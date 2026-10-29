@@ -76,6 +76,9 @@ static inline uint8_t enc_state(uint32_t pin_a, uint32_t pin_b)
 uint32_t hal_gpio_irq_service(void)
 {
     uint32_t now_us = time_us_32();
+    /* same clock as now_ms() (64-bit us / 1000), so the encoder edge
+     * times don't jump when the 32-bit us counter wraps after 71 min */
+    uint32_t now_ms_isr = (uint32_t)(time_us_64() / 1000U);
     uint32_t sig = 0U;
     uint32_t ev;
     uint8_t  s;
@@ -90,7 +93,7 @@ uint32_t hal_gpio_irq_service(void)
         s = enc_state(PIN_ENC_R_A, PIN_ENC_R_B);
         g_enc_cnt_r += g_quad_table[(g_enc_prev_r << 2) | s];
         g_enc_prev_r = s;
-        g_enc_edge_ms_r = now_us / 1000U;
+        g_enc_edge_ms_r = now_ms_isr;
     }
 
     /* --- left encoder (GP7 / GP28) --- */
@@ -103,7 +106,7 @@ uint32_t hal_gpio_irq_service(void)
         s = enc_state(PIN_ENC_L_A, PIN_ENC_L_B);
         g_enc_cnt_l += g_quad_table[(g_enc_prev_l << 2) | s];
         g_enc_prev_l = s;
-        g_enc_edge_ms_l = now_us / 1000U;
+        g_enc_edge_ms_l = now_ms_isr;
     }
 
     /* --- barcode sensor (GP6) --- */

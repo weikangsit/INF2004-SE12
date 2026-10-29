@@ -68,7 +68,9 @@ void telemetry_task(INT stacd, void *exinf)
         f.flags        = (uint8_t)((st.line_seen ? TF_LINE_SEEN : 0U) |
                                    (safety_is_latched() ? TF_SAFETY_LATCHED : 0U) |
                                    (imu_is_ok() ? TF_IMU_OK : 0U) |
-                                   (barcode_map_is_loaded() ? TF_CFG_LOADED : 0U));
+                                   (barcode_map_is_loaded() ? TF_CFG_LOADED : 0U) |
+                                   (st.ir_l_black ? TF_IR_L_BLACK : 0U) |
+                                   (st.ir_r_black ? TF_IR_R_BLACK : 0U));
         f.motion_class = st.motion_class;
         f.speed_l      = to_i16(st.speed_l_mps * 1000.0f);
         f.speed_r      = to_i16(st.speed_r_mps * 1000.0f);

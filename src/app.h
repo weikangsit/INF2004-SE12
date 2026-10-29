@@ -159,6 +159,8 @@ typedef struct
     /* written by Line / Barcode */
     int8_t  line_pos;
     bool    line_seen;
+    bool    ir_l_black;    /* raw left line sensor: true = black        */
+    bool    ir_r_black;    /* raw right line sensor: true = black       */
     char    last_barcode;
     /* written by Navigation FSM */
     uint8_t sys_state;

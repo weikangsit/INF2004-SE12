@@ -68,7 +68,12 @@
     $("t-motion").textContent = t.motion;
     $("t-dist").textContent = t.distance.toFixed(2) + " m";
     $("t-duty").textContent = t.dutyL + "% / " + t.dutyR + "%";
-    $("t-line").textContent = !t.lineSeen && t.linePos === 0 ? "centred / none" : ["left", "centre", "right"][t.linePos + 1] + (t.lineSeen ? "" : " (searching)");
+    for (const [id, black] of [["t-ir-l", t.irLBlack], ["t-ir-r", t.irRBlack]]) {
+      const el = $(id);
+      el.textContent = black ? "BLACK" : "white";
+      el.classList.toggle("black", black);
+    }
+    $("t-line").textContent = t.linePos === -1 ? "left black \u2192 steer left (slow)" : t.linePos === 1 ? "right black \u2192 steer right (slow)" : t.lineSeen ? "junction (both black)" : "centred \u2192 straight";
     $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(config[t.barcode]) : "\u2013";
     $("t-hump").textContent = t.humpPeak.toFixed(1) + " mm";
     $("t-up").textContent = fmtTime(t.uptime);

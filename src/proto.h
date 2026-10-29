@@ -54,6 +54,8 @@
 #define TF_SAFETY_LATCHED   (1U << 1)
 #define TF_IMU_OK           (1U << 2)
 #define TF_CFG_LOADED       (1U << 3)
+#define TF_IR_L_BLACK       (1U << 4)   /* left line sensor sees black  */
+#define TF_IR_R_BLACK       (1U << 5)   /* right line sensor sees black */
 
 /* EVENT kinds */
 typedef enum
