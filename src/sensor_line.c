@@ -234,6 +234,13 @@ sensors_read (void)
 
 /*!
  * @brief  Hold each sensor's black reading for LINE_BLACK_HOLD_MS.
+ *
+ *  A hold ends as soon as the other sensor sees black: when the car
+ *  crosses back onto the line at an angle, the line passes from one
+ *  sensor to the other, and a held first sensor would make that look
+ *  like a junction (both black, drive straight over the line). A real
+ *  junction is still both black in the raw reading.
+ *
  * @param  raw     This raw reading, VEHICLE_IR_* bits.
  * @param  now_ms  Current time.
  * @return Held reading, VEHICLE_IR_* bits.
@@ -247,10 +254,20 @@ black_hold (uint8_t raw, uint32_t now_ms)
 
     for (idx = 0U; idx < 2U; idx++)
     {
+        uint8_t const other = masks[1U - idx];
+
         if (0U != (raw & masks[idx]))
         {
             g_hold[idx].last_black_ms = now_ms;
             g_hold[idx].b_seen        = true;
+        }
+        else if (0U != (raw & other))
+        {
+            g_hold[idx].b_seen = false;           /* line moved across    */
+        }
+        else
+        {
+            /* Both white: keep the hold running. */
         }
 
         if (g_hold[idx].b_seen &&
