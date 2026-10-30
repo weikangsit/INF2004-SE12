@@ -31,10 +31,12 @@ EVENT_LAYOUT = {
     9: ("MOTOR_TEST", [("phase", 2, 0), ("left", 13, 1), ("right", 13, 1)]),
     10: ("BOOT", [("hours", 5, 0), ("minutes", 6, 0), ("seconds", 6, 0)]),
     11: ("MAG_CAL", [("result", 1, 0)]),
+    12: ("DEADBAND", [("wheel", 1, 0), ("deadband", 7, 0), ("kff", 8, 0)]),
 }
 EVENT_KIND_BITS = 4
 LETTERS = "ABCD"
-CMDS = {"start": 0, "stop": 1, "estop": 2, "finish": 3, "reset": 4, "motor_test": 5}
+CMDS = {"start": 0, "stop": 1, "estop": 2, "finish": 3, "reset": 4, "motor_test": 5,
+        "deadband_test": 6}
 CMD_TAG = 0x40
 
 

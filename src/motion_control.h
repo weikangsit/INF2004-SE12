@@ -48,6 +48,7 @@ uint8_t motion_control_turn (bool b_left, uint32_t speed_cms,
 uint8_t motion_control_uturn (void);
 uint8_t motion_control_self_test (void);
 uint8_t motion_control_motor_test (void);
+uint8_t motion_control_deadband_test (void);
 void    motion_control_stop (void);
 
 bool    motion_control_done_take (motion_done_t * p_done);

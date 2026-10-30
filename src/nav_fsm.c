@@ -344,12 +344,22 @@ global_transitions (nav_in_t const * p_in)
         motion_control_stop();
         enter(NAV_READY);
     }
-    else if (p_in->b_have_rc && (PROTO_CMD_MOTOR_TEST == p_in->remote) &&
+    else if (p_in->b_have_rc &&
+             ((PROTO_CMD_MOTOR_TEST == p_in->remote) ||
+              (PROTO_CMD_DEADBAND_TEST == p_in->remote)) &&
              ((NAV_READY == g_nav.state) || (NAV_FAULT == g_nav.state) ||
               (NAV_MISSION_DONE == g_nav.state)))
     {
-        safety_clear();
-        (void) motion_control_motor_test();       /* bench, wheels up     */
+        safety_clear();                           /* bench, wheels up     */
+
+        if (PROTO_CMD_MOTOR_TEST == p_in->remote)
+        {
+            (void) motion_control_motor_test();
+        }
+        else
+        {
+            (void) motion_control_deadband_test();
+        }
     }
     else
     {

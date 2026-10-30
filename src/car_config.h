@@ -85,6 +85,19 @@
 #define MOTOR_TEST_DUTY_PM   (400)     /* bench motor test, per wheel   */
 #define MOTOR_TEST_MS        (1300U)   /* settle + drive per phase      */
 #define MOTOR_TEST_SETTLE_MS (300U)
+/* Dead-band sweep (dashboard "Dead-band test", wheels in the air): per
+ * wheel, raise the duty from SWEEP_START_PM in SWEEP_STEP_PM steps of
+ * SWEEP_STEP_MS until the wheel moves SWEEP_MOVE_COUNTS in one step
+ * (= MOTOR_DEADBAND), then hold SWEEP_HOLD_PM and measure the speed
+ * after a spin-up (gives PID_KFF).                                     */
+#define SWEEP_START_PM       (20)      /* 2 %                           */
+#define SWEEP_STEP_PM        (10)      /* +1 % per step                 */
+#define SWEEP_STEP_MS        (60U)
+#define SWEEP_MAX_PM         (800)     /* give up above 80 %            */
+#define SWEEP_MOVE_COUNTS    (8)       /* ~1 mm of wheel travel         */
+#define SWEEP_HOLD_PM        (600)     /* 60 %                          */
+#define SWEEP_SPINUP_MS      (400U)
+#define SWEEP_MEASURE_MS     (600U)
 #define STALL_TIMEOUT_MS     (300U)    /* no encoder edge while driving */
 #define STALL_MIN_DUTY       (0.25f)   /* duty above which a stall counts */
 
@@ -115,6 +128,14 @@
 /* Speed set-point ramp: limits the jerk that the IMU would otherwise
  * read as tilt, hump or impact. TUNE.                                  */
 #define ACCEL_LIMIT_MPS2     (0.50f)
+/* Each wheel's target may change by at most this per second, so
+ * straight -> turn, steering corrections and speed caps blend instead
+ * of stepping (measured: jerky turns). Braking at the end stays
+ * immediate. TUNE.                                                     */
+#define WHEEL_ACCEL_MPS2     (1.00f)
+/* Runs and turns with a known end slow down along a v^2 = 2 a d curve
+ * to this speed before the end, instead of braking at full speed.      */
+#define END_MIN_SPEED_MPS    (0.04f)
 
 /* Speeds in cm/s, scaled by SPEED_SCALE_PCT (75 % since the IR sensor
  * commit; Week 6 NFR1 cruise is 30 cm/s, see Tribunal change log).     */

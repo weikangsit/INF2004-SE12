@@ -70,6 +70,7 @@ typedef enum
     PROTO_CMD_FINISH,
     PROTO_CMD_RESET,
     PROTO_CMD_MOTOR_TEST,
+    PROTO_CMD_DEADBAND_TEST,
     PROTO_CMD_COUNT
 } proto_cmd_t;
 
@@ -90,9 +91,12 @@ typedef enum
     EV_SUMMARY,      /* value1 = hump peak x0.1 mm, value2 = distance cm  */
     EV_ENC_CAL,      /* code 0 ok, bit0/bit1 encoder silent, 4 = rotated;
                         value1 / value2 = left / right detail             */
-    EV_MOTOR_TEST,   /* code = phase 1..4, value1 / value2 = counts L / R */
+    EV_MOTOR_TEST,   /* code = phase 1..4, value1 / value2 = counts L / R
+                        (sent divided by 4)                               */
     EV_BOOT,         /* value1 = build HHMM, value2 = build SS            */
     EV_MAG_CAL,      /* code 0 ok, 1 failed (too little field change)     */
+    EV_DEADBAND,     /* code = wheel (0 left, 1 right), value1 = dead band
+                        percent (100 = never moved), value2 = KFF x100   */
     EV_KIND_COUNT
 } proto_event_t;
 

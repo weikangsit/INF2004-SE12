@@ -31,6 +31,7 @@
 #define TENTHS_PER_UNIT      (10)      /* x0.1 cm or x0.1 mm -> cm or mm */
 #define TENTHS_PER_HALF      (5)       /* x0.1 mm -> 0.5 mm steps        */
 #define HHMM_SPLIT           (100)     /* HHMM -> hours, minutes         */
+#define COUNTS_PER_UNIT      (4)       /* motor-test counts sent / 4     */
 
 /** Fields of one EVENT kind (after the 4-bit kind). */
 typedef struct
@@ -77,7 +78,8 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
     { 3U, { { 3U, false }, { 9U, true }, { 9U, true } } },      /* ENC_CAL */
     { 3U, { { 2U, false }, { 13U, true }, { 13U, true } } },    /* MOTOR   */
     { 3U, { { 5U, false }, { 6U, false }, { 6U, false } } },    /* BOOT    */
-    { 1U, { { 1U, false } } }                                   /* MAG_CAL */
+    { 1U, { { 1U, false } } },                                  /* MAG_CAL */
+    { 3U, { { 1U, false }, { 7U, false }, { 8U, false } } }     /* DEADBAND*/
 };
 
 /** BARCODE: symbol, valid, configured, action, edge count. */
@@ -197,7 +199,7 @@ proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
     {
         uint32_t cmd_id = (uint32_t) p_frame[0] & CMD_ID_MASK;
 
-        /* PROTO_CMD_COUNT is 6, so the cast keeps its value. */
+        /* PROTO_CMD_COUNT is 7, so the cast keeps its value. */
         if (cmd_id < (uint32_t) PROTO_CMD_COUNT)
         {
             /* cmd_id is below PROTO_CMD_COUNT, so it is a valid enum value. */
@@ -292,8 +294,8 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
 
         case EV_MOTOR_TEST:
             p_values[0] = (int32_t) code - 1;     /* phases 1..4 -> 0..3   */
-            p_values[1] = value1;
-            p_values[2] = value2;
+            p_values[1] = value1 / COUNTS_PER_UNIT;   /* +/-16 380 counts  */
+            p_values[2] = value2 / COUNTS_PER_UNIT;
             count = 3U;
         break;
 
@@ -309,6 +311,7 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
         case EV_TURN_XCHECK:
         case EV_ENC_CAL:
         case EV_MAG_CAL:
+        case EV_DEADBAND:
         {
             /* Code first (unless the kind has none), then value1, value2. */
             int32_t const raw[EVENT_INPUT_COUNT] = { code, value1, value2 };

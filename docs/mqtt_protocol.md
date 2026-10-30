@@ -90,9 +90,10 @@ fixed per kind, and the decoder rejects any other length.
 | 6 | TURN_XCHECK | encoder turn 9 (deg), IMU turn 9 (deg) | 3 |
 | 7 | SUMMARY | hump peak 8 (0.5 mm), distance 14s (cm) | 4 |
 | 8 | ENC_CAL | result 3 (0 ok, bit0/bit1 encoder silent, 4 rotated), left 9s, right 9s | 4 |
-| 9 | MOTOR_TEST | phase 2 (0..3 = L+, L-, R+, R-), left counts 13s, right counts 13s | 4 |
+| 9 | MOTOR_TEST | phase 2 (0..3 = L+, L-, R+, R-), left counts / 4 13s, right counts / 4 13s (+/-16 380 counts) | 4 |
 | 10 | BOOT | hours 5, minutes 6, seconds 6 (firmware build time) | 3 |
 | 11 | MAG_CAL | result 1 (0 calibrated, 1 failed: field barely changed) | 1 |
+| 12 | DEADBAND | wheel 1 (0 left, 1 right), dead band 7 (percent, 100 = never moved), slope 8 (duty per m/s x100) | 3 |
 
 Every EV_FAULT also sets its bit in the fault mask, and a failed ENC_CAL
 sets FC_ENCODER.
@@ -133,6 +134,7 @@ byte or length is ignored.
 | 0x43 | finish run | while driving |
 | 0x44 | reset fault | FAULT, MISSION_DONE |
 | 0x45 | bench motor test | READY, FAULT, MISSION_DONE |
+| 0x46 | bench dead-band test | READY, FAULT, MISSION_DONE |
 
 On an e-stop the MQTT link sets `EVT_ESTOP` itself, before passing the
 command to the Navigation FSM. The Safety Monitor (priority 1) therefore

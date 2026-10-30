@@ -32,6 +32,7 @@
     9: ["MOTOR_TEST", [["phase", 2, 0], ["left", 13, 1], ["right", 13, 1]]],
     10: ["BOOT", [["hours", 5, 0], ["minutes", 6, 0], ["seconds", 6, 0]]],
     11: ["MAG_CAL", [["result", 1, 0]]],
+    12: ["DEADBAND", [["wheel", 1, 0], ["deadband", 7, 0], ["kff", 8, 0]]],
   };
   const EVENT_KIND_BITS = 4;
 
@@ -51,7 +52,8 @@
   // EV_FAULT stall detail bits (motion.c): which wheel had no encoder edges, or the time limit
   const stallReason = (d) => [d & 1 ? "LEFT wheel stopped" : "", d & 2 ? "RIGHT wheel stopped" : "",
                               d & 4 ? "time limit" : ""].filter(Boolean).join(", ");
-  const CMDS = { start: 0, stop: 1, estop: 2, finish: 3, reset: 4, motor_test: 5 };
+  const CMDS = { start: 0, stop: 1, estop: 2, finish: 3, reset: 4, motor_test: 5, deadband_test: 6 };
+  const COUNTS_PER_UNIT = 4;   // motor-test counts are sent divided by 4
   const CMD_TAG = 0x40;
   const LETTERS = "ABCD";
   // firmware built-in table (barcode_map.c, Week 6 FR2), used until one arrives over MQTT
@@ -161,12 +163,20 @@
       case 9: {
         const ph = ["LEFT +", "LEFT -", "RIGHT +", "RIGHT -"][f.phase];
         const pin = f.phase < 2 ? "GP8/GP9" : "GP10/GP11";
-        return "motor test " + ph + " (" + pin + ") -> encoder counts L " + f.left + ", R " + f.right;
+        return "motor test " + ph + " (" + pin + ") -> encoder counts L " + f.left * COUNTS_PER_UNIT +
+               ", R " + f.right * COUNTS_PER_UNIT;
       }
       case 10: return "car connected, firmware built " + [f.hours, f.minutes, f.seconds]
                  .map((x) => String(x).padStart(2, "0")).join(":");
       case 11: return f.result === 0 ? "magnetometer calibrated"
                  : "magnetometer calibration FAILED (field barely changed - spin the car fully)";
+      case 12: {
+        const side = f.wheel ? "R" : "L";
+        return f.deadband >= 100 ? "dead-band test " + (f.wheel ? "RIGHT" : "LEFT") + ": wheel never moved (check motor / encoder)"
+          : "dead-band test " + (f.wheel ? "RIGHT" : "LEFT") + ": dead band " + f.deadband + " %, slope " +
+            (f.kff / 100).toFixed(2) + " duty per m/s -> set MOTOR_DEADBAND_" + side + " (" +
+            (f.deadband / 100).toFixed(2) + "f) and PID_KFF_" + side + " (" + (f.kff / 100).toFixed(2) + "f)";
+      }
       default: return "event " + kind;
     }
   }

@@ -19,6 +19,7 @@
  *  (UB *) and (int) casts match tm_printf()'s parameter and %d types.
  */
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <tm/tmonitor.h>
@@ -49,6 +50,12 @@
 #define LIMIT_EXTRA_MS       (2000U)
 #define MIN_LIMIT_SPEED_MPS  (0.05f)
 #define TEST_PHASES          (4U)
+#define SWEEP_WHEELS         (2U)
+#define SWEEP_FAILED_PCT     (100)     /* dead band never found          */
+#define PCT_PER_PM           (10)
+#define KFF_X100             (100.0f)
+#define MS_PER_S             (1000.0f)
+#define TWO                  (2.0f)
 #define COUNT_PRINT_MS       (500U)    /* encoder print when stopped  */
 
 /* Packed command word (32 bits, Change Requirement 1). */
@@ -111,8 +118,18 @@ typedef enum
     MS_ENC_CAL,
     MS_MOTOR_TEST,
     MS_SAFE_STOP,
-    MS_FAULT
+    MS_FAULT,
+    MS_DEADBAND
 } motion_mode_t;
+
+/** Stages of the dead-band sweep for one wheel. */
+typedef enum
+{
+    SWEEP_SETTLE = 0,
+    SWEEP_RAMP,
+    SWEEP_SPINUP,
+    SWEEP_MEASURE
+} sweep_stage_t;
 
 typedef struct
 {
@@ -147,6 +164,8 @@ typedef struct
     float32_t     v_base;        /* ramped base speed magnitude, m/s      */
     float32_t     tgt_l;         /* last wheel targets, m/s               */
     float32_t     tgt_r;
+    float32_t     cmd_l;         /* slew-limited targets fed to the PID   */
+    float32_t     cmd_r;
     float32_t     duty_l;        /* -1..1                                 */
     float32_t     duty_r;
     float32_t     hdg0;          /* heading at command start, deg         */
@@ -164,6 +183,11 @@ typedef struct
     int32_t       cal_l0;        /* raw counts at self-test / phase start */
     int32_t       cal_r0;
     uint32_t      test_phase;
+    sweep_stage_t sweep_stage;
+    int32_t       sweep_pm;      /* duty of the current sweep step        */
+    int32_t       sweep_db_pm;   /* dead band found                       */
+    uint32_t      stage_ms;
+    int32_t       stage_count0;
     wheel_pid_t   pid_l;
     wheel_pid_t   pid_r;
 } motion_ctx_t;
@@ -203,6 +227,12 @@ static bool      turn_targets (motion_in_t const * p_in);
 static void      ramp_base (float32_t target);
 static void      outputs_drive (motion_in_t const * p_in, bool b_done);
 static void      motor_test_step (motion_in_t const * p_in);
+static void      deadband_step (motion_in_t const * p_in);
+static void      sweep_wheel_done (motion_in_t const * p_in, int32_t db_pct,
+                                   int32_t kff_x100);
+static void      sweep_drive (int32_t duty_pm);
+static float32_t end_speed_cap (float32_t remaining_m);
+static void      wheels_slew (void);
 static void      self_test_step (motion_in_t const * p_in);
 static void      closed_loop_drive (motion_in_t const * p_in);
 static uint32_t  edge_clamp (uint32_t edge_ms, uint32_t now);
@@ -295,6 +325,18 @@ uint8_t
 motion_control_uturn (void)
 {
     return (cmd_send(CMD_UTURN, SPEED_TURN_CMS, 0U, UTURN_DEG, false, true));
+}
+
+/*!
+ * @brief  Bench dead-band sweep: measures each wheel's dead band and
+ *         feed-forward slope (wheels in the air).
+ * @return Sequence number of the command.
+ */
+uint8_t
+motion_control_deadband_test (void)
+{
+    /* CMD_MOTOR_TEST with the follow bit selects the sweep variant. */
+    return (cmd_send(CMD_MOTOR_TEST, 0U, 0U, 0U, true, false));
 }
 
 /*!
@@ -486,8 +528,8 @@ speed_update (motion_in_t const * p_in)
 
     if (g_b_open_loop)
     {
-        g_ctx.speed_l = g_ctx.tgt_l;
-        g_ctx.speed_r = g_ctx.tgt_r;
+        g_ctx.speed_l = g_ctx.cmd_l;
+        g_ctx.speed_r = g_ctx.cmd_r;
         g_ctx.dist_l += g_ctx.speed_l * DT_S;
         g_ctx.dist_r += g_ctx.speed_r * DT_S;
     }
@@ -564,6 +606,8 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.cal_l0        = p_in->count_l;
     g_ctx.cal_r0        = p_in->count_r;
     g_ctx.test_phase    = 0U;
+    g_ctx.sweep_stage   = SWEEP_SETTLE;
+    g_ctx.stage_ms      = p_in->now_ms;
     pid_reset(&g_ctx.pid_l);
     pid_reset(&g_ctx.pid_r);
 
@@ -575,7 +619,9 @@ command_start (uint32_t word, motion_in_t const * p_in)
         case CMD_TURN_R:     g_ctx.mode = MS_TURN_R;     break;
         case CMD_UTURN:      g_ctx.mode = MS_UTURN;      break;
         case CMD_ENC_CAL:    g_ctx.mode = MS_ENC_CAL;    break;
-        case CMD_MOTOR_TEST: g_ctx.mode = MS_MOTOR_TEST; break;
+        case CMD_MOTOR_TEST:
+            g_ctx.mode = g_ctx.b_follow ? MS_DEADBAND : MS_MOTOR_TEST;
+        break;
         case CMD_STOP:
         default:             g_ctx.mode = MS_STOPPED;    break;
     }
@@ -663,10 +709,16 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 {
     float32_t const travel = ((g_ctx.dist_l - g_ctx.dist_l0) +
                               (g_ctx.dist_r - g_ctx.dist_r0)) * HALF;
-    float32_t       speed      = 0.0f;
+    float32_t       speed  = 0.0f;
     float32_t       steer  = 0.0f;
+    float32_t       target = g_ctx.speed_mps;
 
-    ramp_base(g_ctx.speed_mps);
+    if (g_ctx.dist_m > 0.0f)
+    {
+        target = fminf(target, end_speed_cap(g_ctx.dist_m - (sign * travel)));
+    }
+
+    ramp_base(target);
     speed = g_ctx.v_base;
 
     if (g_ctx.b_follow && p_in->b_line_fresh)
@@ -726,13 +778,15 @@ turn_targets (motion_in_t const * p_in)
 {
     float32_t const arc    = (g_ctx.angle_deg / DEG_PER_RAD) *
                              (TRACK_WIDTH_M * HALF);
-    float32_t const travel = (fabsf(g_ctx.dist_l - g_ctx.dist_l0) +
-                              fabsf(g_ctx.dist_r - g_ctx.dist_r0)) * HALF;
+    /* Rotation only: forward motion while the wheels slew from a
+     * straight run into the spin cancels out of the difference. */
+    float32_t const travel = fabsf((g_ctx.dist_r - g_ctx.dist_r0) -
+                                   (g_ctx.dist_l - g_ctx.dist_l0)) * HALF;
     float32_t const frac   = (arc > 0.0f) ? (travel / arc) : 1.0f;
     bool const      b_left = (MS_TURN_R != g_ctx.mode);  /* U-turn: left */
     bool            b_done = false;
 
-    ramp_base(g_ctx.speed_mps);
+    ramp_base(fminf(g_ctx.speed_mps, end_speed_cap(arc - travel)));
     g_ctx.tgt_l = b_left ? -g_ctx.v_base : g_ctx.v_base;
     g_ctx.tgt_r = b_left ? g_ctx.v_base : -g_ctx.v_base;
 
@@ -780,6 +834,40 @@ ramp_base (float32_t target)
 }
 
 /*!
+ * @brief  Highest speed from which the car can still slow to
+ *         END_MIN_SPEED_MPS at ACCEL_LIMIT_MPS2 within the remaining
+ *         distance (v^2 = 2 a d), so runs and turns end softly.
+ * @param  remaining_m  Distance or arc left, m.
+ * @return Speed cap, m/s (never below END_MIN_SPEED_MPS).
+ */
+static float32_t
+end_speed_cap (float32_t remaining_m)
+{
+    float32_t cap = END_MIN_SPEED_MPS;
+
+    if (remaining_m > 0.0f)
+    {
+        cap = fmaxf(sqrtf(TWO * ACCEL_LIMIT_MPS2 * remaining_m),
+                    END_MIN_SPEED_MPS);
+    }
+
+    return (cap);
+}
+
+/*!
+ * @brief  Move each wheel's commanded speed toward its target by at most
+ *         WHEEL_ACCEL_MPS2 per second.
+ */
+static void
+wheels_slew (void)
+{
+    float32_t const step = WHEEL_ACCEL_MPS2 * DT_S;
+
+    g_ctx.cmd_l += clamp_f(g_ctx.tgt_l - g_ctx.cmd_l, -step, step);
+    g_ctx.cmd_r += clamp_f(g_ctx.tgt_r - g_ctx.cmd_r, -step, step);
+}
+
+/*!
  * @brief  Apply the outputs of the current state.
  * @param  p_in    Inputs of this period.
  * @param  b_done  True if the command reached its target this period.
@@ -790,6 +878,10 @@ outputs_drive (motion_in_t const * p_in, bool b_done)
     if (MS_MOTOR_TEST == g_ctx.mode)
     {
         motor_test_step(p_in);
+    }
+    else if (MS_DEADBAND == g_ctx.mode)
+    {
+        deadband_step(p_in);
     }
     else if (MS_ENC_CAL == g_ctx.mode)
     {
@@ -828,11 +920,14 @@ motor_test_step (motion_in_t const * p_in)
 
     if (elapsed >= MOTOR_TEST_MS)
     {
-        /* Phase 0..3 -> code 1..4; raw counts over one second fit. */
+        int32_t const moved_l = p_in->count_l - g_ctx.cal_l0;
+        int32_t const moved_r = p_in->count_r - g_ctx.cal_r0;
+
+        /* Phase 0..3 -> code 1..4. Counts over one second are well under
+         * 32767 (the packer sends them divided by 4). */
         telemetry_post_event(EV_MOTOR_TEST,
                              (uint8_t) (g_ctx.test_phase + 1U),
-                             (int16_t) (p_in->count_l - g_ctx.cal_l0),
-                             (int16_t) (p_in->count_r - g_ctx.cal_r0));
+                             (int16_t) moved_l, (int16_t) moved_r);
         motor_driver_brake();
         g_ctx.cal_l0   = p_in->count_l;
         g_ctx.cal_r0   = p_in->count_r;
@@ -856,6 +951,138 @@ motor_test_step (motion_in_t const * p_in)
         bool const    b_left_phase = (g_ctx.test_phase < 2U);
 
         motor_driver_set(b_left_phase ? duty : 0, b_left_phase ? 0 : duty);
+    }
+}
+
+/*!
+ * @brief  Dead-band sweep, one wheel at a time (left, then right), open
+ *         loop, wheels in the air: settle, raise the duty step by step
+ *         until the wheel moves (dead band), then hold SWEEP_HOLD_PM,
+ *         spin up and measure the speed (slope).
+ * @param  p_in  Inputs of this period.
+ */
+static void
+deadband_step (motion_in_t const * p_in)
+{
+    uint32_t const elapsed = p_in->now_ms - g_ctx.stage_ms;
+    int32_t const  count   = (0U == g_ctx.test_phase) ? p_in->count_l :
+                                                        p_in->count_r;
+    int32_t const  moved   = abs(count - g_ctx.stage_count0);
+
+    switch (g_ctx.sweep_stage)
+    {
+        case SWEEP_SETTLE:
+            motor_driver_brake();
+            if (elapsed >= MOTOR_TEST_SETTLE_MS)
+            {
+                g_ctx.sweep_stage  = SWEEP_RAMP;
+                g_ctx.sweep_pm     = SWEEP_START_PM;
+                g_ctx.stage_ms     = p_in->now_ms;
+                g_ctx.stage_count0 = count;
+            }
+        break;
+
+        case SWEEP_RAMP:
+            sweep_drive(g_ctx.sweep_pm);
+            if ((elapsed >= SWEEP_STEP_MS) && (moved >= SWEEP_MOVE_COUNTS))
+            {
+                g_ctx.sweep_db_pm = g_ctx.sweep_pm;
+                g_ctx.sweep_stage = SWEEP_SPINUP;
+                g_ctx.stage_ms    = p_in->now_ms;
+            }
+            else if (elapsed >= SWEEP_STEP_MS)
+            {
+                g_ctx.sweep_pm    += SWEEP_STEP_PM;
+                g_ctx.stage_ms     = p_in->now_ms;
+                g_ctx.stage_count0 = count;
+
+                if (g_ctx.sweep_pm > SWEEP_MAX_PM)
+                {
+                    sweep_wheel_done(p_in, SWEEP_FAILED_PCT, 0);
+                }
+            }
+            else
+            {
+                /* Within the step. */
+            }
+        break;
+
+        case SWEEP_SPINUP:
+            sweep_drive(SWEEP_HOLD_PM);
+            if (elapsed >= SWEEP_SPINUP_MS)
+            {
+                g_ctx.sweep_stage  = SWEEP_MEASURE;
+                g_ctx.stage_ms     = p_in->now_ms;
+                g_ctx.stage_count0 = count;
+            }
+        break;
+
+        case SWEEP_MEASURE:
+        default:
+            sweep_drive(SWEEP_HOLD_PM);
+            if (elapsed >= SWEEP_MEASURE_MS)
+            {
+                /* Counts in SWEEP_MEASURE_MS are small; floats are exact. */
+                float32_t const speed = ((float32_t) moved * M_PER_COUNT *
+                                         MS_PER_S) /
+                                        (float32_t) SWEEP_MEASURE_MS;
+                float32_t const span  = (float32_t) (SWEEP_HOLD_PM -
+                                                     g_ctx.sweep_db_pm) /
+                                        PM_PER_UNIT;
+                float32_t const kff   = (speed > 0.0f) ? (span / speed) :
+                                                         0.0f;
+
+                sweep_wheel_done(p_in, g_ctx.sweep_db_pm / PCT_PER_PM,
+                                 round_i(kff * KFF_X100));
+            }
+        break;
+    }
+}
+
+/*!
+ * @brief  Report one wheel's sweep and move on to the next wheel (or
+ *         finish).
+ * @param  p_in      Inputs of this period.
+ * @param  db_pct    Dead band, percent (SWEEP_FAILED_PCT = never moved).
+ * @param  kff_x100  Feed-forward slope x100 (duty per m/s).
+ */
+static void
+sweep_wheel_done (motion_in_t const * p_in, int32_t db_pct,
+                  int32_t kff_x100)
+{
+    motor_driver_brake();
+    tm_printf((UB *) "sweep %s: dead band %d %%, KFF %d (x0.01 duty/(m/s))\n",
+              (0U == g_ctx.test_phase) ? "LEFT" : "RIGHT", (int) db_pct,
+              (int) kff_x100);
+    /* Wheel 0 / 1; dead band <= 100 and slope x100 fit an int16_t. */
+    telemetry_post_event(EV_DEADBAND, (uint8_t) g_ctx.test_phase,
+                         (int16_t) db_pct, (int16_t) kff_x100);
+
+    g_ctx.test_phase++;
+    g_ctx.sweep_stage = SWEEP_SETTLE;
+    g_ctx.stage_ms    = p_in->now_ms;
+
+    if (g_ctx.test_phase >= SWEEP_WHEELS)
+    {
+        brake_to(MS_STOPPED);
+        done_post(MOTION_RESULT_DONE);
+    }
+}
+
+/*!
+ * @brief  Drive only the wheel under test, forward.
+ * @param  duty_pm  Duty, per mille.
+ */
+static void
+sweep_drive (int32_t duty_pm)
+{
+    if (0U == g_ctx.test_phase)
+    {
+        motor_driver_set(duty_pm, 0);
+    }
+    else
+    {
+        motor_driver_set(0, duty_pm);
     }
 }
 
@@ -933,19 +1160,21 @@ closed_loop_drive (motion_in_t const * p_in)
     uint32_t       edge_r = motor_driver_edge_ms_right();
     uint32_t       why    = 0U;
 
+    wheels_slew();
+
     if (g_b_open_loop)
     {
-        g_ctx.duty_l = clamp_f(feed_forward(g_ctx.tgt_l, &g_ff_l),
+        g_ctx.duty_l = clamp_f(feed_forward(g_ctx.cmd_l, &g_ff_l),
                                -1.0f, 1.0f);
-        g_ctx.duty_r = clamp_f(feed_forward(g_ctx.tgt_r, &g_ff_r),
+        g_ctx.duty_r = clamp_f(feed_forward(g_ctx.cmd_r, &g_ff_r),
                                -1.0f, 1.0f);
     }
     else
     {
-        g_ctx.duty_l = clamp_f(pid_step(&g_ctx.pid_l, g_ctx.tgt_l,
+        g_ctx.duty_l = clamp_f(pid_step(&g_ctx.pid_l, g_ctx.cmd_l,
                                         g_ctx.speed_l, &g_ff_l),
                                -1.0f, 1.0f);
-        g_ctx.duty_r = clamp_f(pid_step(&g_ctx.pid_r, g_ctx.tgt_r,
+        g_ctx.duty_r = clamp_f(pid_step(&g_ctx.pid_r, g_ctx.cmd_r,
                                         g_ctx.speed_r, &g_ff_r),
                                -1.0f, 1.0f);
 
@@ -1034,6 +1263,8 @@ brake_to (motion_mode_t mode)
     g_ctx.duty_r = 0.0f;
     g_ctx.tgt_l  = 0.0f;
     g_ctx.tgt_r  = 0.0f;
+    g_ctx.cmd_l  = 0.0f;
+    g_ctx.cmd_r  = 0.0f;
     g_ctx.v_base = 0.0f;
     g_ctx.mode   = mode;
 }

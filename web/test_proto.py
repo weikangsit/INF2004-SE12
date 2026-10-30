@@ -195,7 +195,7 @@ def event_fields(kind, code, v1, v2):
     if kind == 7:
         return [cdiv(v1 + 2, 5), v2]
     if kind == 9:
-        return [code - 1, v1, v2]
+        return [code - 1, cdiv(v1, 4), cdiv(v2, 4)]
     if kind == 10:
         return [cdiv(v1, 100), v1 - 100 * cdiv(v1, 100), v2]
     return [code, v1, v2][:len(ref.EVENT_LAYOUT[kind][1])]
@@ -248,8 +248,8 @@ def test_firmware(cpu):
             count += 1
     check(cpu.call("proto_pack_event", 0, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
           "unknown event kind 0 should give length 0")
-    check(cpu.call("proto_pack_event", 12, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
-          "unknown event kind 12 should give length 0")
+    check(cpu.call("proto_pack_event", 13, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
+          "unknown event kind 13 should give length 0")
     report(start, f"proto_pack_event: {count} vectors across all {len(ref.EVENT_LAYOUT)} kinds")
 
     # Commands: every byte value; wrong lengths rejected.
@@ -258,7 +258,7 @@ def test_firmware(cpu):
         cpu.write(RAM, [byte])
         cpu.write(RAM + 0x10, [0xEE])
         ok = cpu.call("proto_unpack_cmd", RAM, 1, RAM + 0x10) & 0xFF
-        want = (byte & 0xF8) == 0x40 and (byte & 7) <= 5
+        want = (byte & 0xF8) == 0x40 and (byte & 7) <= 6
         check(bool(ok) == want, f"cmd byte {byte:#04x}")
         if want:
             check(cpu.read(RAM + 0x10, 1)[0] == byte & 7, f"cmd id for {byte:#04x}")
