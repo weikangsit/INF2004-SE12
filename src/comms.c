@@ -38,6 +38,7 @@
 
 #include "port.h"
 
+#include "barcode.h"
 #include "barcode_map.h"
 #include "car_config.h"
 #include "comms.h"
@@ -729,8 +730,7 @@ rx_handle_config (void)
     {
         barcode_map_apply(table);
         g_link.b_cfg_ack_due = true;
-        tm_printf((UB *) "mqtt: barcode table received (0x%x)\n",
-                  (int) table);
+        barcode_log_table("received");
     }
 }
 

@@ -28,6 +28,8 @@
 #define QUEUE_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + 1 byte, rounded */
 #define LETTER_FIRST         ('A')
+#define CHAR_STRIDE          (10U)     /* 9 elements + inter-char gap     */
+#define NO_LETTER            ('-')
 
 typedef enum
 {
@@ -42,6 +44,13 @@ static uint32_t    g_n_edges  = 0U;                    /* task only        */
 
 static void edges_collect (void);
 static void capture_finish (void);
+static void capture_log (void);
+
+/* Action names by wire code (PROTO_ACT_*), for the console log. */
+static char const * const g_action_names[PROTO_ACTION_COUNT] =
+{
+    "straight", "left", "right", "U-turn"
+};
 
 /*!
  * @brief  Create the letter queue. Call from usermain() before the tasks
@@ -137,6 +146,11 @@ capture_finish (void)
     /* n_edges <= BAR_EDGE_BUF_LEN (64), so it fits an int16_t. */
     int16_t const edges  = (int16_t) g_n_edges;
 
+    if (0 != BAR_LOG)
+    {
+        capture_log();
+    }
+
     if (CODE39_NONE != letter)
     {
         /* letter is 0..25, so 'A' + letter is a valid character. */
@@ -153,21 +167,88 @@ capture_finish (void)
             (void) tk_snd_mbf(g_slot_q, &slot, (INT) sizeof(slot), TMO_POL);
             vehicle_state_set_barcode((uint8_t) (VEHICLE_BAR_VALID | slot));
             telemetry_post_event(EV_BARCODE, slot, 0, edges);
+            tm_printf((UB *) "barcode: read %c -> %s\n", (int) code,
+                      g_action_names[slot]);
         }
         else
         {
             /* Only the slot goes over MQTT; the letter is logged here. */
-            tm_printf((UB *) "barcode: %c is not in the table\n", (int) code);
+            tm_printf((UB *) "barcode: read %c, not in the table\n",
+                      (int) code);
+            barcode_log_table("in use");
             telemetry_post_event(EV_BARCODE, PROTO_BAR_EV_UNKNOWN, 0, edges);
         }
     }
     else
     {
+        tm_printf((UB *) "barcode: unreadable (%d edges; a full '*X*' "
+                  "symbol has %d)\n", (int) edges, (int) BAR_EDGES_FULL);
         telemetry_post_event(EV_BARCODE, PROTO_BAR_EV_UNREADABLE, 0, edges);
     }
 
     g_state   = BAR_WAIT;
     g_n_edges = 0U;
+}
+
+/*!
+ * @brief  Print the barcode table on the USB console.
+ * @param  p_why  Short note printed with it (e.g. "received").
+ */
+void
+barcode_log_table (char const * p_why)
+{
+    uint32_t const table = barcode_map_table();
+    char           letters[PROTO_ACTION_COUNT];
+    uint32_t       action = 0U;
+
+    for (action = 0U; action < PROTO_ACTION_COUNT; action++)
+    {
+        uint32_t const code = (table >> (PROTO_CFG_LETTER_SHIFT +
+                                         (PROTO_CFG_LETTER_BITS * action))) &
+                              PROTO_CFG_LETTER_MASK;
+
+        /* A valid entry holds 0..25, so 'A' + code is a letter. */
+        letters[action] = (0U != (table & (1U << action))) ?
+                          (char) ((uint32_t) LETTER_FIRST + code) : NO_LETTER;
+    }
+
+    tm_printf((UB *) "barcode table %s (%s): straight %c, left %c, "
+              "right %c, U-turn %c\n", p_why,
+              barcode_map_is_loaded() ? "from web" : "built-in",
+              (int) letters[PROTO_ACT_STRAIGHT], (int) letters[PROTO_ACT_LEFT],
+              (int) letters[PROTO_ACT_RIGHT], (int) letters[PROTO_ACT_UTURN]);
+}
+
+/*!
+ * @brief  Print the captured element widths on the USB console, one line
+ *         per Code 39 character (9 elements, then the inter-character
+ *         gap). In a clean read each line has 3 wide values, clearly
+ *         (1.5x or more) above its 6 narrow ones.
+ */
+static void
+capture_log (void)
+{
+    uint32_t idx = 0U;
+
+    tm_printf((UB *) "barcode: %d edges, element widths (us):",
+              (int) g_n_edges);
+
+    for (idx = 1U; idx < g_n_edges; idx++)
+    {
+        uint32_t const width = (g_edges[idx] & ~LEVEL_BIT) -
+                               (g_edges[idx - 1U] & ~LEVEL_BIT);
+
+        /* Element idx-1 starts a character every CHAR_STRIDE elements. */
+        if (1U == (idx % CHAR_STRIDE))
+        {
+            tm_printf((UB *) "\n ");
+        }
+
+        /* Widths are below BAR_IDLE_TIMEOUT_US (150 ms), so they fit. */
+        tm_printf((UB *) " %d", (int) width);
+    }
+
+    tm_printf((UB *) "\n");
 }
 
 /*** end of file ***/
