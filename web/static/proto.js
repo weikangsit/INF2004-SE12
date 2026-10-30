@@ -56,8 +56,11 @@
   const COUNTS_PER_UNIT = 4;   // motor-test counts are sent divided by 4
   const CMD_TAG = 0x40;
   const LETTERS = "ABCD";
-  // firmware built-in table (barcode_map.c, Week 6 FR2), used until one arrives over MQTT
-  const DEFAULT_TABLE = { A: 1, B: 2, C: 0, D: 3 };
+  // firmware built-in table (barcode_map.c, Week 6 FR2), used until one arrives over MQTT:
+  // action code (index into ACTIONS) -> letter
+  const DEFAULT_TABLE = { 0: "C", 1: "A", 2: "B", 3: "D" };
+  // bit 12 marks the action -> letter format; old letter -> action frames (bit 12 clear) are rejected
+  const CFG_FORMAT_BIT = 0x1000;
   const RANGE_NO_ECHO = 511;
   const ST_LATCHED = 1, ST_CFG_MQTT = 2, LINE_LEFT = 1, LINE_RIGHT = 2, BAR_VALID = 4;
 
@@ -82,30 +85,45 @@
 
   const bitsOf = (layout) => layout.reduce((n, f) => n + f[1], 0);
 
-  /** map: { A: 0..3 | null, ... D } -> 2-byte CONFIG frame */
+  /** map: { 0: "A".."D" | null, ... 3 } (action code -> letter) -> 2-byte CONFIG frame */
   function encodeConfig(map) {
-    let word = 0;
-    for (let n = 0; n < LETTERS.length; n++) {
-      const code = map[LETTERS[n]];
-      if (code === null || code === undefined) continue;
-      if (!(code >= 0 && code <= 3)) throw new RangeError("action code must be 0..3");
+    let word = 0, used = 0;
+    for (let n = 0; n < ACTIONS.length; n++) {
+      const letter = map[n];
+      if (letter === null || letter === undefined || letter === "") continue;
+      const code = LETTERS.indexOf(letter);
+      if (code < 0 || letter.length !== 1) throw new RangeError("letter must be one of " + LETTERS);
+      if ((used >> code) & 1) throw new RangeError("letter " + letter + " is given to two actions");
+      used |= 1 << code;
       word |= (1 << n) | (code << (4 + 2 * n));
     }
+    word |= CFG_FORMAT_BIT;
     return Uint8Array.of(word & 0xFF, word >> 8);
   }
 
   function decodeConfig(u8) {
     if (u8.length !== 2) return null;
     const word = u8[0] | (u8[1] << 8);
-    if (word & 0xF000) return null;                   // reserved bits must be 0
+    if ((word & 0xF000) !== CFG_FORMAT_BIT) return null;   // old format or reserved bits set
     const map = {};
-    for (let n = 0; n < LETTERS.length; n++) {
-      map[LETTERS[n]] = (word >> n) & 1 ? (word >> (4 + 2 * n)) & 3 : null;
+    let used = 0;
+    for (let n = 0; n < ACTIONS.length; n++) {
+      if (!((word >> n) & 1)) { map[n] = null; continue; }
+      const code = (word >> (4 + 2 * n)) & 3;
+      if ((used >> code) & 1) return null;            // one letter, two actions: the car rejects it too
+      used |= 1 << code;
+      map[n] = LETTERS[code];
     }
     return map;
   }
 
-  /** Letters configured in a CONFIG frame (bit n = letter A+n). */
+  /** Action code a letter triggers in a table, or null. */
+  function actionFor(map, letter) {
+    for (let n = 0; n < ACTIONS.length; n++) if (map[n] === letter) return n;
+    return null;
+  }
+
+  /** Actions configured in a CONFIG frame (bit n = ACTIONS[n]). */
   const configMask = (u8) => u8[0] & 0x0F;
 
   function faultNames(mask) {
@@ -142,7 +160,7 @@
     switch (kind) {
       case 1: return "state -> " + (STATES[f.state] || f.state);
       case 2: return !f.valid ? "barcode unreadable or not A-D (" + f.edges + " edges)"
-                : "barcode " + LETTERS[f.symbol] + " -> " + (f.configured ? ACTIONS[f.action] : "not configured");
+                : "barcode " + LETTERS[f.symbol] + " -> " + (f.configured ? ACTIONS[f.action] : "no action has this letter");
       case 3: return "hump height " + (f.height / 2).toFixed(1) + " mm";
       case 4: return "obstacle at " + f.bearing + "\u00b0, " +
                 (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
@@ -212,7 +230,7 @@
   }
 
   const api = { TELEM_LAYOUT, EVENT_LAYOUT, ACTIONS, STATES, FAULTS, LETTERS, CMDS, DEFAULT_TABLE,
-                getBits, encodeConfig, decodeConfig, configMask, decodeTelem, decodeEvent,
+                getBits, encodeConfig, decodeConfig, actionFor, configMask, decodeTelem, decodeEvent,
                 decodeAck, decodeHb, encodeCmd, bits };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Proto = api;

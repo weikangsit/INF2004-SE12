@@ -34,8 +34,8 @@ current representation until they make their own change.
 | Hump peak | 0..127.5 mm, 0.5 mm | 8 | unsigned field |
 | Uptime | 109 min, 100 ms | 16 | unsigned field (wraps) |
 | Event kind | 10 kinds | 4 | first field of every event |
-| Barcode action | 4 actions | 2 | 2 bits per letter in CONFIG |
-| Barcode table | 4 letters | 12 | 4 valid bits + 4 x 2-bit action |
+| Barcode letter per action | A..D | 2 | 2 bits per action in CONFIG |
+| Barcode table | 4 actions | 13 | 4 valid bits + 4 x 2-bit letter + 1 format bit |
 | Remote command | 6 commands | 3 | + 5-bit fixed tag for validation (one byte is the smallest MQTT payload unit) |
 | Heartbeat sequence | gap detection | 8 | wraps every 256 s |
 

@@ -26,10 +26,10 @@ main { display: grid; gap: 16px; padding: 16px 20px; max-width: 1280px; margin: 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
 .hint, .muted { color: var(--muted); font-size: .88rem; }
-.letters { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.letters { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .letter { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line);
           border-radius: 8px; padding: 6px 8px; }
-.letter b { font-size: 1.3rem; width: 1.2em; text-align: center; }
+.letter b { font-size: 1rem; min-width: 4.6em; }
 .letter select { flex: 1; min-width: 0; }
 .letter.a0 { border-color: var(--ok); } .letter.a1 { border-color: var(--accent); }
 .letter.a2 { border-color: #a371f7; } .letter.a3 { border-color: var(--warn); }

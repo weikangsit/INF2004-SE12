@@ -115,6 +115,7 @@ void * memset (void * p_dst, int value, size_t len)
 """
 TELEM_STRUCT = "<BBBBHBxhhhhhhHhHhHH"     # proto_telem_t on ARM EABI
 CODE, RAM, RET = 0x10000000, 0x20000000, 0x30000000
+DATA_OFFSET = 0xF000          # firmware statics, clear of the test buffers
 
 
 def find_gcc():
@@ -138,12 +139,16 @@ class Cpu:
         subprocess.run([gcc, "-mcpu=cortex-m0plus", "-mthumb", "-mfloat-abi=soft", "-O2",
                         "-std=gnu11", "-ffreestanding", "-nostdlib", "-Wall", "-Wextra",
                         "-Werror", f"-I{SRC}", f"-Wl,-Ttext=0x{CODE:08x}",
+                        # barcode_map.c's table lives in emulated RAM; the
+                        # test calls barcode_map_init() instead of copying .data
+                        f"-Wl,--section-start=.data=0x{RAM + DATA_OFFSET:08x}",
                         "-Wl,--entry=proto_pack_telem"] +
                        [str(SRC / f) for f in ("proto.c", "bitpack.c", "code39.c",
-                                               "obstacle_profile.c")] +
+                                               "obstacle_profile.c", "barcode_map.c")] +
                        [str(workdir / "harness.c"), "-lgcc", "-o", str(elf)], check=True)
         binary = workdir / "proto_test.bin"
-        subprocess.run([tool("objcopy"), "-O", "binary", str(elf), str(binary)], check=True)
+        subprocess.run([tool("objcopy"), "-O", "binary", "-R", ".data", "-R", ".bss",
+                        str(elf), str(binary)], check=True)
         nm = subprocess.run([tool("nm"), str(elf)], check=True, capture_output=True, text=True)
         self.sym = {n: int(a, 16) for a, _, n in (l.split() for l in nm.stdout.splitlines()
                                                   if len(l.split()) == 3)}
@@ -267,19 +272,24 @@ def test_firmware(cpu):
               f"cmd length {length} accepted")
     report(start, "proto_unpack_cmd: all 256 byte values and wrong lengths")
 
-    # Config: reserved bits and length checked, 12-bit table returned.
+    # Config: reserved bits, length and one-letter-per-action checked, 12-bit
+    # table returned. Every 12-bit word is tried.
     start = len(failures)
-    for word in list(range(0, 0x10000, 37)) + [0x0FFF, 0x1000, 0x8000, 0xFFFF]:
+    words = list(range(0x1000, 0x2000)) + list(range(0, 0x10000, 37)) + [0x0C9F, 0x8000, 0xFFFF]
+    for word in words:
         cpu.write(RAM, struct.pack("<H", word))
         ok = cpu.call("proto_unpack_config", RAM, 2, RAM + 0x10) & 0xFF
-        check(bool(ok) == (word < 0x1000), f"config {word:#06x}")
-        if word < 0x1000:
-            check(struct.unpack("<H", cpu.read(RAM + 0x10, 2))[0] == word,
+        check(bool(ok) == ref.config_valid(word), f"config {word:#06x}")
+        if ref.config_valid(word):
+            check(struct.unpack("<H", cpu.read(RAM + 0x10, 2))[0] == (word & 0x0FFF),
                   f"config table {word:#06x}")
+    check(not ref.config_valid(0x0C9F), "old-format default table (bit 12 clear) rejected")
     check(cpu.call("proto_unpack_config", RAM, 3, RAM + 0x10) & 0xFF == 0, "config length 3")
-    frame = ref.encode_config({"A": 1, "B": 2, "C": 0, "D": 3})
-    check(frame == bytes.fromhex("9f0c"), "default table frame")
-    report(start, "proto_unpack_config: reserved bits and length validated")
+    frame = ref.encode_config({0: "C", 1: "A", 2: "B", 3: "D"})
+    check(frame == bytes.fromhex("2f1d"), "default table frame")
+    dup = 0x1003 | (1 << 4) | (1 << 6)                # straight and left both 'B'
+    check(not ref.config_valid(dup), "duplicate letter rejected by the reference")
+    report(start, "proto_unpack_config: reserved bits, length and duplicate letters validated")
 
     start = len(failures)
     for table in (0, 0x0C9F, 0x0FFF, 0x0005):
@@ -450,6 +460,28 @@ def test_bitpack(cpu):
                   "neighbouring bits untouched)")
 
 
+def test_barcode_map(cpu):
+    """barcode_map_get: which action a letter triggers, for the built-in
+    table and for tables built by the reference encoder."""
+    start = len(failures)
+    names = {0: "none", 1: "straight", 2: "left", 3: "right", 4: "U-turn"}
+    get = lambda letter: cpu.call("barcode_map_get", ord(letter)) & 0xFF
+    cpu.call("barcode_map_init")
+    for letter, want in (("A", 2), ("B", 3), ("C", 1), ("D", 4), ("E", 0), ("@", 0), ("a", 0)):
+        check(get(letter) == want, f"built-in {letter} -> {names[get(letter)]}, want {names[want]}")
+    rnd = random.Random(12)
+    for _ in range(200):
+        letters = rnd.sample(ref.LETTERS, 4)
+        table = {n: (letters[n] if rnd.random() < 0.7 else None) for n in range(4)}
+        frame = ref.encode_config(table)
+        word = frame[0] | (frame[1] << 8)
+        cpu.call("barcode_map_apply", word & 0x0FFF)
+        for letter in ref.LETTERS:
+            want = next((n + 1 for n in range(4) if table[n] == letter), 0)
+            check(get(letter) == want, f"table {table}: {letter} -> {names[get(letter)]}")
+    report(start, "barcode_map_get: built-in table and 200 random action -> letter tables")
+
+
 def main():
     test_parity()
     gcc = find_gcc()
@@ -467,6 +499,7 @@ def main():
             test_bitpack(cpu)
             test_code39(cpu)
             test_obstacle(cpu)
+            test_barcode_map(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

@@ -106,14 +106,33 @@ def decode_event(data):
     return kind, unpack(data, EVENT_LAYOUT[kind][1], EVENT_KIND_BITS)
 
 
+CFG_FORMAT_BIT = 0x1000      # marks the action -> letter format
+
+
 def encode_config(table):
-    """table: {"A": 0..3 or None, ...} -> 2-byte CONFIG frame."""
+    """table: {action code 0..3: "A".."D" or None} -> 2-byte CONFIG frame.
+
+    Action codes: 0 straight, 1 left, 2 right, 3 U-turn. A letter may be
+    given to one action only.
+    """
     word = 0
-    for n, letter in enumerate(LETTERS):
-        code = table.get(letter)
-        if code is not None:
-            word |= (1 << n) | (code << (4 + 2 * n))
+    used = set()
+    for n in range(4):
+        letter = table.get(n)
+        if letter is not None:
+            assert letter in LETTERS and letter not in used, letter
+            used.add(letter)
+            word |= (1 << n) | (LETTERS.index(letter) << (4 + 2 * n))
+    word |= CFG_FORMAT_BIT
     return bytes([word & 0xFF, word >> 8])
+
+
+def config_valid(word):
+    """True if a 16-bit CONFIG word passes the car's checks."""
+    if (word & 0xF000) != CFG_FORMAT_BIT:
+        return False
+    letters = [(word >> (4 + 2 * n)) & 3 for n in range(4) if (word >> n) & 1]
+    return len(letters) == len(set(letters))
 
 
 def encode_cmd(name):

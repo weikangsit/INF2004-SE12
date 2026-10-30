@@ -10,7 +10,7 @@ and no hardware headers (see `port.h`).
 |---|---|---|---|---|
 | `comms` | Buddy 1 | CYW43 hook (template task) | publish queue, link + radio liveness, remote commands, e-stop to Safety | telemetry frames |
 | `telemetry` | Buddy 1 | Telemetry, prio 8 | events (`telemetry_post_event`), 10 Hz frame | shared record, fault mask |
-| `proto`, `barcode_map` | Buddy 1 | library | packed MQTT payloads, A-D action table | - |
+| `proto`, `barcode_map` | Buddy 1 | library | packed MQTT payloads, letter (A-D) per action table | - |
 | `motion_control` | Buddy 2 | Motion, prio 3 | `motion_cmd_q`, `motion_done_q` (seq + result), speed/duty/distance | line reading, IMU heading, safety latch |
 | `motor_driver` | Buddy 2 | SDK side | motor PWM, encoders, Safety motor-inhibit latch | GPIO ISR |
 | `sensor_line` | Buddy 3 | Line / Barcode, prio 2 | newest 2-bit line reading (stamped), line events, black age | - |

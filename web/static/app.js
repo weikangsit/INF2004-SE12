@@ -6,42 +6,50 @@
   const $ = (id) => document.getElementById(id);
   const mqtt = new MqttWs();
 
-  let config = {};            // letter -> 0..3 | null (what the UI shows)
+  let config = {};            // action code 0..3 -> letter "A".."D" | null (what the UI shows)
   let lastHb = 0, lastTlm = 0, ackMask = null, sentMask = null;
 
   // ------------------------------------------------------------------ config grid
-  const OPTS = [["", "\u2014"], ["0", "1. Straight"], ["1", "2. Left"], ["2", "3. Right"], ["3", "4. U-turn"]];
+  // shown in this order; the value is the action's wire code (index into P.ACTIONS)
+  const ACTION_ROWS = [[2, "Right"], [1, "Left"], [0, "Straight"], [3, "U-turn"]];
   function buildGrid() {
     const box = $("letters");
-    for (const L of P.LETTERS) {
+    for (const [n, name] of ACTION_ROWS) {
       const d = document.createElement("div");
-      d.className = "letter"; d.id = "L-" + L;
+      d.className = "letter"; d.id = "A-" + n;
       const sel = document.createElement("select");
-      sel.setAttribute("aria-label", "Action for letter " + L);
-      for (const [v, t] of OPTS) sel.add(new Option(t, v));
-      sel.onchange = () => { config[L] = sel.value === "" ? null : +sel.value; renderConfig(); };
-      d.append(Object.assign(document.createElement("b"), { textContent: L }), sel);
+      sel.setAttribute("aria-label", "Barcode letter for " + name);
+      sel.add(new Option("\u2014", ""));
+      for (const L of P.LETTERS) sel.add(new Option(L, L));
+      sel.onchange = () => {
+        const L = sel.value === "" ? null : sel.value;
+        // a letter can only trigger one action: take it away from any other action
+        for (const [m] of ACTION_ROWS) if (m !== n && config[m] === L) config[m] = null;
+        config[n] = L;
+        renderConfig();
+      };
+      d.append(Object.assign(document.createElement("b"), { textContent: name }), sel);
       box.append(d);
     }
   }
   function renderConfig() {
     let frame;
-    try { frame = P.encodeConfig(config); } catch (e) { return; }
-    for (const L of P.LETTERS) {
-      const d = $("L-" + L), v = config[L];
-      d.querySelector("select").value = v == null ? "" : String(v);
-      d.className = "letter" + (v == null ? "" : " a" + v);
-      if (ackMask !== null && v != null && !((ackMask >>> (L.charCodeAt(0) - 65)) & 1)) d.classList.add("unack");
+    try { frame = P.encodeConfig(config); } catch (e) { config = {}; frame = P.encodeConfig(config); }
+    for (const [n] of ACTION_ROWS) {
+      const d = $("A-" + n), v = config[n];
+      d.querySelector("select").value = v == null ? "" : v;
+      d.className = "letter" + (v == null ? "" : " a" + n);
+      if (ackMask !== null && v != null && !((ackMask >>> n) & 1)) d.classList.add("unack");
     }
     $("cfg-bits").textContent = P.bits(frame);
-    localStorage.setItem("g12-config", JSON.stringify(config));
+    localStorage.setItem("g12-config-actions", JSON.stringify(config));
   }
   function sendConfig() {
     const frame = P.encodeConfig(config);
     sentMask = P.configMask(frame);
     mqtt.publish(ROOT + "/config/barcode", frame, true);
-    $("cfg-state").textContent = "sent " + popcount(sentMask) + " letters, waiting for the car to confirm\u2026";
-    logEvent("config sent (" + popcount(sentMask) + " letters)");
+    $("cfg-state").textContent = "sent " + popcount(sentMask) + " actions, waiting for the car to confirm\u2026";
+    logEvent("config sent (" + popcount(sentMask) + " actions)");
   }
   const popcount = (m) => { let c = 0; for (; m; m >>>= 1) c += m & 1; return c; };
 
@@ -75,7 +83,7 @@
     }
     $("t-line").textContent = t.linePos === -1 ? "left black \u2192 steer left (slow)" : t.linePos === 1 ? "right black \u2192 steer right (slow)" : t.lineSeen ? "junction (both black)" : "centred \u2192 straight";
     const table = t.cfgFromMqtt ? config : P.DEFAULT_TABLE;   // car's built-in table until one arrives
-    $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(table[t.barcode]) : "\u2013";
+    $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(P.actionFor(table, t.barcode)) : "\u2013";
     $("t-hump").textContent = t.humpPeak.toFixed(1) + " mm";
     $("t-up").textContent = fmtTime(t.uptime);
     $("t-flags").textContent = [t.safetyLatched ? "SAFETY STOP" : "safe",
@@ -87,7 +95,7 @@
     push(hist.speed, v); push(hist.pitch, t.pitch); push(hist.obst, t.obstacle == null ? NaN : t.obstacle);
   }
   const compass = (d) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(d / 45) % 8];
-  const actionName = (c) => (c == null ? "not configured" : P.ACTIONS[c]);
+  const actionName = (c) => (c == null ? "no action" : P.ACTIONS[c]);
   const fmtTime = (s) => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
 
   function chart(id, data, color) {
@@ -167,9 +175,9 @@
         ackMask = m;
         const want = P.configMask(P.encodeConfig(config));
         $("cfg-state").textContent = !ack.fromMqtt ? "car is using its built-in table"
-          : m === want ? "car confirmed all " + popcount(m) + " letters"
-          : "car has " + popcount(m) + " letters; differs from this page";
-        logEvent("car confirmed table (" + popcount(m) + " letters)");
+          : m === want ? "car confirmed all " + popcount(m) + " actions"
+          : "car has " + popcount(m) + " actions; differs from this page";
+        logEvent("car confirmed table (" + popcount(m) + " actions)");
         renderConfig();
       }
     }
@@ -183,17 +191,13 @@
 
   // ------------------------------------------------------------------ wiring
   buildGrid();
-  try { config = JSON.parse(localStorage.getItem("g12-config")) || {}; } catch (_) { config = {}; }
+  try { config = JSON.parse(localStorage.getItem("g12-config-actions")) || {}; } catch (_) { config = {}; }
   renderConfig();
   $("url").value = localStorage.getItem("g12-url") ||
     (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mqtt";
   $("conn").onsubmit = (e) => { e.preventDefault(); connect(); };
   $("send-cfg").onclick = sendConfig;
-  $("fill-btn").onclick = () => {
-    const v = $("fill").value;
-    for (const L of P.LETTERS) config[L] = v === "" ? null : +v;
-    renderConfig();
-  };
+  $("default-btn").onclick = () => { config = Object.assign({}, P.DEFAULT_TABLE); renderConfig(); };
   document.querySelectorAll("[data-cmd]").forEach((b) => {
     b.onclick = () => { mqtt.publish(ROOT + "/cmd", P.encodeCmd(b.dataset.cmd)); logEvent("command: " + b.dataset.cmd); };
   });

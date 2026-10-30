@@ -105,21 +105,32 @@ shows the car offline after 3 s without one.
 
 ## config/barcode (2 bytes, retained)
 
+One entry per action n (0 straight, 1 left, 2 right, 3 U-turn), holding
+the barcode letter that triggers it.
+
 | Bits | Meaning |
 |---|---|
-| 0-3 | letter valid (bit n = letter 'A'+n) |
-| 4-11 | 2-bit action per letter, letter n in bits 4+2n..5+2n: 00 straight, 01 left, 10 right, 11 U-turn |
-| 12-15 | reserved, must be 0 (otherwise the frame is rejected) |
+| 0-3 | action has a letter (bit n = action n) |
+| 4-11 | 2-bit letter per action, action n in bits 4+2n..5+2n: letter - 'A' (00 A, 01 B, 10 C, 11 D) |
+| 12 | format, must be 1 (marks this action -> letter layout) |
+| 13-15 | reserved, must be 0 |
 
-The car starts with a built-in table (Week 6 FR2: A left, B right, C
-straight, D U-turn = frame `9f 0c`), so it can run without WiFi. A received
-table replaces it completely. The car asks for one on `config/get` (empty
-payload) every 5 s until a table arrives.
+The car rejects a frame with the wrong length, bit 12 clear, a reserved bit
+set, or one letter given to two actions. Bit 12 makes a table in the old
+letter -> action layout (still retained on a broker) fail instead of being
+read with the turns swapped. A decoded letter that no action has is logged
+and the car keeps following the line.
+
+The car starts with a built-in table (Week 6 FR2: left A, right B,
+straight C, U-turn D = frame `2f 1d`), so it can run without WiFi. A
+received table replaces it completely. The car asks for one on
+`config/get` (empty payload) every 5 s until a table arrives.
 
 ## config/ack (1 byte)
 
-Bits 0-3 are the letters configured in the table now in use; bit 4 is set if
-that table came over MQTT (clear = built-in table); bits 5-7 are 0.
+Bits 0-3 are the actions that have a letter in the table now in use; bit 4
+is set if that table came over MQTT (clear = built-in table); bits 5-7 are
+0.
 
 ## cmd (1 byte)
 

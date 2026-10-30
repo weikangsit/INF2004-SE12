@@ -158,7 +158,7 @@ def main():
         web = Ws(origin=f"http://127.0.0.1:{WEB_PORT}")
         assert web.status == 101 and mqtt_login(web, "web-1") == 0
         sub(web, "robot/12/#")
-        cfg = {"A": 1, "B": 2, "C": 0, "D": 3}
+        cfg = {0: "C", 1: "A", 2: "B", 3: "D"}
         frame = proto_ref.encode_config(cfg)
         assert len(frame) == 2
         pub(web, "robot/12/config/barcode", frame, retain=True)

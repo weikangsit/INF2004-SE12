@@ -35,18 +35,14 @@
   </section>
 
   <section class="panel" aria-labelledby="h-cfg">
-    <h2 id="h-cfg">Barcode actions (A&ndash;D)</h2>
-    <p class="hint">Choose what each letter makes the car do. Letters left as &ldquo;&mdash;&rdquo; are ignored
-      (the car keeps following the line). Until a table arrives the car uses its built-in one
-      (A left, B right, C straight, D U-turn). The table is sent as a 2-byte retained frame, so the car
+    <h2 id="h-cfg">Barcode actions</h2>
+    <p class="hint">Enter the barcode letter (A&ndash;D) that triggers each action. Each letter can trigger only
+      one action; picking a letter that is already used moves it. A barcode whose letter no action has is
+      logged and the car keeps following the line. Until a table arrives the car uses its built-in one
+      (left A, right B, straight C, U-turn D). The table is sent as a 2-byte retained frame, so the car
       also receives it when it reconnects.</p>
     <div class="row">
-      <label>Fill all with
-        <select id="fill">
-          <option value="">&mdash;</option><option value="0">1. Straight</option><option value="1">2. Left</option>
-          <option value="2">3. Right</option><option value="3">4. U-turn</option>
-        </select></label>
-      <button id="fill-btn" type="button">Apply</button>
+      <button id="default-btn" type="button">Built-in letters</button>
       <button id="send-cfg" class="primary" type="button">Send to car</button>
       <span id="cfg-state" class="muted" aria-live="polite"></span>
     </div>

@@ -12,7 +12,7 @@
  *  telemetry             car->web   18     proto_telem_t, 10 Hz
  *  event                 car->web   1..4   4-bit kind + per-kind fields
  *  heartbeat             car->web   1      8-bit sequence, 1 Hz
- *  config/barcode        web->car   2      A-D action table (retained)
+ *  config/barcode        web->car   2      letter A-D per action (retained)
  *  config/get            car->web   0      request for the table
  *  config/ack            car->web   1      table now in use
  *  cmd                   web->car   1      5-bit tag + 3-bit command
@@ -32,20 +32,28 @@
 #define PROTO_CMD_LEN         (1U)
 #define PROTO_MSG_MAX_LEN     (PROTO_TELEM_LEN)
 
-/* Barcode actions on the wire (2 bits per letter). */
+/* Barcode actions on the wire; also the entry index in the CONFIG word. */
 #define PROTO_ACT_STRAIGHT    (0U)
 #define PROTO_ACT_LEFT        (1U)
 #define PROTO_ACT_RIGHT       (2U)
 #define PROTO_ACT_UTURN       (3U)
 
-/* Barcode letters carried by the protocol: A..D. */
+/* Barcode letters carried by the protocol: A..D (Tribunal 1). */
 #define PROTO_LETTER_COUNT    (4U)
+#define PROTO_ACTION_COUNT    (4U)
 
-/* CONFIG word: bits 0..3 letter valid, bits 4..11 actions (2 bits per
- * letter), bits 12..15 reserved and must be zero. */
+/* CONFIG word, one entry per action n = PROTO_ACT_*: bit n set when that
+ * action has a letter, bits 4+2n..5+2n its letter - 'A' (0..3). No two
+ * actions may share a letter. Bit 12 must be set: it marks this format,
+ * so a table in the old letter -> action format (bit 12 clear) left
+ * retained on the broker is rejected instead of being misread. Bits
+ * 13..15 reserved and must be zero. */
 #define PROTO_CFG_VALID_MASK  (0x000FU)
-#define PROTO_CFG_ACT_SHIFT   (4U)
+#define PROTO_CFG_LETTER_SHIFT (4U)
+#define PROTO_CFG_LETTER_BITS (2U)
+#define PROTO_CFG_LETTER_MASK (0x3U)
 #define PROTO_CFG_TABLE_MASK  (0x0FFFU)
+#define PROTO_CFG_FORMAT_BIT  (0x1000U)
 
 /* Telemetry status bits (2 bits). */
 #define PROTO_ST_LATCHED      (1U << 0)   /* safety latch engaged          */

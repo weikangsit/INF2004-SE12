@@ -24,7 +24,7 @@
 #define CMD_TAG_MASK         (0xF8U)
 #define CMD_ID_MASK          (0x07U)
 
-#define CFG_RESERVED_MASK    (0xF000U)
+#define CFG_RESERVED_MASK    (0xF000U)   /* format bit + reserved    */
 #define ACK_FROM_MQTT_SHIFT  (4U)
 
 /* Unit conversions of the generic event inputs. */
@@ -91,6 +91,7 @@ static bitpack_field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
 static uint32_t event_values (proto_event_t kind, uint8_t code,
                               int16_t value1, int16_t value2,
                               int32_t * p_values);
+static bool     config_letters_unique (uint32_t word);
 
 /*!
  * @brief  Pack one telemetry frame.
@@ -162,8 +163,9 @@ proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
 }
 
 /*!
- * @brief  Build the CFG_ACK byte: bits 0..3 letters in use, bit 4 set when
- *         the table came over MQTT (clear = built-in defaults).
+ * @brief  Build the CFG_ACK byte: bits 0..3 actions that have a letter,
+ *         bit 4 set when the table came over MQTT (clear = built-in
+ *         defaults).
  * @param  table        Packed table (PROTO_CFG_* layout).
  * @param  b_from_mqtt  True if the table was received over MQTT.
  * @return The CFG_ACK byte.
@@ -212,11 +214,12 @@ proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
 }
 
 /*!
- * @brief  Validate and decode a CONFIG frame (A-D action table).
+ * @brief  Validate and decode a CONFIG frame (letter A-D per action).
  * @param  p_frame  Received bytes.
  * @param  len      Number of received bytes.
  * @param  p_table  Output 12-bit table, written only on success.
- * @return True if the frame is valid (right length, reserved bits zero).
+ * @return True if the frame is valid (right length, format bit set,
+ *         reserved bits zero, no letter given to two actions).
  */
 bool
 proto_unpack_config (uint8_t const * p_frame, uint32_t len,
@@ -229,7 +232,8 @@ proto_unpack_config (uint8_t const * p_frame, uint32_t len,
         uint32_t word = (uint32_t) p_frame[0] |
                         ((uint32_t) p_frame[1] << BITS_PER_BYTE);
 
-        if (0U == (word & CFG_RESERVED_MASK))
+        if ((PROTO_CFG_FORMAT_BIT == (word & CFG_RESERVED_MASK)) &&
+            config_letters_unique(word))
         {
             /* Masked to 12 bits, so it fits a uint16_t. */
             *p_table = (uint16_t) (word & PROTO_CFG_TABLE_MASK);
@@ -332,6 +336,40 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
     }
 
     return (count);
+}
+
+/*!
+ * @brief  Check that no letter is given to two actions, so a decoded
+ *         letter always selects one action.
+ * @param  word  CONFIG word (PROTO_CFG_* layout).
+ * @return True if every configured action has its own letter.
+ */
+static bool
+config_letters_unique (uint32_t word)
+{
+    uint32_t used   = 0U;                         /* bit n = letter 'A'+n  */
+    uint32_t action = 0U;
+    bool     b_ok   = true;
+
+    for (action = 0U; action < PROTO_ACTION_COUNT; action++)
+    {
+        if (0U != (word & (1U << action)))
+        {
+            uint32_t const letter = (word >> (PROTO_CFG_LETTER_SHIFT +
+                                              (PROTO_CFG_LETTER_BITS *
+                                               action))) &
+                                    PROTO_CFG_LETTER_MASK;
+
+            if (0U != (used & (1U << letter)))
+            {
+                b_ok = false;
+            }
+
+            used |= (1U << letter);
+        }
+    }
+
+    return (b_ok);
 }
 
 /*** end of file ***/
