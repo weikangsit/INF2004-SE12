@@ -151,6 +151,13 @@
  * LINE_STEER_DIR +1 steers toward the black sensor, -1 away from it.   */
 #define K_LINE_STEER_MPS     (0.075f)
 #define LINE_STEER_DIR       (1)
+/* Both white is either centred or a line that slipped out past the
+ * inner sensor on a curve (measured: car left the circle after half a
+ * turn). Keep turning toward the side that last saw black at this
+ * fraction of K_LINE_STEER_MPS. Simulated: 0.25 loses the circle far
+ * less than 0 (straight) with straights as tidy; 1.0 over-turns and
+ * loses gentle curves. TUNE.                                           */
+#define LINE_LAST_GAIN       (0.25f)
 /* After the last steering correction the car stays at SPEED_STEER for
  * this long before ramping back to cruise, so the speed does not surge
  * 13 <-> 22 cm/s each time the sensor flickers on a curve (measured:

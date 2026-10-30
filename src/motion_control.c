@@ -153,6 +153,7 @@ typedef struct
     bool          b_follow;
     bool          b_steered;     /* line steering seen in this command    */
     uint32_t      steer_ms;      /* time of the last steering correction  */
+    int32_t       line_last;     /* side that last saw black: -1, 0, +1   */
     bool          b_end_on_line;
     float32_t     speed_mps;
     float32_t     dist_m;
@@ -610,6 +611,7 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.cal_r0        = p_in->count_r;
     g_ctx.test_phase    = 0U;
     g_ctx.b_steered     = false;
+    g_ctx.line_last     = 0;
     g_ctx.sweep_stage   = SWEEP_SETTLE;
     g_ctx.stage_ms      = p_in->now_ms;
     pid_reset(&g_ctx.pid_l);
@@ -760,15 +762,19 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 
 /*!
  * @brief  Steering differential from the line sensors, which straddle
- *         the line: one sensor on black turns toward it; both white
- *         (centred) or both black (junction) drive straight.
+ *         the line: one sensor on black turns toward it; both white keeps
+ *         turning gently (LINE_LAST_GAIN) toward the side that last saw
+ *         black (both white cannot
+ *         tell centred from a line that slipped out past the inner sensor
+ *         on a curve); both black (junction) drives straight.
  * @param  p_in  Inputs of this period (fresh line reading).
  * @return Steering differential, m/s (+ turns right).
  */
 static float32_t
 line_steer (motion_in_t const * p_in)
 {
-    int32_t pos = 0;                              /* -1 left, +1 right    */
+    int32_t   pos  = 0;                           /* -1 left, +1 right    */
+    float32_t gain = 1.0f;
 
     if (VEHICLE_IR_LEFT == p_in->line_bits)
     {
@@ -778,19 +784,26 @@ line_steer (motion_in_t const * p_in)
     {
         pos = 1;
     }
+    else if (0U == p_in->line_bits)
+    {
+        pos  = g_ctx.line_last;                   /* keep turning, gently */
+        gain = LINE_LAST_GAIN;
+    }
     else
     {
-        /* Both white (centred) or both black (junction): straight. */
+        g_ctx.line_last = 0;                      /* junction: straight   */
     }
 
-    if (0 != pos)
+    if ((VEHICLE_IR_LEFT == p_in->line_bits) ||
+        (VEHICLE_IR_RIGHT == p_in->line_bits))
     {
+        g_ctx.line_last = pos;
         g_ctx.b_steered = true;                   /* hold steering speed  */
         g_ctx.steer_ms  = p_in->now_ms;
     }
 
     /* pos and LINE_STEER_DIR are +/-1, so the product is exact. */
-    return ((float32_t) (LINE_STEER_DIR * pos) * K_LINE_STEER_MPS);
+    return ((float32_t) (LINE_STEER_DIR * pos) * K_LINE_STEER_MPS * gain);
 }
 
 /*!
