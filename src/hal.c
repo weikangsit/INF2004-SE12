@@ -49,6 +49,10 @@ static volatile uint32_t g_bar_buf[BAR_EDGE_BUF_LEN];
 static volatile uint32_t g_bar_head    = 0U;
 static volatile uint32_t g_bar_tail    = 0U;
 static volatile uint32_t g_bar_last_us = 0U;     /* ISR only             */
+/* Running totals for the barcode status report; ISR is the only writer,
+ * and an aligned 32-bit read is a single access. */
+static volatile uint32_t g_bar_irqs    = 0U;     /* interrupts on the pin */
+static volatile uint32_t g_bar_kept    = 0U;     /* edges stored          */
 
 /* Ultrasonic echo: written by the ISR, read after the echo signal. */
 static volatile uint32_t g_echo_rise_us  = 0U;
@@ -100,6 +104,19 @@ hal_gpio_irq_service (void)
     motor_driver_encoder_isr(now_ms);
 
     return (barcode_isr(now_us) | echo_isr(now_us));
+}
+
+/*!
+ * @brief  Running totals of the barcode pin (status report): interrupts,
+ *         and edges kept after the debounce with room in the ring.
+ * @param  p_irqs  Output, interrupts on the barcode pin since boot.
+ * @param  p_kept  Output, edges stored since boot.
+ */
+void
+hal_bar_stats (uint32_t * p_irqs, uint32_t * p_kept)
+{
+    *p_irqs = g_bar_irqs;
+    *p_kept = g_bar_kept;
 }
 
 /*!
@@ -296,6 +313,7 @@ barcode_isr (uint32_t now_us)
     if (0U != events)
     {
         gpio_acknowledge_irq(PIN_IR_BC, events);
+        g_bar_irqs++;
 
         if ((now_us - g_bar_last_us) >= BAR_DEBOUNCE_US)
         {
@@ -309,6 +327,7 @@ barcode_isr (uint32_t now_us)
                 __dmb();                          /* data before head     */
                 g_bar_head = next;
                 sig        = HAL_SIG_BARCODE;
+                g_bar_kept++;
             }
 
             g_bar_last_us = now_us;

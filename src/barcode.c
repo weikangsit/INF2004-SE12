@@ -20,6 +20,7 @@
 #include "code39.h"
 #include "hal.h"
 #include "proto.h"
+#include "systime.h"
 #include "telemetry.h"
 #include "vehicle_state.h"
 
@@ -27,6 +28,8 @@
 #define QUEUE_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + 1 byte, rounded */
 #define LETTER_FIRST         ('A')
+#define STATUS_COUNT_MAX     (15U)     /* 4-bit reads field              */
+#define STATUS_VALUE_MAX     (255U)    /* 8-bit count fields             */
 
 typedef enum
 {
@@ -40,10 +43,16 @@ static uint32_t    g_edges[BAR_EDGE_BUF_LEN];          /* task only        */
 static uint32_t    g_n_edges  = 0U;                    /* task only        */
 
 static uint8_t     g_dbg_seq  = 0U;                    /* task only        */
+static uint32_t    g_reads    = 0U;                    /* task only        */
+static uint32_t    g_status_ms = 0U;                   /* task only        */
+static uint32_t    g_prev_irqs  = 0U;                  /* task only        */
+static uint32_t    g_prev_kept  = 0U;                  /* task only        */
+static uint32_t    g_prev_reads = 0U;                  /* task only        */
 
 static void edges_collect (void);
 static void capture_finish (void);
 static void capture_send (uint8_t letter);
+static void status_send (void);
 
 /*!
  * @brief  Create the letter queue. Call from usermain() before the tasks
@@ -79,6 +88,13 @@ barcode_poll (void)
         {
             capture_finish();
         }
+    }
+
+    if ((0 != BAR_LOG) &&
+        ((systime_now_ms() - g_status_ms) >= BAR_STATUS_MS))
+    {
+        g_status_ms = systime_now_ms();
+        status_send();
     }
 }
 
@@ -138,6 +154,8 @@ capture_finish (void)
                                          BAR_MIN_WIDE_RATIO_X10);
     /* n_edges <= BAR_EDGE_BUF_LEN (64), so it fits an int16_t. */
     int16_t const edges  = (int16_t) g_n_edges;
+
+    g_reads++;
 
     if (0 != BAR_LOG)
     {
@@ -209,7 +227,7 @@ capture_send (uint8_t letter)
                                       (g_edges[done] & ~LEVEL_BIT);
 
             /* An element is shorter than BAR_IDLE_TIMEOUT_US plus one
-             * period (~155 ms = 1550 units), so it fits a uint16_t. */
+             * period (~505 ms = 2020 units), so it fits a uint16_t. */
             dbg.widths[idx] = (uint16_t) ((width_us +
                                            (PROTO_BARDBG_UNIT_US / 2U)) /
                                           PROTO_BARDBG_UNIT_US);
@@ -225,6 +243,41 @@ capture_send (uint8_t letter)
     /* Masked to 3 bits, so it fits a uint8_t. */
     g_dbg_seq = (uint8_t) (((uint32_t) g_dbg_seq + 1U) &
                            PROTO_BARDBG_SEQ_MASK);
+}
+
+/*!
+ * @brief  Report the barcode sensor once per BAR_STATUS_MS (BAR_LOG): its
+ *         level now, and per period the pin interrupts, the edges kept
+ *         and the reads finished, so each step of the chain can be seen.
+ */
+static void
+status_send (void)
+{
+    uint32_t       irqs   = 0U;
+    uint32_t       kept   = 0U;
+    uint32_t const reads  = g_reads - g_prev_reads;
+    uint32_t const reads_sat = (reads > STATUS_COUNT_MAX) ? STATUS_COUNT_MAX :
+                                                            reads;
+    uint32_t const black  = (IR_BLACK_LEVEL ==
+                             (port_gpio_get(PIN_IR_BC) ? 1U : 0U)) ? 1U : 0U;
+    uint32_t       d_irqs = 0U;
+    uint32_t       d_kept = 0U;
+
+    hal_bar_stats(&irqs, &kept);
+    d_irqs = irqs - g_prev_irqs;                  /* wraps cleanly        */
+    d_kept = kept - g_prev_kept;
+    g_prev_irqs  = irqs;
+    g_prev_kept  = kept;
+    g_prev_reads = g_reads;
+
+    /* Saturated first, so the narrowing casts keep the values (5 bits for
+     * the code, 8 bits for the counts); the packer clamps again. */
+    telemetry_post_event(EV_BAR_STATUS,
+                         (uint8_t) ((reads_sat << 1) | black),
+                         (int16_t) ((d_irqs > STATUS_VALUE_MAX) ?
+                                    STATUS_VALUE_MAX : d_irqs),
+                         (int16_t) ((d_kept > STATUS_VALUE_MAX) ?
+                                    STATUS_VALUE_MAX : d_kept));
 }
 
 /*** end of file ***/

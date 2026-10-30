@@ -32,6 +32,7 @@ EVENT_LAYOUT = {
     10: ("BOOT", [("hours", 5, 0), ("minutes", 6, 0), ("seconds", 6, 0)]),
     11: ("MAG_CAL", [("result", 1, 0)]),
     12: ("DEADBAND", [("wheel", 1, 0), ("deadband", 7, 0), ("kff", 8, 0)]),
+    13: ("BAR_STATUS", [("black", 1, 0), ("reads", 4, 0), ("irqs", 8, 0), ("kept", 8, 0)]),
 }
 EVENT_KIND_BITS = 4
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -134,7 +135,7 @@ BARDBG_HEADER = [("seq", 3, 0), ("chunk", 3, 0), ("last", 1, 0), ("hasLetter", 1
 
 
 def encode_bar_debug(seq, chunk, last, letter, widths):
-    """One debug/barcode frame. letter: 0..25 or None; widths: 100 us units."""
+    """One debug/barcode frame. letter: 0..25 or None; widths: 250 us units."""
     count = min(len(widths), 10)
     fields = BARDBG_HEADER + [("w", 11, 0)] * count
     values = [seq, chunk, int(last), int(letter is not None), letter or 0, count] + list(widths[:count])

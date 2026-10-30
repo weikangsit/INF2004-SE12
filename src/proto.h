@@ -73,11 +73,12 @@
 #define PROTO_BAR_EV_UNKNOWN     (0xFEU)   /* letter read, not in the table */
 #define PROTO_BAR_EV_UNREADABLE  (0xFFU)   /* no valid Code 39 symbol       */
 
-/* debug/barcode frame: element widths of one capture in 100 us units,
+/* debug/barcode frame: element widths of one capture in 250 us units
+ * (11 bits: up to 511.75 ms, above BAR_IDLE_TIMEOUT_US),
  * PROTO_BARDBG_WIDTHS per frame (one Code 39 character + its gap). */
 #define PROTO_BARDBG_WIDTHS   (10U)
 #define PROTO_BARDBG_MAX_LEN  (16U)    /* 17 header bits + 10 x 11 bits */
-#define PROTO_BARDBG_UNIT_US  (100U)
+#define PROTO_BARDBG_UNIT_US  (250U)
 #define PROTO_BARDBG_SEQ_MASK (0x7U)
 
 /* Front range value meaning "no valid echo". */
@@ -119,6 +120,9 @@ typedef enum
     EV_MAG_CAL,      /* code 0 ok, 1 failed (too little field change)     */
     EV_DEADBAND,     /* code = wheel (0 left, 1 right), value1 = dead band
                         percent (100 = never moved), value2 = KFF x100   */
+    EV_BAR_STATUS,   /* code bit 0 = barcode sensor on black now, bits 1+
+                        = reads finished; value1 = pin interrupts, value2
+                        = edges kept (each in the last report period)     */
     EV_KIND_COUNT
 } proto_event_t;
 
@@ -155,7 +159,7 @@ typedef struct
     bool     b_letter;       /* a letter was decoded, 1 bit               */
     uint8_t  letter;         /* letter - 'A', 0..25, 5 bits               */
     uint8_t  count;          /* widths in this frame, 0..10, 4 bits       */
-    uint16_t widths[PROTO_BARDBG_WIDTHS];  /* 100 us units, 11 bits each  */
+    uint16_t widths[PROTO_BARDBG_WIDTHS];  /* 250 us units, 11 bits each  */
 } proto_bar_debug_t;
 
 uint32_t proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame);

@@ -203,6 +203,8 @@ def event_fields(kind, code, v1, v2):
         return [code - 1, cdiv(v1, 4), cdiv(v2, 4)]
     if kind == 10:
         return [cdiv(v1, 100), v1 - 100 * cdiv(v1, 100), v2]
+    if kind == 13:
+        return [code & 1, code >> 1, v1, v2]
     return [code, v1, v2][:len(ref.EVENT_LAYOUT[kind][1])]
 
 
@@ -255,8 +257,8 @@ def test_firmware(cpu):
             count += 1
     check(cpu.call("proto_pack_event", 0, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
           "unknown event kind 0 should give length 0")
-    check(cpu.call("proto_pack_event", 13, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
-          "unknown event kind 13 should give length 0")
+    check(cpu.call("proto_pack_event", 14, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
+          "unknown event kind 14 should give length 0")
     report(start, f"proto_pack_event: {count} vectors across all {len(ref.EVENT_LAYOUT)} kinds")
 
     # Commands: every byte value; wrong lengths rejected.

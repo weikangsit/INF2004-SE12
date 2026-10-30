@@ -180,7 +180,11 @@
 /* ------------------------------------------------------------------ */
 #define BAR_DEBOUNCE_US      (500U)
 #define BAR_EDGES_FULL       (30U)     /* one '*X*' symbol = 30 edges   */
-#define BAR_IDLE_TIMEOUT_US  (150000U)
+/* A read ends after BAR_EDGES_FULL edges, or after this long without an
+ * edge. Long enough for a wide bar at the 8 cm/s steering speed or a slow
+ * hand swipe (was 150 ms, which cut such reads short). A full read still
+ * ends at once on its 30th edge, so this does not delay a turn. TUNE.  */
+#define BAR_IDLE_TIMEOUT_US  (500000U)
 #define BAR_EDGE_BUF_LEN     (64U)
 /* Narrowest wide element / widest narrow element, x10. Code 39 uses
  * 2:1 to 3:1; a ratio under 1.5 is not a clean read (Tribunal 1).      */
@@ -189,6 +193,9 @@
  * element widths and the decoded letter), for checking the reader.
  * 0 for normal runs.                                                   */
 #define BAR_LOG              (1)
+/* With BAR_LOG, the barcode sensor status (level now, interrupts, edges
+ * kept, reads) is sent this often (event BAR_STATUS).                  */
+#define BAR_STATUS_MS        (1000U)
 #define CAL_WINDOW_MS        (5000U)
 /* Two straddling sensors cannot tell "centred" from "lost": the line
  * counts as lost when neither sensor has seen black for this long

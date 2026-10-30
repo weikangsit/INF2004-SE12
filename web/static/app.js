@@ -152,6 +152,14 @@
     if (!badFrames.has(sub)) { badFrames.add(sub); logEvent(msg, true); }
   }
 
+  // ------------------------------------------------------------------ barcode sensor status
+  function showBarStatus(f) {
+    $("t-bcs").textContent = f.black ? "BLACK" : "white";
+    $("t-bcs").classList.toggle("black", !!f.black);
+    $("t-bcs-n").textContent = f.irqs + " interrupts, " + f.kept + " edges kept, " +
+      f.reads + " reads /s" + (f.irqs === 0 ? " \u2013 no signal from the sensor" : "");
+  }
+
   // ------------------------------------------------------------------ barcode debug log
   const barDbg = new Map();   // seq -> frames received so far
   function barDebug(f) {
@@ -178,7 +186,9 @@
       if (t) showTelem(t, u8); else badFrame(sub, u8, 18);
     } else if (sub === "event") {
       const e = P.decodeEvent(u8, carTable);
-      if (e) logEvent(e.text, e.fault); else badFrame(sub, u8, "1-4");
+      if (!e) badFrame(sub, u8, "1-4");
+      else if (e.kind === "BAR_STATUS") showBarStatus(e.fields);   // card, not the log (1 per second)
+      else logEvent(e.text, e.fault);
     } else if (sub === "debug/barcode") {
       const f = P.decodeBarDebug(u8);
       if (f) barDebug(f); else badFrame(sub, u8, "3-16");

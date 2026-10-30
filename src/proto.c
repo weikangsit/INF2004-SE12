@@ -16,7 +16,7 @@
 #define BITS_PER_BYTE        (8U)
 #define EVENT_KIND_BITS      (4U)
 #define TELEM_FIELD_COUNT    (18U)
-#define EVENT_FIELDS_MAX     (3U)   /* fields of any kind except BARCODE */
+#define EVENT_FIELDS_MAX     (4U)   /* fields of any kind except BARCODE */
 #define BARCODE_FIELD_COUNT  (4U)
 #define EVENT_INPUT_COUNT    (3U)   /* code, value1, value2              */
 
@@ -79,7 +79,9 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
     { 3U, { { 2U, false }, { 13U, true }, { 13U, true } } },    /* MOTOR   */
     { 3U, { { 5U, false }, { 6U, false }, { 6U, false } } },    /* BOOT    */
     { 1U, { { 1U, false } } },                                  /* MAG_CAL */
-    { 3U, { { 1U, false }, { 7U, false }, { 8U, false } } }     /* DEADBAND*/
+    { 3U, { { 1U, false }, { 7U, false }, { 8U, false } } },    /* DEADBAND*/
+    /* BAR_STATUS: on black, reads, interrupts, edges kept */
+    { 4U, { { 1U, false }, { 4U, false }, { 8U, false }, { 8U, false } } }
 };
 
 /** BARCODE: slot, valid, read (a letter was decoded), edge count. */
@@ -347,6 +349,14 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
             p_values[1] = value1 % HHMM_SPLIT;
             p_values[2] = value2;
             count = 3U;
+        break;
+
+        case EV_BAR_STATUS:
+            p_values[0] = (int32_t) ((uint32_t) code & 1U);
+            p_values[1] = (int32_t) ((uint32_t) code >> 1);   /* clamped */
+            p_values[2] = value1;
+            p_values[3] = value2;
+            count = 4U;
         break;
 
         case EV_STATE:

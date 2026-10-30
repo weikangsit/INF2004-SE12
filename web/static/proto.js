@@ -33,6 +33,7 @@
     10: ["BOOT", [["hours", 5, 0], ["minutes", 6, 0], ["seconds", 6, 0]]],
     11: ["MAG_CAL", [["result", 1, 0]]],
     12: ["DEADBAND", [["wheel", 1, 0], ["deadband", 7, 0], ["kff", 8, 0]]],
+    13: ["BAR_STATUS", [["black", 1, 0], ["reads", 4, 0], ["irqs", 8, 0], ["kept", 8, 0]]],
   };
   const EVENT_KIND_BITS = 4;
 
@@ -194,6 +195,8 @@
             (f.kff / 100).toFixed(2) + " duty per m/s -> set MOTOR_DEADBAND_" + side + " (" +
             (f.deadband / 100).toFixed(2) + "f) and PID_KFF_" + side + " (" + (f.kff / 100).toFixed(2) + "f)";
       }
+      case 13: return "barcode sensor " + (f.black ? "BLACK" : "white") + ", " + f.irqs +
+                 " interrupts, " + f.kept + " edges kept, " + f.reads + " reads in the last second";
       default: return "event " + kind;
     }
   }
@@ -201,7 +204,7 @@
   // debug/barcode: seq 3, chunk 3, last 1, letter valid 1, letter 5, count 4, then count x 11-bit widths
   const BARDBG_HEADER = [["seq", 3, 0], ["chunk", 3, 0], ["last", 1, 0], ["hasLetter", 1, 0],
                          ["letter", 5, 0], ["count", 4, 0]];
-  const BARDBG_UNIT_MS = 0.1;
+  const BARDBG_UNIT_MS = 0.25;
 
   /** One debug/barcode frame -> { seq, chunk, last, letter|null, widths (ms) }, or null. */
   function decodeBarDebug(u8) {
