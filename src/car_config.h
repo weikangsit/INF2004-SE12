@@ -151,6 +151,11 @@
  * LINE_STEER_DIR +1 steers toward the black sensor, -1 away from it.   */
 #define K_LINE_STEER_MPS     (0.075f)
 #define LINE_STEER_DIR       (1)
+/* After the last steering correction the car stays at SPEED_STEER for
+ * this long before ramping back to cruise, so the speed does not surge
+ * 13 <-> 22 cm/s each time the sensor flickers on a curve (measured:
+ * jerky curves). TUNE: longer = smoother, slower on S-bends.           */
+#define LINE_SLOW_HOLD_MS    (400U)
 #define K_DIST_EQ            (2.00f)   /* m/s per m of wheel mismatch   */
 #define K_HEADING            (0.004f)  /* m/s per degree heading error  */
 #define TURN_EARLY_FRACTION  (0.60f)   /* new branch accepted after 60 % */
@@ -175,6 +180,11 @@
  * counts as lost when neither sensor has seen black for this long
  * while line following (Week 6: 3 s). TUNE on long straights.          */
 #define LINE_LOST_MS         (3000U)
+/* A sensor that saw black keeps reporting black for this long, so a
+ * reading that flickers white at the line edge (measured: missed black
+ * on curves, car ran straight off) still steers. Junctions and
+ * calibration use the raw reading. 30 ms = 6.6 mm at cruise. TUNE.     */
+#define LINE_BLACK_HOLD_MS   (30U)
 
 /* ------------------------------------------------------------------ */
 /* IMU (Week 6 Section 3, Assumption A4)                                */

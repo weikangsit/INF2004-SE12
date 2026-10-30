@@ -151,6 +151,8 @@ typedef struct
     cmd_id_t      id;
     uint8_t       seq;
     bool          b_follow;
+    bool          b_steered;     /* line steering seen in this command    */
+    uint32_t      steer_ms;      /* time of the last steering correction  */
     bool          b_end_on_line;
     float32_t     speed_mps;
     float32_t     dist_m;
@@ -606,6 +608,7 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.cal_l0        = p_in->count_l;
     g_ctx.cal_r0        = p_in->count_r;
     g_ctx.test_phase    = 0U;
+    g_ctx.b_steered     = false;
     g_ctx.sweep_stage   = SWEEP_SETTLE;
     g_ctx.stage_ms      = p_in->now_ms;
     pid_reset(&g_ctx.pid_l);
@@ -718,9 +721,6 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
         target = fminf(target, end_speed_cap(g_ctx.dist_m - (sign * travel)));
     }
 
-    ramp_base(target);
-    speed = g_ctx.v_base;
-
     if (g_ctx.b_follow && p_in->b_line_fresh)
     {
         int32_t pos = 0;                          /* -1 left, +1 right    */
@@ -740,7 +740,8 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 
         if (0 != pos)
         {
-            speed = fminf(speed, (float32_t) SPEED_STEER_CMS / CM_PER_M);
+            g_ctx.b_steered = true;
+            g_ctx.steer_ms  = p_in->now_ms;
         }
 
         /* pos and LINE_STEER_DIR are +/-1, so the product is exact. */
@@ -759,6 +760,16 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
          * wheel that has travelled further is slowed either way. */
         steer = -((K_DIST_EQ * d_err) + (K_HEADING * h_err));
     }
+
+    /* Through a curve: steering speed, entered and left on the ramp. */
+    if (g_ctx.b_follow && g_ctx.b_steered &&
+        ((p_in->now_ms - g_ctx.steer_ms) < LINE_SLOW_HOLD_MS))
+    {
+        target = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
+    }
+
+    ramp_base(target);
+    speed = g_ctx.v_base;
 
     g_ctx.tgt_l = (sign * speed) + steer;
     g_ctx.tgt_r = (sign * speed) - steer;

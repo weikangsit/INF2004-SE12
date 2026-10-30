@@ -7,6 +7,10 @@
  *  calibration can never silently stop line following.
  *  Barcode region: barcode_poll() (barcode.c) every period.
  *
+ *  Each sensor's black reading is held for LINE_BLACK_HOLD_MS to bridge
+ *  white flicker at the line edge; junction detection and calibration
+ *  use the raw reading, so the hold cannot make a false junction.
+ *
  *  Shared data: the newest reading and the last-black time are single
  *  32-bit words with this task as the only writer; an aligned word load
  *  or store is a single access, so readers on either core never see a
@@ -39,14 +43,25 @@ typedef enum
     LS_FOLLOW
 } line_state_t;
 
+/** Black-hold state of one sensor. */
+typedef struct
+{
+    uint32_t last_black_ms;
+    bool     b_seen;         /* has seen black at least once              */
+} black_hold_t;
+
 static ID                g_evt_flg       = 0;
 static volatile uint32_t g_latest        = 0U;    /* bits | stamp << 16   */
 static volatile uint32_t g_last_black_ms = 0U;
 static volatile bool     g_b_cal_request = true;  /* calibrate at boot    */
 static volatile bool     g_b_ready       = false;
 
+static black_hold_t      g_hold[2];             /* left, right          */
+
 static uint8_t sensors_read (void);
-static void    reading_publish (uint8_t bits, uint8_t prev_bits);
+static uint8_t black_hold (uint8_t raw, uint32_t now_ms);
+static void    reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
+                                uint8_t prev_bits);
 
 /*!
  * @brief  Create the event flag and the barcode queue. Call from
@@ -77,6 +92,7 @@ sensor_line_task (INT stacd, void * p_exinf)
     uint32_t     cal_start = systime_now_ms();
     uint8_t      cal_seen  = 0U;
     uint8_t      prev_bits = 0U;
+    uint8_t      prev_raw  = 0U;
 
     (void) stacd;
     (void) p_exinf;
@@ -85,14 +101,17 @@ sensor_line_task (INT stacd, void * p_exinf)
 
     for (;;)
     {
+        uint8_t raw  = 0U;
         uint8_t bits = 0U;
 
         systime_period_wait(&next_us, PERIOD_LINE_MS);
         safety_heartbeat(SAFETY_HB_LINE);
 
-        bits = sensors_read();
-        reading_publish(bits, prev_bits);
+        raw  = sensors_read();
+        bits = black_hold(raw, systime_now_ms());
+        reading_publish(bits, raw, prev_raw, prev_bits);
         prev_bits = bits;
+        prev_raw  = raw;
 
         if (g_b_cal_request)
         {
@@ -106,9 +125,9 @@ sensor_line_task (INT stacd, void * p_exinf)
         if (LS_CALIBRATE == state)
         {
             /* bits is 0..3, so the OR stays within 2 bits. */
-            cal_seen = (uint8_t) (cal_seen | bits);
+            cal_seen = (uint8_t) (cal_seen | raw);
 
-            if ((BOTH_BLACK == cal_seen) && (0U == bits))
+            if ((BOTH_BLACK == cal_seen) && (0U == raw))
             {
                 g_b_ready = true;                 /* both seen, now white */
                 state     = LS_FOLLOW;
@@ -214,13 +233,48 @@ sensors_read (void)
 }
 
 /*!
+ * @brief  Hold each sensor's black reading for LINE_BLACK_HOLD_MS.
+ * @param  raw     This raw reading, VEHICLE_IR_* bits.
+ * @param  now_ms  Current time.
+ * @return Held reading, VEHICLE_IR_* bits.
+ */
+static uint8_t
+black_hold (uint8_t raw, uint32_t now_ms)
+{
+    static uint8_t const masks[2] = { VEHICLE_IR_LEFT, VEHICLE_IR_RIGHT };
+    uint32_t             held     = 0U;
+    uint32_t             idx      = 0U;
+
+    for (idx = 0U; idx < 2U; idx++)
+    {
+        if (0U != (raw & masks[idx]))
+        {
+            g_hold[idx].last_black_ms = now_ms;
+            g_hold[idx].b_seen        = true;
+        }
+
+        if (g_hold[idx].b_seen &&
+            ((now_ms - g_hold[idx].last_black_ms) < LINE_BLACK_HOLD_MS))
+        {
+            held |= masks[idx];
+        }
+    }
+
+    /* At most two bits set. */
+    return ((uint8_t) held);
+}
+
+/*!
  * @brief  Publish a reading: newest word, last-black time, events, and
  *         the shared state record (only when the reading changes).
- * @param  bits       This reading.
- * @param  prev_bits  Previous reading.
+ * @param  bits       This reading, after the black hold.
+ * @param  raw        This raw reading (junction detection).
+ * @param  prev_raw   Previous raw reading.
+ * @param  prev_bits  Previous held reading.
  */
 static void
-reading_publish (uint8_t bits, uint8_t prev_bits)
+reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
+                 uint8_t prev_bits)
 {
     uint32_t const stamp = systime_stamp();
     UINT           events = 0U;
@@ -238,7 +292,7 @@ reading_publish (uint8_t bits, uint8_t prev_bits)
         events |= SENSOR_LINE_EVT_REGAINED;
     }
 
-    if ((BOTH_BLACK == bits) && (BOTH_BLACK != prev_bits))
+    if ((BOTH_BLACK == raw) && (BOTH_BLACK != prev_raw))
     {
         events |= SENSOR_LINE_EVT_JUNCTION;
     }
