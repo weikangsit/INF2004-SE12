@@ -153,6 +153,10 @@ typedef struct
     bool          b_follow;
     bool          b_steered;     /* line steering seen in this command    */
     uint32_t      steer_ms;      /* time of the last steering correction  */
+    int32_t       line_pos;      /* side seeing black: -1 L, 0, +1 R      */
+    uint32_t      black_ms;      /* when that side started seeing black   */
+    bool          b_recover;     /* line ran out after a curve            */
+    int32_t       recover_pos;   /* side it ran out on                    */
     bool          b_end_on_line;
     float32_t     speed_mps;
     float32_t     dist_m;
@@ -234,6 +238,7 @@ static void      sweep_wheel_done (motion_in_t const * p_in, int32_t db_pct,
                                    int32_t kff_x100);
 static void      sweep_drive (int32_t duty_pm);
 static float32_t end_speed_cap (float32_t remaining_m);
+static float32_t line_steer (motion_in_t const * p_in);
 static void      wheels_slew (void);
 static void      self_test_step (motion_in_t const * p_in);
 static void      closed_loop_drive (motion_in_t const * p_in);
@@ -609,6 +614,8 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.cal_r0        = p_in->count_r;
     g_ctx.test_phase    = 0U;
     g_ctx.b_steered     = false;
+    g_ctx.line_pos      = 0;
+    g_ctx.b_recover     = false;
     g_ctx.sweep_stage   = SWEEP_SETTLE;
     g_ctx.stage_ms      = p_in->now_ms;
     pid_reset(&g_ctx.pid_l);
@@ -723,29 +730,7 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 
     if (g_ctx.b_follow && p_in->b_line_fresh)
     {
-        int32_t pos = 0;                          /* -1 left, +1 right    */
-
-        if (VEHICLE_IR_LEFT == p_in->line_bits)
-        {
-            pos = -1;
-        }
-        else if (VEHICLE_IR_RIGHT == p_in->line_bits)
-        {
-            pos = 1;
-        }
-        else
-        {
-            /* Both white (centred) or both black (junction): straight. */
-        }
-
-        if (0 != pos)
-        {
-            g_ctx.b_steered = true;
-            g_ctx.steer_ms  = p_in->now_ms;
-        }
-
-        /* pos and LINE_STEER_DIR are +/-1, so the product is exact. */
-        steer = (float32_t) (LINE_STEER_DIR * pos) * K_LINE_STEER_MPS;
+        steer = line_steer(p_in);
     }
     else
     {
@@ -761,11 +746,13 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
         steer = -((K_DIST_EQ * d_err) + (K_HEADING * h_err));
     }
 
-    /* Through a curve: steering speed, entered and left on the ramp. */
+    /* Through a curve: slow to steering speed at once (the wheel slew
+     * smooths the drop) and only ramp back up once it is over. */
     if (g_ctx.b_follow && g_ctx.b_steered &&
         ((p_in->now_ms - g_ctx.steer_ms) < LINE_SLOW_HOLD_MS))
     {
-        target = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
+        target       = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
+        g_ctx.v_base = fminf(g_ctx.v_base, target);
     }
 
     ramp_base(target);
@@ -775,6 +762,72 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
     g_ctx.tgt_r = (sign * speed) - steer;
 
     return ((g_ctx.dist_m > 0.0f) && ((sign * travel) >= g_ctx.dist_m));
+}
+
+/*!
+ * @brief  Steering differential from the line sensors, with recovery
+ *         toward a line that ran out past a sensor on a curve.
+ * @param  p_in  Inputs of this period (fresh line reading).
+ * @return Steering differential, m/s (+ turns right).
+ */
+static float32_t
+line_steer (motion_in_t const * p_in)
+{
+    uint32_t const now = p_in->now_ms;
+    int32_t        pos = 0;                       /* -1 left, +1 right    */
+    float32_t      gain = 1.0f;
+
+    if (VEHICLE_IR_LEFT == p_in->line_bits)
+    {
+        pos = -1;
+    }
+    else if (VEHICLE_IR_RIGHT == p_in->line_bits)
+    {
+        pos = 1;
+    }
+    else
+    {
+        /* Both white (centred or lost) or both black (junction). */
+    }
+
+    if (0 != pos)
+    {
+        if (pos != g_ctx.line_pos)
+        {
+            g_ctx.black_ms = now;
+        }
+
+        g_ctx.line_pos  = pos;
+        g_ctx.b_steered = true;
+        g_ctx.steer_ms  = now;
+        g_ctx.b_recover = false;
+    }
+    else if (0U == p_in->line_bits)
+    {
+        if (0 != g_ctx.line_pos)
+        {
+            /* The line just left a sensor; after a long black it may
+             * have run out on the far side. */
+            g_ctx.b_recover   = ((now - g_ctx.black_ms) >= LINE_CURVE_MS);
+            g_ctx.recover_pos = g_ctx.line_pos;
+        }
+
+        g_ctx.line_pos = 0;
+
+        if (g_ctx.b_recover && ((now - g_ctx.steer_ms) < LINE_RECOVER_MS))
+        {
+            pos  = g_ctx.recover_pos;
+            gain = LINE_RECOVER_GAIN;
+        }
+    }
+    else
+    {
+        g_ctx.line_pos  = 0;                      /* junction             */
+        g_ctx.b_recover = false;
+    }
+
+    /* pos and LINE_STEER_DIR are +/-1, so the product is exact. */
+    return ((float32_t) (LINE_STEER_DIR * pos) * K_LINE_STEER_MPS * gain);
 }
 
 /*!
