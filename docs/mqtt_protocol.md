@@ -151,11 +151,12 @@ the inter-character gap).
 | 3-5 | chunk | 3 | frame number within the capture, 0..6 |
 | 6 | last | 1 | last frame of the capture |
 | 7 | letter valid | 1 | a letter was decoded |
-| 8-12 | letter | 5 | letter - 'A' (0..25) |
-| 13-16 | count | 4 | widths in this frame, 0..10 |
-| 17- | widths | 11 each | element width in 250 us units (max 511.75 ms) |
+| 8 | distance | 1 | 1: widths are sensor travel (0.1 mm, from the wheel encoders), the unit the decoder used; 0: time |
+| 9-13 | letter | 5 | letter - 'A' (0..25) |
+| 14-17 | count | 4 | widths in this frame, 0..10 |
+| 18- | widths | 11 each | element width: 0.1 mm of travel (distance = 1) or 250 us (max 511.75 ms) |
 
-Frame length is ceil((17 + 11 x count) / 8) bytes. The web app shows each
+Frame length is ceil((18 + 11 x count) / 8) bytes. The web app shows each
 capture as one log entry with a row per character, the 3 widest elements
 in brackets and the ratio the decoder needs (>= 1.5). Set `BAR_LOG` to 0 in
 `car_config.h` to stop sending them.

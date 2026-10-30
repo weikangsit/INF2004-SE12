@@ -503,8 +503,10 @@ follow_step (nav_in_t const * p_in)
     {
         safety_report(SAFETY_EVT_LINE_LOST);      /* Safety trips         */
     }
-    else if ((NAV_LINE_FOLLOW == g_nav.state) && p_in->b_have_bar)
+    else if (p_in->b_have_bar)
     {
+        /* Both following states act on a barcode: a hump (or a false
+         * hump detection) must not make the car drive past its turn. */
         barcode_act(p_in->bar_slot);
     }
     else if ((NAV_LINE_FOLLOW == g_nav.state) && p_in->b_have_terrain &&

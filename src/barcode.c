@@ -12,7 +12,12 @@
  *      after BAR_IDLE_TIMEOUT_US without an edge.
  *   3. Check: a read during which the ring overflowed lost edges and is
  *      rejected. Otherwise code39.c accepts only a complete '*X*' symbol
- *      with a clear wide / narrow ratio in every character.
+ *      with a clear wide / narrow ratio in every character. Bars are
+ *      measured by the distance the sensor travelled (encoder counts
+ *      stamped on every edge), so speed changes during a read do not
+ *      matter (Tribunal 1: "if the car changes speed mid-read the widths
+ *      come out wrong"); by time when the car did not move far enough
+ *      (hand swipe) or drives open loop.
  *   4. Post: the letter is looked up in the table (barcode_map.c); only
  *      a letter in the table is queued, as its 2-bit slot (bar_cmd_q).
  *  Every read is reported (event BARCODE). With BAR_LOG the element
@@ -32,6 +37,7 @@
 #include "car_config.h"
 #include "code39.h"
 #include "hal.h"
+#include "motion_control.h"
 #include "proto.h"
 #include "systime.h"
 #include "telemetry.h"
@@ -44,6 +50,18 @@
 #define LETTER_FIRST         ('A')
 #define STATUS_READS_MAX     (15U)     /* 4-bit reads field              */
 #define STATUS_COUNT_MAX     (255U)    /* 8-bit count fields             */
+#define SUB_PER_COUNT        (16.0f)   /* bar_filter_positions() units   */
+#define MM_PER_M             (1000.0f)
+#define TENTHS_PER_MM        (10.0f)
+#define PI_F                 (3.14159265f)
+/* 0.1 mm of travel per 1/16 encoder count. */
+#define TENTHS_PER_SUB       ((PI_F * WHEEL_DIAMETER_M * MM_PER_M *           \
+                               TENTHS_PER_MM) /                              \
+                              (ENC_COUNTS_PER_REV * SUB_PER_COUNT))
+#define POS_SHIFT_DIV        (2.0f)    /* positions are shifted left by 1 */
+#define BARDBG_WIDTH_MAX     (2047.0f) /* 11-bit width field             */
+#define ROUND_HALF           (0.5f)
+#define YAW_SCALE            (1000.0f)
 
 /** Running totals for the status report (task only). */
 typedef struct
@@ -59,6 +77,9 @@ typedef struct
 
 static ID          g_slot_q    = 0;
 static uint32_t    g_edges[BAR_EDGE_BUF_LEN];          /* task only        */
+static int32_t     g_cl[BAR_EDGE_BUF_LEN];   /* encoder counts per edge    */
+static int32_t     g_cr[BAR_EDGE_BUF_LEN];
+static uint32_t    g_pos[BAR_EDGE_BUF_LEN];  /* travel, decoder format     */
 static uint32_t    g_n_edges   = 0U;                   /* 0 = waiting      */
 static uint32_t    g_dropped0  = 0U;   /* ring drops when the read began   */
 static uint8_t     g_dbg_seq   = 0U;                   /* task only        */
@@ -67,7 +88,8 @@ static bar_stats_t g_stats;                            /* task only        */
 static void     edges_collect (void);
 static bool     capture_is_done (void);
 static void     capture_finish (void);
-static void     capture_send (uint8_t letter);
+static uint8_t  capture_decode (bool * p_b_distance);
+static void     capture_send (uint8_t letter, bool b_distance);
 static void     status_send (void);
 static int16_t  count_field (uint32_t count, uint32_t max);
 
@@ -130,7 +152,9 @@ static void
 edges_collect (void)
 {
     uint32_t fresh[COLLECT_CHUNK];
-    uint32_t count = hal_bar_take(fresh, COLLECT_CHUNK);
+    int32_t  fresh_cl[COLLECT_CHUNK];
+    int32_t  fresh_cr[COLLECT_CHUNK];
+    uint32_t count = hal_bar_take(fresh, fresh_cl, fresh_cr, COLLECT_CHUNK);
 
     while (count > 0U)
     {
@@ -147,17 +171,24 @@ edges_collect (void)
             {
                 g_stats.glitches++;
             }
-            else if ((0U == before) && (1U == g_n_edges))
+            else if (g_n_edges > before)
             {
-                g_dropped0 = hal_bar_dropped();   /* a new read begins     */
+                /* Kept: keep its distance stamp with it. */
+                g_cl[before] = fresh_cl[idx];
+                g_cr[before] = fresh_cr[idx];
+
+                if (0U == before)
+                {
+                    g_dropped0 = hal_bar_dropped();   /* a new read begins */
+                }
             }
             else
             {
-                /* Edge added to the read, or ignored. */
+                /* Ignored (no level change, or the read is full). */
             }
         }
 
-        count = hal_bar_take(fresh, COLLECT_CHUNK);
+        count = hal_bar_take(fresh, fresh_cl, fresh_cr, COLLECT_CHUNK);
     }
 }
 
@@ -193,20 +224,16 @@ capture_is_done (void)
 static void
 capture_finish (void)
 {
-    /* Edges lost in the ring during this read make the widths wrong
-     * (Tribunal 1: decide what happens on overflow): reject the read. */
-    bool const    b_lost = (hal_bar_dropped() != g_dropped0);
-    uint8_t const letter = b_lost ? CODE39_NONE :
-                           code39_decode(g_edges, g_n_edges,
-                                         BAR_MIN_WIDE_RATIO_X10);
+    bool          b_distance = false;
+    uint8_t const letter     = capture_decode(&b_distance);
     /* n_edges <= BAR_EDGE_BUF_LEN (64), so it fits an int16_t. */
-    int16_t const edges  = (int16_t) g_n_edges;
+    int16_t const edges      = (int16_t) g_n_edges;
 
     g_stats.reads++;
 
     if (0 != BAR_LOG)
     {
-        capture_send(letter);
+        capture_send(letter, b_distance);
     }
 
     if (CODE39_NONE != letter)
@@ -241,23 +268,80 @@ capture_finish (void)
 }
 
 /*!
+ * @brief  Decode the capture: by the sensor's travel when the car moved
+ *         at least BAR_MIN_TRAVEL_COUNTS with working encoders, else (or
+ *         if that fails) by time. A read that lost edges to a full ring
+ *         is rejected (Tribunal 1: decide what happens on overflow).
+ * @param  p_b_distance  Output: true if the travel was used (decoded, or
+ *                       the car moved far enough to try).
+ * @return Letter 0..25, or CODE39_NONE.
+ */
+static uint8_t
+capture_decode (bool * p_b_distance)
+{
+    uint8_t letter = CODE39_NONE;
+
+    *p_b_distance = false;
+
+    if (hal_bar_dropped() == g_dropped0)
+    {
+        if (!motion_control_is_open_loop())
+        {
+            int32_t setup[3] = { 1, 1, 0 };       /* sign L, sign R, yaw  */
+
+            motion_control_encoder_signs(&setup[0], &setup[1]);
+            /* Offset / track x 1000: a few hundred at most, fits. */
+            setup[2] = (int32_t) ((BAR_SENSOR_Y_MM * YAW_SCALE) /
+                                  (TRACK_WIDTH_M * MM_PER_M));
+
+            if (bar_filter_positions(g_edges, g_cl, g_cr, g_n_edges, setup,
+                                     g_pos) >=
+                ((uint32_t) BAR_MIN_TRAVEL_COUNTS * (uint32_t) SUB_PER_COUNT))
+            {
+                *p_b_distance = true;
+                letter = code39_decode(g_pos, g_n_edges,
+                                       BAR_MIN_WIDE_RATIO_X10);
+            }
+        }
+
+        if (CODE39_NONE == letter)
+        {
+            uint8_t const by_time = code39_decode(g_edges, g_n_edges,
+                                                  BAR_MIN_WIDE_RATIO_X10);
+
+            if (CODE39_NONE != by_time)
+            {
+                letter        = by_time;
+                *p_b_distance = false;
+            }
+        }
+    }
+
+    return (letter);
+}
+
+/*!
  * @brief  Send the captured element widths and the decoded letter to the
  *         web app (BAR_LOG), PROTO_BARDBG_WIDTHS widths per frame: with a
  *         full capture, one frame per Code 39 character (9 elements, then
- *         the inter-character gap).
- * @param  letter  Decoded letter 0..25, or CODE39_NONE.
+ *         the inter-character gap). The widths are the ones the decoder
+ *         used: sensor travel (0.1 mm) or time (0.25 ms).
+ * @param  letter      Decoded letter 0..25, or CODE39_NONE.
+ * @param  b_distance  True to send travel, false for time.
  */
 static void
-capture_send (uint8_t letter)
+capture_send (uint8_t letter, bool b_distance)
 {
+    uint32_t const * const p_src = b_distance ? g_pos : g_edges;
     proto_bar_debug_t dbg;
     uint8_t           frame[PROTO_BARDBG_MAX_LEN];
     uint32_t const    n_widths = (g_n_edges > 0U) ? (g_n_edges - 1U) : 0U;
     uint32_t          done     = 0U;
 
     (void) memset(&dbg, 0, sizeof(dbg));
-    dbg.seq      = g_dbg_seq;
-    dbg.b_letter = (CODE39_NONE != letter);
+    dbg.seq        = g_dbg_seq;
+    dbg.b_distance = b_distance;
+    dbg.b_letter   = (CODE39_NONE != letter);
     dbg.letter   = dbg.b_letter ? letter : 0U;
 
     do
@@ -269,14 +353,29 @@ capture_send (uint8_t letter)
         for (idx = 0U; (idx < PROTO_BARDBG_WIDTHS) && (done < n_widths);
              idx++)
         {
-            uint32_t const width_us = (g_edges[done + 1U] & ~LEVEL_BIT) -
-                                      (g_edges[done] & ~LEVEL_BIT);
+            uint32_t const width = (p_src[done + 1U] & ~LEVEL_BIT) -
+                                   (p_src[done] & ~LEVEL_BIT);
 
-            /* An element is shorter than BAR_IDLE_TIMEOUT_US plus one
-             * period (~505 ms = 2020 units), so it fits a uint16_t. */
-            dbg.widths[idx] = (uint16_t) ((width_us +
-                                           (PROTO_BARDBG_UNIT_US / 2U)) /
-                                          PROTO_BARDBG_UNIT_US);
+            if (b_distance)
+            {
+                /* width is in 1/16 counts shifted left by one (bit 0
+                 * holds the level). Saturated to the 11-bit field, so
+                 * the cast keeps it (a backward step shows as maximum). */
+                float32_t const tenths = ((float32_t) width / POS_SHIFT_DIV) *
+                                         TENTHS_PER_SUB;
+
+                dbg.widths[idx] = (uint16_t) ((tenths < BARDBG_WIDTH_MAX) ?
+                                              (tenths + ROUND_HALF) :
+                                              BARDBG_WIDTH_MAX);
+            }
+            else
+            {
+                /* An element is shorter than BAR_IDLE_TIMEOUT_US plus one
+                 * period (~505 ms = 2020 units), so it fits a uint16_t. */
+                dbg.widths[idx] = (uint16_t) ((width +
+                                               (PROTO_BARDBG_UNIT_US / 2U)) /
+                                              PROTO_BARDBG_UNIT_US);
+            }
             dbg.count++;
             done++;
         }

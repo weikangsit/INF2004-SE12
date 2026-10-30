@@ -9,6 +9,8 @@
   let config = {};            // action code 0..3 -> letter "A".."Z" | null (what the UI shows)
   let lastHb = 0, lastTlm = 0, ackMask = null, sentMask = null;
   let carTable = P.DEFAULT_TABLE;   // table the car is using: built-in until one came over MQTT
+  let carState = "";                // nav state from the latest telemetry
+  const BARCODE_STATES = ["LINE_FOLLOW", "HUMP_REPORT"];   // states that act on a barcode (nav_fsm.c)
 
   // ------------------------------------------------------------------ config grid
   // shown in this order; the value is the action's wire code (index into P.ACTIONS)
@@ -74,6 +76,7 @@
     bar.style.width = pct + "%";
     bar.style.background = t.obstacle != null && t.obstacle < 12 ? "var(--bad)" : t.obstacle != null && t.obstacle < 30 ? "var(--warn)" : "var(--ok)";
     $("t-state").textContent = t.state;
+    carState = t.state;
     $("t-motion").textContent = t.motion;
     $("t-dist").textContent = t.distance.toFixed(2) + " m";
     $("t-duty").textContent = t.dutyL + "% / " + t.dutyR + "%";
@@ -176,7 +179,9 @@
       (f.letter == null ? "no letter decoded" :
        "letter " + f.letter + (slot == null ? " (not in the table)" : " -> " + P.ACTIONS[slot])) +
       (got.length !== frames.length ? ", some frames lost" : "");
-    logEvent([head, "element widths (ms):"].concat(P.barDebugRows(got)).join("\n"), false, "dbg");
+    const unit = f.distance ? "element widths (mm of sensor travel, from the wheel encoders):"
+                            : "element widths (ms; the car did not move enough to measure distance):";
+    logEvent([head, unit].concat(P.barDebugRows(got)).join("\n"), false, "dbg");
   }
 
   mqtt.onmessage = (topic, u8, retained) => {
@@ -188,6 +193,9 @@
       const e = P.decodeEvent(u8, carTable);
       if (!e) badFrame(sub, u8, "1-4");
       else if (e.kind === "BAR_STATUS") showBarStatus(e.fields);   // card, not the log (1 per second)
+      else if (e.kind === "BARCODE" && e.fields.valid && carState && !BARCODE_STATES.includes(carState))
+        logEvent(e.text + " (ignored: the car is in " + carState + "; it acts on barcodes only while " +
+                 "following the line)", e.fault);
       else logEvent(e.text, e.fault);
     } else if (sub === "debug/barcode") {
       const f = P.decodeBarDebug(u8);

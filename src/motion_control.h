@@ -53,6 +53,7 @@ void    motion_control_stop (void);
 
 bool    motion_control_done_take (motion_done_t * p_done);
 bool    motion_control_is_open_loop (void);
+void    motion_control_encoder_signs (int32_t * p_sign_l, int32_t * p_sign_r);
 
 #endif /* MOTION_CONTROL_H */
 

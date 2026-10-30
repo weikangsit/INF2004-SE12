@@ -30,7 +30,8 @@ typedef enum
 void     hal_gpio_init (void);
 uint32_t hal_gpio_irq_service (void);
 
-uint32_t hal_bar_take (uint32_t * p_buf, uint32_t max);
+uint32_t hal_bar_take (uint32_t * p_buf, int32_t * p_cl, int32_t * p_cr,
+                       uint32_t max);
 uint32_t hal_bar_edges (void);
 uint32_t hal_bar_dropped (void);
 void     hal_us_trigger (void);

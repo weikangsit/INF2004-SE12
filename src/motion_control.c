@@ -409,6 +409,24 @@ motion_control_is_open_loop (void)
 }
 
 /*!
+ * @brief  Encoder direction signs (+1 / -1 per wheel: raw count change
+ *         per forward count), as found by the power-on self-test.
+ *
+ *  NOTE: Written once by this task during the self-test; each sign is an
+ *  aligned 32-bit word, so a reader in another task sees the old or the
+ *  new value, never a mix.
+ *
+ * @param  p_sign_l  Output, left wheel sign.
+ * @param  p_sign_r  Output, right wheel sign.
+ */
+void
+motion_control_encoder_signs (int32_t * p_sign_l, int32_t * p_sign_r)
+{
+    *p_sign_l = g_sign_l;
+    *p_sign_r = g_sign_r;
+}
+
+/*!
  * @brief  Motion Control task body (priority PRI_MOTION, 10 ms).
  * @param  stacd    Start code (unused).
  * @param  p_exinf  Extended information (unused).

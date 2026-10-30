@@ -202,35 +202,84 @@
     }
   }
 
-  // debug/barcode: seq 3, chunk 3, last 1, letter valid 1, letter 5, count 4, then count x 11-bit widths
+  // debug/barcode: seq 3, chunk 3, last 1, letter valid 1, distance 1, letter 5, count 4,
+  // then count x 11-bit widths (0.25 ms, or 0.1 mm of sensor travel when distance is set)
   const BARDBG_HEADER = [["seq", 3, 0], ["chunk", 3, 0], ["last", 1, 0], ["hasLetter", 1, 0],
-                         ["letter", 5, 0], ["count", 4, 0]];
-  const BARDBG_UNIT_MS = 0.25;
+                         ["distance", 1, 0], ["letter", 5, 0], ["count", 4, 0]];
+  const BARDBG_UNIT_MS = 0.25, BARDBG_UNIT_MM = 0.1, BARDBG_HEADER_BITS = 18;
 
-  /** One debug/barcode frame -> { seq, chunk, last, letter|null, widths (ms) }, or null. */
+  /** One debug/barcode frame -> { seq, chunk, last, distance, letter|null, widths (ms or mm) }, or null. */
   function decodeBarDebug(u8) {
     if (u8.length < 3) return null;
     const h = unpack(u8, 0, BARDBG_HEADER);
-    if (h.count > 10 || h.letter >= LETTERS.length || u8.length !== Math.ceil((17 + 11 * h.count) / 8)) return null;
-    const widths = [];
-    for (let n = 0; n < h.count; n++) widths.push(getBits(u8, 17 + 11 * n, 11, 0) * BARDBG_UNIT_MS);
-    return { seq: h.seq, chunk: h.chunk, last: !!h.last, letter: h.hasLetter ? LETTERS[h.letter] : null, widths };
+    if (h.count > 10 || h.letter >= LETTERS.length ||
+        u8.length !== Math.ceil((BARDBG_HEADER_BITS + 11 * h.count) / 8)) return null;
+    const unit = h.distance ? BARDBG_UNIT_MM : BARDBG_UNIT_MS, widths = [];
+    for (let n = 0; n < h.count; n++) widths.push(getBits(u8, BARDBG_HEADER_BITS + 11 * n, 11, 0) * unit);
+    return { seq: h.seq, chunk: h.chunk, last: !!h.last, distance: !!h.distance,
+             letter: h.hasLetter ? LETTERS[h.letter] : null, widths };
   }
 
   /** Text rows for one capture: one per frame (Code 39 character), the 3 widest
    *  elements in [brackets] and the ratio the decoder checks (narrowest wide /
    *  widest narrow, must be >= 1.5). */
+  // Code 39 wide-element patterns (element 0 first, 1 = wide), as in code39.c
+  const C39_PATTERNS = {
+    "010010100": "*", "100001001": "A", "001001001": "B", "101001000": "C", "000011001": "D",
+    "100011000": "E", "001011000": "F", "000001101": "G", "100001100": "H", "001001100": "I",
+    "000011100": "J", "100000011": "K", "001000011": "L", "101000010": "M", "000010011": "N",
+    "100010010": "O", "001010010": "P", "000000111": "Q", "100000110": "R", "001000110": "S",
+    "000010110": "T", "110000001": "U", "011000001": "V", "111000000": "W", "010010001": "X",
+    "110010000": "Y", "011010000": "Z",
+  };
+  const MIN_RATIO = 1.5;   // BAR_MIN_WIDE_RATIO_X10 / 10
+
+  /** One character of 9 widths, decoded like char_decode() in code39.c:
+   *  the 3 widest are wide (ties to the earlier element), then the pattern
+   *  and the narrowest-wide / widest-narrow ratio are checked. */
+  function c39Char(el) {
+    const wide = el.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).slice(0, 3).map((p) => p[1]);
+    const wides = el.filter((_, i) => wide.includes(i)), narrows = el.filter((_, i) => !wide.includes(i));
+    const ratio = Math.min(...wides) / Math.max(...narrows);
+    const ch = C39_PATTERNS[el.map((_, i) => (wide.includes(i) ? "1" : "0")).join("")] || null;
+    return { wide, ratio, ch, ok: ratio >= MIN_RATIO && ch !== null };
+  }
+
+  /** Decode 29 widths as '*X*'; returns the 3 characters and what failed. */
+  function c39Symbol(widths) {
+    const chars = [0, 10, 20].map((o) => c39Char(widths.slice(o, o + 9)));
+    const why = chars.some((c) => c.ratio < MIN_RATIO) ? "a wide/narrow ratio is under " + MIN_RATIO
+      : chars.some((c) => !c.ch) ? "a character's 3 widest bars are not a Code 39 pattern"
+      : chars[0].ch !== "*" || chars[2].ch !== "*" ? "it does not start and end with *"
+      : chars[1].ch === "*" ? "the middle character is * (not a letter)" : null;
+    return { text: chars.map((c) => c.ch || "?").join(" "), why };
+  }
+
+  /** Text rows for one capture: one per Code 39 character (9 elements + the
+   *  gap), the 3 widest in [brackets], the ratio the decoder checks and the
+   *  character it reads as; then the whole symbol forwards and backwards. */
   function barDebugRows(frames) {
-    return frames.map((f, n) => {
-      const el = f.widths.slice(0, 9);
-      const wide = el.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0]).slice(0, 3).map((p) => p[1]);
-      const wides = el.filter((_, i) => wide.includes(i)), narrows = el.filter((_, i) => !wide.includes(i));
-      const ratio = el.length === 9 ? Math.min(...wides) / Math.max(...narrows) : null;
-      const cells = el.map((w, i) => (wide.includes(i) ? "[" + w.toFixed(1) + "]" : w.toFixed(1)));
-      return "char " + (n + 1) + ": " + cells.join(" ") +
-        (f.widths.length > 9 ? "  gap " + f.widths[9].toFixed(1) : "") +
-        (ratio === null ? "  (incomplete)" : "  ratio " + ratio.toFixed(2));
-    });
+    const widths = frames.flatMap((f) => f.widths);
+    const rows = [];
+    for (let o = 0; o < widths.length; o += 10) {
+      const el = widths.slice(o, o + 9);
+      let tail = "  (incomplete)";
+      let cells = el.map((w) => w.toFixed(1));
+      if (el.length === 9) {
+        const c = c39Char(el);
+        cells = el.map((w, i) => (c.wide.includes(i) ? "[" + w.toFixed(1) + "]" : w.toFixed(1)));
+        tail = "  ratio " + c.ratio.toFixed(2) + (c.ratio < MIN_RATIO ? " TOO LOW" : "") +
+               "  -> " + (c.ch || "no Code 39 match");
+      }
+      rows.push("char " + (o / 10 + 1) + ": " + cells.join(" ") +
+                (o + 9 < widths.length ? "  gap " + widths[o + 9].toFixed(1) : "") + tail);
+    }
+    if (widths.length >= 29) {
+      const fwd = c39Symbol(widths.slice(0, 29)), rev = c39Symbol(widths.slice(0, 29).reverse());
+      rows.push("forward: " + fwd.text + (fwd.why ? "  (fails: " + fwd.why + ")" : "  OK"));
+      rows.push("backward: " + rev.text + (rev.why ? "  (fails: " + rev.why + ")" : "  OK"));
+    }
+    return rows;
   }
 
   function decodeEvent(u8, table) {

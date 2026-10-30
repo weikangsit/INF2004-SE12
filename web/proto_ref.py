@@ -132,15 +132,17 @@ def config_valid(word):
 
 
 BARDBG_HEADER = [("seq", 3, 0), ("chunk", 3, 0), ("last", 1, 0), ("hasLetter", 1, 0),
-                 ("letter", 5, 0), ("count", 4, 0)]
+                 ("distance", 1, 0), ("letter", 5, 0), ("count", 4, 0)]
 
 
-def encode_bar_debug(seq, chunk, last, letter, widths):
-    """One debug/barcode frame. letter: 0..25 or None; widths: 250 us units."""
+def encode_bar_debug(seq, chunk, last, letter, widths, distance=False):
+    """One debug/barcode frame. letter: 0..25 or None; widths: 250 us units,
+    or 0.1 mm of sensor travel with distance."""
     count = min(len(widths), 10)
     fields = BARDBG_HEADER + [("w", 11, 0)] * count
-    values = [seq, chunk, int(last), int(letter is not None), letter or 0, count] + list(widths[:count])
-    return bytes(pack(fields, values, (17 + 11 * count + 7) // 8))
+    values = [seq, chunk, int(last), int(letter is not None), int(distance), letter or 0,
+              count] + list(widths[:count])
+    return bytes(pack(fields, values, (18 + 11 * count + 7) // 8))
 
 
 def encode_cmd(name):

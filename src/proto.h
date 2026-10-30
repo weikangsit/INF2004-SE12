@@ -77,7 +77,7 @@
  * (11 bits: up to 511.75 ms, above BAR_IDLE_TIMEOUT_US),
  * PROTO_BARDBG_WIDTHS per frame (one Code 39 character + its gap). */
 #define PROTO_BARDBG_WIDTHS   (10U)
-#define PROTO_BARDBG_MAX_LEN  (16U)    /* 17 header bits + 10 x 11 bits */
+#define PROTO_BARDBG_MAX_LEN  (16U)    /* 18 header bits + 10 x 11 bits */
 #define PROTO_BARDBG_UNIT_US  (250U)
 #define PROTO_BARDBG_SEQ_MASK (0x7U)
 
@@ -158,9 +158,10 @@ typedef struct
     uint8_t  chunk;          /* frame of this capture, 0..6, 3 bits       */
     bool     b_last;         /* last frame of the capture, 1 bit          */
     bool     b_letter;       /* a letter was decoded, 1 bit               */
+    bool     b_distance;     /* widths are travel (0.1 mm), not time      */
     uint8_t  letter;         /* letter - 'A', 0..25, 5 bits               */
     uint8_t  count;          /* widths in this frame, 0..10, 4 bits       */
-    uint16_t widths[PROTO_BARDBG_WIDTHS];  /* 250 us units, 11 bits each  */
+    uint16_t widths[PROTO_BARDBG_WIDTHS];  /* 250 us or 0.1 mm, 11 bits   */
 } proto_bar_debug_t;
 
 uint32_t proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame);

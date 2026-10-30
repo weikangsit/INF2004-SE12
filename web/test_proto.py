@@ -16,6 +16,7 @@ Part 2 needs arm-none-eabi-gcc (PATH, ARM_GCC, or the Pico toolchains) and
 `pip install unicorn`; it is skipped with a message if either is missing.
 """
 import glob
+import math
 import os
 import random
 import re
@@ -578,22 +579,93 @@ def test_bar_filter(cpu):
                   f"{raw_ok}/{reads} without the filter)")
 
 
+M_PER_COUNT = 3.14159265 * 0.065 / 1440          # car_config.h wheel / encoder
+TRACK_M = 0.125
+
+
+def wiggle_pass(text, narrow_mm, rng, sensor_y_mm=0.0, speed=0.15, swing=0.6, reverse=False):
+    """A car crossing a printed '*X*' symbol while it wiggles on the line:
+    the mean speed swings by +/-swing and the wheels differ (steering)
+    from moment to moment. Returns raw edges (time | level) and the raw
+    encoder counts at each edge, as the interrupt records them
+    (ENC_SIGN_LEFT = -1, ENC_SIGN_RIGHT = +1)."""
+    bars = []
+    for n, ch in enumerate(text):
+        bars += [2.5 * narrow_mm if b == "1" else narrow_mm for b in C39[ch]]
+        if n < len(text) - 1:
+            bars.append(narrow_mm)
+    if reverse:
+        bars.reverse()
+    bounds, x = [], 5.0                              # sensor travel at each bar edge, mm
+    for w in [0.0] + bars:
+        x += w
+        bounds.append(x)
+    t, dt, travel, dl, dr = 0.0, 0.0001, 0.0, 0.0, 0.0
+    phase, wobble = rng.random() * 6.28, rng.uniform(3.0, 7.0)       # Hz
+    edges, cls, crs, nxt = [], [], [], 0
+    while nxt < len(bounds):
+        v = speed * (1.0 + swing * math.sin(phase + 6.283 * wobble * t))          # m/s, > 0
+        steer = 0.08 * math.copysign(1.0, math.sin(phase + 6.283 * wobble * 0.5 * t))
+        vl, vr = v - steer, v + steer
+        dl += vl * dt
+        dr += vr * dt
+        travel += ((vl + vr) / 2 - (sensor_y_mm / 1000) * (vr - vl) / TRACK_M) * dt * 1000
+        t += dt
+        if travel >= bounds[nxt]:
+            level = 1 if nxt % 2 == 0 else 0      # first edge: white -> black
+            edges.append((int(t * 1e6) & ~1) | level)
+            cls.append(-int(dl / M_PER_COUNT))
+            crs.append(int(dr / M_PER_COUNT))
+            nxt += 1
+    return edges, cls, crs
+
+
+def test_bar_distance(cpu):
+    """Reads made while the car wiggles: decoded by the sensor's travel
+    (bar_filter_positions, firmware) and, for comparison, by time."""
+    start = len(failures)
+    rng = random.Random(41)
+    by_dist = by_time = total = 0
+    for letter in ref.LETTERS:
+        for narrow, y in ((1.5, 0.0), (2.0, 0.0), (2.0, 20.0)):
+            for rev in (False, True):
+                edges, cls, crs = wiggle_pass("*" + letter + "*", narrow, rng, y, reverse=rev)
+                n = len(edges)
+                cpu.write(RAM, struct.pack("<%dI" % n, *edges))
+                cpu.write(RAM + 0x200, struct.pack("<%di" % n, *cls))
+                cpu.write(RAM + 0x400, struct.pack("<%di" % n, *crs))
+                cpu.write(RAM + 0x600, struct.pack("<3i", -1, 1, int(1000 * y / 125)))
+                travel = cpu.call("bar_filter_positions", RAM, RAM + 0x200, RAM + 0x400, n,
+                                  stack_args=(RAM + 0x600, RAM + 0x800))
+                want = ref.LETTERS.index(letter)
+                got_d = cpu.call("code39_decode", RAM + 0x800, n, 15) & 0xFF
+                got_t = cpu.call("code39_decode", RAM, n, 15) & 0xFF
+                check(got_d == want, f"distance read {letter} n={narrow} y={y} rev={rev}: {got_d}")
+                check(travel > 100 * 16, f"travel {travel} for {letter}")
+                by_dist += got_d == want
+                by_time += got_t == want
+                total += 1
+    report(start, f"bar_filter_positions: {by_dist}/{total} wiggling reads decoded by distance "
+                  f"(+/-60 % speed swing, steering, sensor 0 and 20 mm off centre, both directions; "
+                  f"{by_time}/{total} by time)")
+
+
 def test_bar_debug(cpu):
     """proto_pack_bar_debug against the reference packer, including counts
     above 10 and widths above 11 bits (clamped)."""
     start = len(failures)
     rnd = random.Random(21)
-    cases = [(0, 0, False, None, 0, [0] * 10), (7, 6, True, 25, 10, [2047] * 10),
-             (3, 2, True, 0, 0, [0] * 10), (5, 1, False, 12, 12, [3000] * 10)]
+    cases = [(0, 0, False, None, False, 0, [0] * 10), (7, 6, True, 25, True, 10, [2047] * 10),
+             (3, 2, True, 0, False, 0, [0] * 10), (5, 1, False, 12, True, 12, [3000] * 10)]
     cases += [(rnd.randrange(8), rnd.randrange(7), rnd.random() < 0.5,
-               rnd.choice([None] + list(range(26))), rnd.randrange(11),
+               rnd.choice([None] + list(range(26))), rnd.random() < 0.5, rnd.randrange(11),
                [rnd.randrange(2600) for _ in range(10)]) for _ in range(200)]
-    for seq, chunk, last, letter, count, widths in cases:
-        cpu.write(RAM, struct.pack("<BBBBBB10H", seq, chunk, int(last), int(letter is not None),
-                                   letter or 0, count, *widths))
+    for seq, chunk, last, letter, dist, count, widths in cases:
+        cpu.write(RAM, struct.pack("<BBBBBBBx10H", seq, chunk, int(last), int(letter is not None),
+                                   int(dist), letter or 0, count, *widths))
         n = cpu.call("proto_pack_bar_debug", RAM, RAM + 0x100)
         got = cpu.read(RAM + 0x100, n)
-        want = ref.encode_bar_debug(seq, chunk, last, letter, widths[:min(count, 10)])
+        want = ref.encode_bar_debug(seq, chunk, last, letter, widths[:min(count, 10)], dist)
         check(got == want, f"bar debug {seq}/{chunk}/{count}: {got.hex()} != {want.hex()}")
     report(start, f"proto_pack_bar_debug: {len(cases)} frames (limits, clamping, random)")
 
@@ -641,6 +713,7 @@ def main():
             test_barcode_map(cpu)
             test_bar_debug(cpu)
             test_bar_filter(cpu)
+            test_bar_distance(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

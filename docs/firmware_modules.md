@@ -30,7 +30,8 @@ and no hardware headers (see `port.h`).
 | Digital line sensors, 1 bit each, 4-combination steering | `sensor_line.c`, `motion_control.c` |
 | Barcode edges only time-stamped in the ISR (bounded ring, every edge kept); chatter filtered and decoded in the task | `hal.c`, `bar_filter.c`, `barcode.c` |
 | Ring overflow decided: the edge is dropped and counted, and the read it belonged to is rejected | `hal.c`, `barcode.c` |
-| Barcode posted only after '*' start/stop check; wide/narrow ratio check per character (tolerates speed changes between characters); both directions | `code39.c`, `barcode.c` |
+| Barcode posted only after '*' start/stop check; wide/narrow ratio check per character; both directions | `code39.c`, `barcode.c` |
+| Speed changes during a read: bars measured by the sensor's travel (encoder counts stamped on every edge in the ISR), time only as the fallback when the car barely moved | `hal.c`, `bar_filter.c`, `barcode.c` |
 | Timestamp and decode logs saved: element widths per read (`debug/barcode`) and a sensor status report (BAR_STATUS) while `BAR_LOG` is 1 | `barcode.c`, web app |
 | Newest line reading used, timestamped, older than 20 ms ignored | `sensor_line_read()` |
 | IMU data timestamped, older than 60 ms ignored | `vehicle_state` stamp, `motion_control.c` |

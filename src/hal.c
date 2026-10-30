@@ -46,6 +46,8 @@ static uint32_t const g_led_grb[HAL_LED_COUNT] =
  * consumer (Line task writes tail), so no lock is needed; the barriers
  * order the data before the index on both cores. */
 static volatile uint32_t g_bar_buf[BAR_RING_LEN];
+static volatile int32_t  g_bar_cl[BAR_RING_LEN];  /* encoder counts at the */
+static volatile int32_t  g_bar_cr[BAR_RING_LEN];  /* edge (raw direction)  */
 static volatile uint32_t g_bar_head    = 0U;
 static volatile uint32_t g_bar_tail    = 0U;
 /* Running totals; the ISR is the only writer, and an aligned 32-bit read
@@ -126,15 +128,18 @@ hal_bar_dropped (void)
 }
 
 /*!
- * @brief  Copy the barcode edges captured since the last call. Each entry
+ * @brief  Copy the barcode edges captured since the last call. Each edge
  *         is a 1 us time stamp whose bit 0 is replaced by the level after
- *         the edge (1 = black).
+ *         the edge (1 = black), with both encoder counts at that moment.
  * @param  p_buf  Output edges.
- * @param  max    Capacity of p_buf.
+ * @param  p_cl   Output, left encoder count at each edge (raw).
+ * @param  p_cr   Output, right encoder count at each edge (raw).
+ * @param  max    Capacity of each output.
  * @return Number of edges copied.
  */
 uint32_t
-hal_bar_take (uint32_t * p_buf, uint32_t max)
+hal_bar_take (uint32_t * p_buf, int32_t * p_cl, int32_t * p_cr,
+              uint32_t max)
 {
     uint32_t const head  = g_bar_head;
     uint32_t       count = 0U;
@@ -144,6 +149,8 @@ hal_bar_take (uint32_t * p_buf, uint32_t max)
     while ((g_bar_tail != head) && (count < max))
     {
         p_buf[count] = g_bar_buf[g_bar_tail];
+        p_cl[count]  = g_bar_cl[g_bar_tail];
+        p_cr[count]  = g_bar_cr[g_bar_tail];
         g_bar_tail   = (g_bar_tail + 1U) % BAR_RING_LEN;
         count++;
     }
@@ -306,7 +313,8 @@ input_pin (uint32_t pin, bool b_pull_up)
 
 /*!
  * @brief  Barcode part of the interrupt: time-stamp the edge with the
- *         level after it. Every edge is stored; chatter is filtered in the
+ *         level after it and the encoder counts (distance stamp). Every
+ *         edge is stored; chatter is filtered in the
  *         task (bar_filter.c). A full ring drops the edge and counts it,
  *         and the read it belonged to is rejected.
  *
@@ -338,6 +346,10 @@ barcode_isr (uint32_t now_us)
         if (next != g_bar_tail)
         {
             g_bar_buf[g_bar_head] = (now_us & ~LEVEL_BIT) | level;
+            /* Distance stamp: the encoders were updated just before, in
+             * the same handler (hal_gpio_irq_service()). */
+            g_bar_cl[g_bar_head]  = motor_driver_count_left();
+            g_bar_cr[g_bar_head]  = motor_driver_count_right();
             __dmb();                              /* data before head     */
             g_bar_head = next;
             sig        = HAL_SIG_BARCODE;

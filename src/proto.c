@@ -30,7 +30,7 @@
 #define TENTHS_PER_HALF      (5)       /* x0.1 mm -> 0.5 mm steps        */
 #define HHMM_SPLIT           (100)     /* HHMM -> hours, minutes         */
 #define COUNTS_PER_UNIT      (4)       /* motor-test counts sent / 4     */
-#define BARDBG_HEADER_COUNT  (6U)
+#define BARDBG_HEADER_COUNT  (7U)
 
 /** Fields of one EVENT kind (after the 4-bit kind). */
 typedef struct
@@ -84,12 +84,12 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
             { 8U, false } } }
 };
 
-/** debug/barcode header: seq, chunk, last, letter valid, letter, count;
- *  then count widths of 11 bits each. */
+/** debug/barcode header: seq, chunk, last, letter valid, distance,
+ *  letter, count; then count widths of 11 bits each. */
 static bitpack_field_t const g_bardbg_header[BARDBG_HEADER_COUNT] =
 {
     { 3U, false }, { 3U, false }, { 1U, false }, { 1U, false },
-    { 5U, false }, { 4U, false }
+    { 1U, false }, { 5U, false }, { 4U, false }
 };
 static bitpack_field_t const g_bardbg_width = { 11U, false };
 
@@ -140,7 +140,8 @@ proto_pack_bar_debug (proto_bar_debug_t const * p_dbg, uint8_t * p_frame)
     int32_t const  values[BARDBG_HEADER_COUNT] =
     {
         p_dbg->seq, p_dbg->chunk, p_dbg->b_last ? 1 : 0,
-        p_dbg->b_letter ? 1 : 0, p_dbg->letter, (int32_t) count
+        p_dbg->b_letter ? 1 : 0, p_dbg->b_distance ? 1 : 0, p_dbg->letter,
+        (int32_t) count
     };
     uint32_t       pos = 0U;
     uint32_t       idx = 0U;

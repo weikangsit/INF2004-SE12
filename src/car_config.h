@@ -195,6 +195,17 @@
  * ends at once on its 30th edge, so this does not delay a turn. TUNE.  */
 #define BAR_IDLE_TIMEOUT_US  (500000U)
 #define BAR_EDGE_BUF_LEN     (64U)     /* clean edges of one read       */
+/* Reads are decoded by the distance the sensor travelled (wheel encoders
+ * stamped on every edge), so the car's speed may change during a read
+ * (measured: line-following wiggle doubled and halved the speed inside
+ * one character, and time-based reads failed). Time is the fallback
+ * when the car has not moved this far during the read (hand swipe) or
+ * runs open loop.                                                       */
+#define BAR_MIN_TRAVEL_COUNTS (100)    /* ~14 mm                        */
+/* Barcode sensor offset to the LEFT of the car's centreline, mm (right
+ * is negative). Corrects the sensor's travel for the car's turning while
+ * it follows the line. TUNE: measure on the car.                       */
+#define BAR_SENSOR_Y_MM      (0.0f)
 /* Narrowest wide element / widest narrow element, x10. Code 39 uses
  * 2:1 to 3:1; a ratio under 1.5 is not a clean read (Tribunal 1).      */
 #define BAR_MIN_WIDE_RATIO_X10 (15U)
