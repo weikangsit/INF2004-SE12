@@ -144,12 +144,15 @@
 #define SPEED_HUMP_CMS       ((15U * SPEED_SCALE_PCT) / 100U)  /* 11    */
 #define SPEED_SEARCH_CMS     ((12U * SPEED_SCALE_PCT) / 100U)  /* 9     */
 #define SPEED_TURN_CMS       ((15U * SPEED_SCALE_PCT) / 100U)  /* 11    */
-#define SPEED_STEER_CMS      ((18U * SPEED_SCALE_PCT) / 100U)  /* 13    */
+/* Slower while steering: the same differential turns tighter. Simulated
+ * on circles of 8-30 cm radius: 13 cm/s lost circles under ~12 cm,
+ * 8 cm/s held all of them and wandered less on straights.              */
+#define SPEED_STEER_CMS      ((11U * SPEED_SCALE_PCT) / 100U)  /* 8     */
 #define MAG_CAL_SPEED_CMS    (8U)      /* slow spin while calibrating   */
 
 /* Line steering: wheel speed differential while one sensor sees black.
  * LINE_STEER_DIR +1 steers toward the black sensor, -1 away from it.   */
-#define K_LINE_STEER_MPS     (0.075f)
+#define K_LINE_STEER_MPS     (0.09f)   /* inner wheel ~0 at 8 cm/s */
 #define LINE_STEER_DIR       (1)
 /* Both white is either centred or a line that slipped out past the
  * inner sensor on a curve (measured: car left the circle after half a
