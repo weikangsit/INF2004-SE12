@@ -33,7 +33,7 @@
     10: ["BOOT", [["hours", 5, 0], ["minutes", 6, 0], ["seconds", 6, 0]]],
     11: ["MAG_CAL", [["result", 1, 0]]],
     12: ["DEADBAND", [["wheel", 1, 0], ["deadband", 7, 0], ["kff", 8, 0]]],
-    13: ["BAR_STATUS", [["black", 1, 0], ["reads", 4, 0], ["irqs", 8, 0], ["kept", 8, 0]]],
+    13: ["BAR_STATUS", [["black", 1, 0], ["overflow", 1, 0], ["reads", 4, 0], ["edges", 8, 0], ["glitches", 8, 0]]],
   };
   const EVENT_KIND_BITS = 4;
 
@@ -195,8 +195,9 @@
             (f.kff / 100).toFixed(2) + " duty per m/s -> set MOTOR_DEADBAND_" + side + " (" +
             (f.deadband / 100).toFixed(2) + "f) and PID_KFF_" + side + " (" + (f.kff / 100).toFixed(2) + "f)";
       }
-      case 13: return "barcode sensor " + (f.black ? "BLACK" : "white") + ", " + f.irqs +
-                 " interrupts, " + f.kept + " edges kept, " + f.reads + " reads in the last second";
+      case 13: return "barcode sensor " + (f.black ? "BLACK" : "white") + ", " + f.edges +
+                 " edges, " + f.glitches + " glitches removed, " + f.reads + " reads in the last second" +
+                 (f.overflow ? ", EDGES LOST (ring full)" : "");
       default: return "event " + kind;
     }
   }

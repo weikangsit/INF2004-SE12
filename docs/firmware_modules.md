@@ -14,7 +14,7 @@ and no hardware headers (see `port.h`).
 | `motion_control` | Buddy 2 | Motion, prio 3 | `motion_cmd_q`, `motion_done_q` (seq + result), speed/duty/distance | line reading, IMU heading, safety latch |
 | `motor_driver` | Buddy 2 | SDK side | motor PWM, encoders, Safety motor-inhibit latch | GPIO ISR |
 | `sensor_line` | Buddy 3 | Line / Barcode, prio 2 | newest 2-bit line reading (stamped), line events, black age | - |
-| `barcode`, `code39` | Buddy 3 | in the Line task / library | table slot (0..3) of the decoded A-Z letter (`bar_cmd_q`) | barcode edges (GPIO ISR) |
+| `barcode`, `bar_filter`, `code39` | Buddy 3 | in the Line task / libraries | table slot (0..3) of the decoded A-Z letter (`bar_cmd_q`) | raw barcode edges (GPIO ISR) |
 | `imu_terrain` | Buddy 4 | IMU, prio 5 | attitude, heading, hump, class, valid / calibrated / stamp; hump events; collision / over-tilt to Safety | distance and speeds |
 | `ultrasonic_scan`, `obstacle_profile` | Buddy 5 | Ultrasonic, prio 6 / library | front range, NEAR, route suggestion (never drives) | scan requests |
 | `nav_fsm` | team | Nav, prio 4 | system state, all movement commands | every module above |
@@ -28,7 +28,10 @@ and no hardware headers (see `port.h`).
 | Decision | Where |
 |---|---|
 | Digital line sensors, 1 bit each, 4-combination steering | `sensor_line.c`, `motion_control.c` |
-| Barcode posted only after '*' start/stop check; wide/narrow ratio check; both directions | `code39.c`, `barcode.c` |
+| Barcode edges only time-stamped in the ISR (bounded ring, every edge kept); chatter filtered and decoded in the task | `hal.c`, `bar_filter.c`, `barcode.c` |
+| Ring overflow decided: the edge is dropped and counted, and the read it belonged to is rejected | `hal.c`, `barcode.c` |
+| Barcode posted only after '*' start/stop check; wide/narrow ratio check per character (tolerates speed changes between characters); both directions | `code39.c`, `barcode.c` |
+| Timestamp and decode logs saved: element widths per read (`debug/barcode`) and a sensor status report (BAR_STATUS) while `BAR_LOG` is 1 | `barcode.c`, web app |
 | Newest line reading used, timestamped, older than 20 ms ignored | `sensor_line_read()` |
 | IMU data timestamped, older than 60 ms ignored | `vehicle_state` stamp, `motion_control.c` |
 | Safety latch blocks motor drive (inhibit flag checked around every PWM write); queued commands discarded while latched | `motor_driver.c`, `motion_control.c` |

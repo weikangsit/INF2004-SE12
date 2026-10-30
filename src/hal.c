@@ -45,14 +45,13 @@ static uint32_t const g_led_grb[HAL_LED_COUNT] =
 /* Barcode edge ring: single producer (ISR writes head) and single
  * consumer (Line task writes tail), so no lock is needed; the barriers
  * order the data before the index on both cores. */
-static volatile uint32_t g_bar_buf[BAR_EDGE_BUF_LEN];
+static volatile uint32_t g_bar_buf[BAR_RING_LEN];
 static volatile uint32_t g_bar_head    = 0U;
 static volatile uint32_t g_bar_tail    = 0U;
-static volatile uint32_t g_bar_last_us = 0U;     /* ISR only             */
-/* Running totals for the barcode status report; ISR is the only writer,
- * and an aligned 32-bit read is a single access. */
-static volatile uint32_t g_bar_irqs    = 0U;     /* interrupts on the pin */
-static volatile uint32_t g_bar_kept    = 0U;     /* edges stored          */
+/* Running totals; the ISR is the only writer, and an aligned 32-bit read
+ * is a single access. */
+static volatile uint32_t g_bar_edges   = 0U;     /* interrupts on the pin */
+static volatile uint32_t g_bar_dropped = 0U;     /* lost to a full ring   */
 
 /* Ultrasonic echo: written by the ISR, read after the echo signal. */
 static volatile uint32_t g_echo_rise_us  = 0U;
@@ -107,16 +106,23 @@ hal_gpio_irq_service (void)
 }
 
 /*!
- * @brief  Running totals of the barcode pin (status report): interrupts,
- *         and edges kept after the debounce with room in the ring.
- * @param  p_irqs  Output, interrupts on the barcode pin since boot.
- * @param  p_kept  Output, edges stored since boot.
+ * @brief  Barcode pin interrupts since boot (running total, wraps).
+ * @return Number of interrupts.
  */
-void
-hal_bar_stats (uint32_t * p_irqs, uint32_t * p_kept)
+uint32_t
+hal_bar_edges (void)
 {
-    *p_irqs = g_bar_irqs;
-    *p_kept = g_bar_kept;
+    return (g_bar_edges);
+}
+
+/*!
+ * @brief  Barcode edges lost to a full ring since boot (running total).
+ * @return Number of edges dropped.
+ */
+uint32_t
+hal_bar_dropped (void)
+{
+    return (g_bar_dropped);
 }
 
 /*!
@@ -138,7 +144,7 @@ hal_bar_take (uint32_t * p_buf, uint32_t max)
     while ((g_bar_tail != head) && (count < max))
     {
         p_buf[count] = g_bar_buf[g_bar_tail];
-        g_bar_tail   = (g_bar_tail + 1U) % BAR_EDGE_BUF_LEN;
+        g_bar_tail   = (g_bar_tail + 1U) % BAR_RING_LEN;
         count++;
     }
 
@@ -299,8 +305,10 @@ input_pin (uint32_t pin, bool b_pull_up)
 }
 
 /*!
- * @brief  Barcode part of the interrupt: debounce and store the edge.
- *         A full ring drops the edge (the read then fails cleanly).
+ * @brief  Barcode part of the interrupt: time-stamp the edge with the
+ *         level after it. Every edge is stored; chatter is filtered in the
+ *         task (bar_filter.c). A full ring drops the edge and counts it,
+ *         and the read it belonged to is rejected.
  * @param  now_us  Interrupt time.
  * @return HAL_SIG_BARCODE if an edge was stored, else 0.
  */
@@ -312,25 +320,23 @@ barcode_isr (uint32_t now_us)
 
     if (0U != events)
     {
+        uint32_t const level = (IR_BLACK_LEVEL ==
+                                (gpio_get(PIN_IR_BC) ? 1U : 0U)) ? 1U : 0U;
+        uint32_t const next  = (g_bar_head + 1U) % BAR_RING_LEN;
+
         gpio_acknowledge_irq(PIN_IR_BC, events);
-        g_bar_irqs++;
+        g_bar_edges++;
 
-        if ((now_us - g_bar_last_us) >= BAR_DEBOUNCE_US)
+        if (next != g_bar_tail)
         {
-            uint32_t const level = (IR_BLACK_LEVEL ==
-                                    (gpio_get(PIN_IR_BC) ? 1U : 0U)) ? 1U : 0U;
-            uint32_t const next  = (g_bar_head + 1U) % BAR_EDGE_BUF_LEN;
-
-            if (next != g_bar_tail)
-            {
-                g_bar_buf[g_bar_head] = (now_us & ~LEVEL_BIT) | level;
-                __dmb();                          /* data before head     */
-                g_bar_head = next;
-                sig        = HAL_SIG_BARCODE;
-                g_bar_kept++;
-            }
-
-            g_bar_last_us = now_us;
+            g_bar_buf[g_bar_head] = (now_us & ~LEVEL_BIT) | level;
+            __dmb();                              /* data before head     */
+            g_bar_head = next;
+            sig        = HAL_SIG_BARCODE;
+        }
+        else
+        {
+            g_bar_dropped++;
         }
     }
 

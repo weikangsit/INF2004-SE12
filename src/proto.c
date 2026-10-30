@@ -16,8 +16,7 @@
 #define BITS_PER_BYTE        (8U)
 #define EVENT_KIND_BITS      (4U)
 #define TELEM_FIELD_COUNT    (18U)
-#define EVENT_FIELDS_MAX     (4U)   /* fields of any kind except BARCODE */
-#define BARCODE_FIELD_COUNT  (4U)
+#define EVENT_FIELDS_MAX     (5U)   /* fields of any event kind          */
 #define EVENT_INPUT_COUNT    (3U)   /* code, value1, value2              */
 
 #define CMD_TAG              (0x40U)   /* bits 3..7 of a CMD byte       */
@@ -63,13 +62,13 @@ static bitpack_field_t const g_telem_layout[TELEM_FIELD_COUNT] =
     { 16U, false }    /* uptime_ticks   */
 };
 
-/** EVENT layouts, indexed by proto_event_t. The BARCODE kind is listed
- *  separately because it has more fields than the others. */
+/** EVENT layouts, indexed by proto_event_t. */
 static event_layout_t const g_event_layout[EV_KIND_COUNT] =
 {
     { 0U, { { 0U, false } } },                                  /* unused  */
     { 1U, { { 4U, false } } },                                  /* STATE   */
-    { 0U, { { 0U, false } } },                                  /* BARCODE */
+    /* BARCODE: slot, valid, read (a letter was decoded), edge count */
+    { 4U, { { 2U, false }, { 1U, false }, { 1U, false }, { 6U, false } } },
     { 1U, { { 8U, false } } },                                  /* HUMP    */
     { 3U, { { 8U, false }, { 9U, false }, { 7U, false } } },    /* OBSTACLE*/
     { 3U, { { 4U, false }, { 4U, false }, { 3U, false } } },    /* FAULT   */
@@ -80,14 +79,9 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
     { 3U, { { 5U, false }, { 6U, false }, { 6U, false } } },    /* BOOT    */
     { 1U, { { 1U, false } } },                                  /* MAG_CAL */
     { 3U, { { 1U, false }, { 7U, false }, { 8U, false } } },    /* DEADBAND*/
-    /* BAR_STATUS: on black, reads, interrupts, edges kept */
-    { 4U, { { 1U, false }, { 4U, false }, { 8U, false }, { 8U, false } } }
-};
-
-/** BARCODE: slot, valid, read (a letter was decoded), edge count. */
-static bitpack_field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
-{
-    { 2U, false }, { 1U, false }, { 1U, false }, { 6U, false }
+    /* BAR_STATUS: on black, ring overflowed, reads, edges, glitches */
+    { 5U, { { 1U, false }, { 1U, false }, { 4U, false }, { 8U, false },
+            { 8U, false } } }
 };
 
 /** debug/barcode header: seq, chunk, last, letter valid, letter, count;
@@ -178,7 +172,7 @@ proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
                   int16_t value2, uint8_t * p_frame)
 {
     static bitpack_field_t const kind_field = { EVENT_KIND_BITS, false };
-    int32_t                      values[BARCODE_FIELD_COUNT];
+    int32_t                      values[EVENT_FIELDS_MAX];
     uint32_t const               count = event_values(kind, code, value1,
                                                       value2, values);
     uint32_t                     pos   = 0U;
@@ -187,19 +181,10 @@ proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
     if (0U != count)
     {
         (void) memset(p_frame, 0, PROTO_EVENT_MAX_LEN);
-        pos = bitpack_put(p_frame, pos, (int32_t) kind,   /* 1..11 */
+        pos = bitpack_put(p_frame, pos, (int32_t) kind,   /* 1..13 */
                           &kind_field);
-
-        if (EV_BARCODE == kind)
-        {
-            pos = bitpack_put_list(p_frame, pos, values, g_barcode_layout,
-                                   count);
-        }
-        else
-        {
-            pos = bitpack_put_list(p_frame, pos, values,
-                                   g_event_layout[kind].fields, count);
-        }
+        pos = bitpack_put_list(p_frame, pos, values,
+                               g_event_layout[kind].fields, count);
 
         len = (pos + BITS_PER_BYTE - 1U) / BITS_PER_BYTE;
     }
@@ -295,7 +280,7 @@ proto_unpack_config (uint8_t const * p_frame, uint32_t len,
  * @param  code      Kind-specific code.
  * @param  value1    Kind-specific value 1.
  * @param  value2    Kind-specific value 2.
- * @param  p_values  Output, at least BARCODE_FIELD_COUNT entries.
+ * @param  p_values  Output, at least EVENT_FIELDS_MAX entries.
  * @return Number of fields, or 0 for an unknown kind.
  */
 static uint32_t
@@ -315,7 +300,7 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
             p_values[1] = b_valid ? 1 : 0;
             p_values[2] = (PROTO_BAR_EV_UNREADABLE != code) ? 1 : 0;
             p_values[3] = value2;
-            count = BARCODE_FIELD_COUNT;
+            count = 4U;
         }
         break;
 
@@ -353,10 +338,11 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
 
         case EV_BAR_STATUS:
             p_values[0] = (int32_t) ((uint32_t) code & 1U);
-            p_values[1] = (int32_t) ((uint32_t) code >> 1);   /* clamped */
-            p_values[2] = value1;
-            p_values[3] = value2;
-            count = 4U;
+            p_values[1] = (int32_t) (((uint32_t) code >> 1) & 1U);
+            p_values[2] = (int32_t) ((uint32_t) code >> 2);   /* clamped */
+            p_values[3] = value1;
+            p_values[4] = value2;
+            count = 5U;
         break;
 
         case EV_STATE:

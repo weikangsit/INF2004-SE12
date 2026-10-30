@@ -265,6 +265,7 @@ set(APP_SOURCES
     src/motor_driver.c   # SDK side
     # Buddy 3: line and barcode
     src/sensor_line.c
+    src/bar_filter.c
     src/barcode.c
     src/code39.c
     # Buddy 4: IMU terrain

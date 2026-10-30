@@ -55,12 +55,20 @@ def parse_c_layouts():
     text = (SRC / "proto.c").read_text()
     telem = re.search(r"g_telem_layout\[[^\]]*\]\s*=\s*\{(.*?)\};", text, re.S).group(1)
     events = re.search(r"g_event_layout\[[^\]]*\]\s*=\s*\{(.*?)\};", text, re.S).group(1)
-    barcode = re.search(r"g_barcode_layout\[[^\]]*\]\s*=\s*\{(.*?)\};", text, re.S).group(1)
+    events = re.sub(r"/\*.*?\*/", "", events, flags=re.S)       # comments
+    entries, depth, start = [], 0, 0                           # top-level { } entries
+    for i, ch in enumerate(events):
+        if ch == "{":
+            depth += 1
+            start = i if depth == 1 else start
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                entries.append(events[start:i + 1])
     ev = {}
-    for kind, line in enumerate(l for l in events.splitlines() if l.strip().startswith("{ ")):
-        count = int(re.match(r"\s*\{\s*(\d+)U", line).group(1))
-        ev[kind] = c_fields(line[line.index("{", line.index("{") + 1):])[:count]
-    ev[2] = c_fields(barcode)
+    for kind, entry in enumerate(entries):
+        count = int(re.match(r"\{\s*(\d+)U", entry).group(1))
+        ev[kind] = c_fields(entry[entry.index("{", 1):])[:count]
     return c_fields(telem), ev
 
 
@@ -144,7 +152,8 @@ class Cpu:
                         f"-Wl,--section-start=.data=0x{RAM + DATA_OFFSET:08x}",
                         "-Wl,--entry=proto_pack_telem"] +
                        [str(SRC / f) for f in ("proto.c", "bitpack.c", "code39.c",
-                                               "obstacle_profile.c", "barcode_map.c")] +
+                                               "obstacle_profile.c", "barcode_map.c",
+                                               "bar_filter.c")] +
                        [str(workdir / "harness.c"), "-lgcc", "-o", str(elf)], check=True)
         binary = workdir / "proto_test.bin"
         subprocess.run([tool("objcopy"), "-O", "binary", "-R", ".data", "-R", ".bss",
@@ -204,7 +213,7 @@ def event_fields(kind, code, v1, v2):
     if kind == 10:
         return [cdiv(v1, 100), v1 - 100 * cdiv(v1, 100), v2]
     if kind == 13:
-        return [code & 1, code >> 1, v1, v2]
+        return [code & 1, (code >> 1) & 1, code >> 2, v1, v2]
     return [code, v1, v2][:len(ref.EVENT_LAYOUT[kind][1])]
 
 
@@ -482,6 +491,91 @@ def test_bitpack(cpu):
                   "neighbouring bits untouched)")
 
 
+def ref_filter_add(edges, edge, capacity, glitch_us):
+    """Python mirror of bar_filter_add() (src/bar_filter.c)."""
+    level = edge & 1
+    if not edges:
+        if level and capacity > 0:
+            edges.append(edge)
+        return
+    last = edges[-1]
+    if level == last & 1:
+        return
+    if ((edge & ~1) - (last & ~1)) % (1 << 32) < glitch_us:
+        edges.pop()
+    elif len(edges) < capacity:
+        edges.append(edge)
+
+
+def chatter_edges(text, narrow, wide, rng, burst_max, reverse=False, speed_drift=0.0):
+    """Raw interrupt edges of a Code 39 symbol passing slowly: each change
+    arrives as a burst of 0..burst_max extra edge pairs within 400 us, with
+    the level read in the interrupt; the speed may drift through the read."""
+    widths = []
+    for n, ch in enumerate(text):
+        widths += [wide if b == "1" else narrow for b in C39[ch]]
+        if n < len(text) - 1:
+            widths.append(narrow)
+    if reverse:
+        widths.reverse()
+    t, level, raw = 200000, 1, []
+    for n, w in enumerate(widths):
+        for k in range(rng.randint(0, burst_max)):           # chatter
+            dt = rng.randint(5, 400 // (2 * burst_max + 1))
+            raw.append(((t & ~1) | (1 - level)))
+            t += dt
+            raw.append(((t & ~1) | level))
+            t += dt
+        raw.append((t & ~1) | level)                          # settled level
+        t += int(w * (1.0 + speed_drift * n / len(widths)))
+        level = 1 - level
+    raw.append((t & ~1) | level)                              # final black -> white
+    return raw
+
+
+def test_bar_filter(cpu):
+    """bar_filter_add against its reference, then whole slow, chattering
+    reads: raw edges -> filter (firmware) -> code39_decode (firmware)."""
+    start = len(failures)
+    rng = random.Random(31)
+    glitch = 1000
+    # 1. Random raw edge streams, firmware vs reference.
+    for case in range(60):
+        t, raw = 1000, []
+        for _ in range(rng.randint(1, 120)):
+            t += rng.choice([rng.randint(1, 1500), rng.randint(1000, 40000)])
+            raw.append((t & ~1) | rng.randint(0, 1))
+        want, count = [], 0
+        for edge in raw:
+            ref_filter_add(want, edge, 64, glitch)
+            count = cpu.call("bar_filter_add", RAM, count, 64, edge, stack_args=(glitch,))
+            check(count == len(want), f"filter case {case}: count {count} != {len(want)}")
+        got = list(struct.unpack("<%dI" % count, cpu.read(RAM, 4 * count))) if count else []
+        check(got == want, f"filter case {case}: edges differ")
+    # 2. Whole reads at slow and fast speeds, with chatter and speed drift.
+    reads = ok = raw_ok = 0
+    for letter in ref.LETTERS:
+        for narrow in (3000, 15000, 40000):                # fast hand, 8 cm/s, crawl
+            for rev in (False, True):
+                raw = chatter_edges("*" + letter + "*", narrow, int(narrow * 2.5), rng,
+                                    burst_max=3, reverse=rev, speed_drift=0.3)
+                count = 0
+                for edge in raw:
+                    count = cpu.call("bar_filter_add", RAM, count, 64, edge,
+                                     stack_args=(glitch,))
+                got = cpu.call("code39_decode", RAM, count, 15) & 0xFF
+                reads += 1
+                ok += got == ref.LETTERS.index(letter)
+                check(got == ref.LETTERS.index(letter),
+                      f"slow read {letter} n={narrow} rev={rev}: {got} ({count} edges)")
+                cpu.write(RAM + 0x800, struct.pack("<%dI" % min(len(raw), 64), *raw[:64]))
+                raw_ok += (cpu.call("code39_decode", RAM + 0x800, min(len(raw), 64), 15) & 0xFF) \
+                    == ref.LETTERS.index(letter)
+    report(start, f"bar_filter_add: 60 random streams match the reference; {ok}/{reads} chattering "
+                  f"reads decoded (A-Z, 3-40 ms narrow, both directions, 30 % speed drift; "
+                  f"{raw_ok}/{reads} without the filter)")
+
+
 def test_bar_debug(cpu):
     """proto_pack_bar_debug against the reference packer, including counts
     above 10 and widths above 11 bits (clamped)."""
@@ -544,6 +638,7 @@ def main():
             test_obstacle(cpu)
             test_barcode_map(cpu)
             test_bar_debug(cpu)
+            test_bar_filter(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

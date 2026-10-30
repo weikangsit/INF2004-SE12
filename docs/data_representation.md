@@ -126,6 +126,12 @@ flags and runs them in a Cortex-M0+ emulator:
 * `code39.c`: A-Z in both directions at 15-45 cm/s with +/-10 % width
   jitter; rejects unclear wide/narrow ratios, characters outside A-Z and short
   reads.
+* `bar_filter.c`: 60 random raw edge streams equal to the Python reference;
+  whole reads with chatter (up to 3 extra edge pairs within 400 us at every
+  change), 3-40 ms narrow elements, both directions and a 30 % speed change
+  through the read, filtered and decoded by the firmware code: all 156
+  decode (none decode unfiltered; the old 500 us interrupt debounce decoded
+  20-58 % of them).
 * `obstacle_profile.c`: cosine within 3/1000 for 0-180 deg; 400 random
   sweeps with missing echoes, profile and route equal to the reference.
 

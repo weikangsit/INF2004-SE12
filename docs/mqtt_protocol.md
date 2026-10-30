@@ -95,7 +95,7 @@ fixed per kind, and the decoder rejects any other length.
 | 10 | BOOT | hours 5, minutes 6, seconds 6 (firmware build time) | 3 |
 | 11 | MAG_CAL | result 1 (0 calibrated, 1 failed: field barely changed) | 1 |
 | 12 | DEADBAND | wheel 1 (0 left, 1 right), dead band 7 (percent, 100 = never moved), slope 8 (duty per m/s x100) | 3 |
-| 13 | BAR_STATUS | barcode sensor on black now 1, reads finished 4, pin interrupts 8, edges kept 8 (counts per report, saturating); sent every `BAR_STATUS_MS` while `BAR_LOG` is 1 | 4 |
+| 13 | BAR_STATUS | barcode sensor on black now 1, interrupt ring overflowed 1, reads finished 4, raw edges 8, glitches removed 8 (counts per report, saturating); sent every `BAR_STATUS_MS` while `BAR_LOG` is 1 | 4 |
 
 Every EV_FAULT also sets its bit in the fault mask, and a failed ENC_CAL
 sets FC_ENCODER.

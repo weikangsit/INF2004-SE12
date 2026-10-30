@@ -20,7 +20,6 @@
                                        is on the 2nd wire, GP3          */
 #define PIN_US_TRIG          (4U)   /* GROVE 3 - HC-SR04 Trig          */
 #define PIN_US_ECHO          (5U)   /* GROVE 3 - HC-SR04 Echo          */
-#define PIN_IR_BC            (6U)   /* GROVE 5 - barcode sensor D0     */
 #define PIN_ENC_L_A          (7U)   /* GROVE 7 - left encoder A        */
 #define PIN_M1A              (8U)   /* left motor  (PWM4 A)            */
 #define PIN_M1B              (9U)   /* left motor  (PWM4 B)            */
@@ -32,9 +31,11 @@
 #define PIN_NEOPIXEL         (18U)  /* on-board WS2812                 */
 #define PIN_BTN_START        (20U)  /* on-board button, active low     */
 #define PIN_BTN_CAL          (21U)  /* on-board button, active low     */
+#define PIN_IR_BC            (26U)  /* barcode sensor D0 (wired to GP26;
+                                       GP6 stayed constant white)       */
 #define PIN_IR_L             (27U)  /* GROVE 6 - left line sensor D0   */
 #define PIN_ENC_L_B          (28U)  /* GROVE 7 - left encoder B        */
-/* GP2 and GP26 are deliberately left unconnected (shared Grove pins). */
+/* GP2 and GP6 are deliberately left unconnected (shared Grove pins). */
 
 /* LM393 D0 level that means "black" (TCRT5000 modules output HIGH when
  * no IR is reflected). TUNE: flip if your modules are inverted.        */
@@ -178,14 +179,22 @@
 /* ------------------------------------------------------------------ */
 /* Line / barcode (Week 6 Section 6.1)                                  */
 /* ------------------------------------------------------------------ */
-#define BAR_DEBOUNCE_US      (500U)
+/* Raw barcode edges are filtered in the task (bar_filter.c), not in the
+ * interrupt: an element shorter than BAR_GLITCH_US is chatter from an
+ * edge passing the sensor slowly (measured: reads failed unless the
+ * barcode was swiped fast), and is removed. Must stay below the
+ * narrowest bar at the fastest speed (45 cm/s stress test). TUNE.      */
+#define BAR_GLITCH_US        (1000U)
+/* Interrupt ring for raw edges, sized for chatter bursts between two
+ * 5 ms polls; a read that loses edges to a full ring is rejected.      */
+#define BAR_RING_LEN         (128U)
 #define BAR_EDGES_FULL       (30U)     /* one '*X*' symbol = 30 edges   */
 /* A read ends after BAR_EDGES_FULL edges, or after this long without an
  * edge. Long enough for a wide bar at the 8 cm/s steering speed or a slow
  * hand swipe (was 150 ms, which cut such reads short). A full read still
  * ends at once on its 30th edge, so this does not delay a turn. TUNE.  */
 #define BAR_IDLE_TIMEOUT_US  (500000U)
-#define BAR_EDGE_BUF_LEN     (64U)
+#define BAR_EDGE_BUF_LEN     (64U)     /* clean edges of one read       */
 /* Narrowest wide element / widest narrow element, x10. Code 39 uses
  * 2:1 to 3:1; a ratio under 1.5 is not a clean read (Tribunal 1).      */
 #define BAR_MIN_WIDE_RATIO_X10 (15U)

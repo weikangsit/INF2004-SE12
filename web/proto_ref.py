@@ -32,7 +32,8 @@ EVENT_LAYOUT = {
     10: ("BOOT", [("hours", 5, 0), ("minutes", 6, 0), ("seconds", 6, 0)]),
     11: ("MAG_CAL", [("result", 1, 0)]),
     12: ("DEADBAND", [("wheel", 1, 0), ("deadband", 7, 0), ("kff", 8, 0)]),
-    13: ("BAR_STATUS", [("black", 1, 0), ("reads", 4, 0), ("irqs", 8, 0), ("kept", 8, 0)]),
+    13: ("BAR_STATUS", [("black", 1, 0), ("overflow", 1, 0), ("reads", 4, 0), ("edges", 8, 0),
+                        ("glitches", 8, 0)]),
 }
 EVENT_KIND_BITS = 4
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

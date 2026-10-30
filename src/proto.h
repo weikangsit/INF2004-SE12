@@ -120,9 +120,10 @@ typedef enum
     EV_MAG_CAL,      /* code 0 ok, 1 failed (too little field change)     */
     EV_DEADBAND,     /* code = wheel (0 left, 1 right), value1 = dead band
                         percent (100 = never moved), value2 = KFF x100   */
-    EV_BAR_STATUS,   /* code bit 0 = barcode sensor on black now, bits 1+
-                        = reads finished; value1 = pin interrupts, value2
-                        = edges kept (each in the last report period)     */
+    EV_BAR_STATUS,   /* code bit 0 = barcode sensor on black now, bit 1
+                        = ring overflowed, bits 2..5 = reads finished;
+                        value1 = raw edges, value2 = glitches removed
+                        (each in the last report period)                  */
     EV_KIND_COUNT
 } proto_event_t;
 

@@ -156,8 +156,8 @@
   function showBarStatus(f) {
     $("t-bcs").textContent = f.black ? "BLACK" : "white";
     $("t-bcs").classList.toggle("black", !!f.black);
-    $("t-bcs-n").textContent = f.irqs + " interrupts, " + f.kept + " edges kept, " +
-      f.reads + " reads /s" + (f.irqs === 0 ? " \u2013 no signal from the sensor" : "");
+    $("t-bcs-n").textContent = f.edges + " edges, " + f.glitches + " glitches removed, " +
+      f.reads + " reads /s" + (f.overflow ? " \u2013 EDGES LOST (ring full)" : "");
   }
 
   // ------------------------------------------------------------------ barcode debug log

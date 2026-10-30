@@ -31,7 +31,8 @@ void     hal_gpio_init (void);
 uint32_t hal_gpio_irq_service (void);
 
 uint32_t hal_bar_take (uint32_t * p_buf, uint32_t max);
-void     hal_bar_stats (uint32_t * p_irqs, uint32_t * p_kept);
+uint32_t hal_bar_edges (void);
+uint32_t hal_bar_dropped (void);
 void     hal_us_trigger (void);
 bool     hal_us_echo_us (uint32_t * p_us);
 
