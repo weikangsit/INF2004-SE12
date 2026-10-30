@@ -156,15 +156,6 @@
  * 13 <-> 22 cm/s each time the sensor flickers on a curve (measured:
  * jerky curves). TUNE: longer = smoother, slower on S-bends.           */
 #define LINE_SLOW_HOLD_MS    (400U)
-/* Two straddling sensors read white both when centred and when the line
- * has run out past one of them on a curve. A sensor that saw black for
- * at least LINE_CURVE_MS (a curve, not a nudge) and then went white
- * keeps the car turning that way at LINE_RECOVER_GAIN x the steering
- * for up to LINE_RECOVER_MS, or until a sensor sees black again
- * (measured: line lost on curves, car ran straight). TUNE.             */
-#define LINE_CURVE_MS        (100U)
-#define LINE_RECOVER_MS      (300U)
-#define LINE_RECOVER_GAIN    (0.5f)
 #define K_DIST_EQ            (2.00f)   /* m/s per m of wheel mismatch   */
 #define K_HEADING            (0.004f)  /* m/s per degree heading error  */
 #define TURN_EARLY_FRACTION  (0.60f)   /* new branch accepted after 60 % */
