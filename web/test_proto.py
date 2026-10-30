@@ -509,8 +509,10 @@ def ref_filter_add(edges, edge, capacity, glitch_us):
 
 def chatter_edges(text, narrow, wide, rng, burst_max, reverse=False, speed_drift=0.0):
     """Raw interrupt edges of a Code 39 symbol passing slowly: each change
-    arrives as a burst of 0..burst_max extra edge pairs within 400 us, with
-    the level read in the interrupt; the speed may drift through the read."""
+    arrives as a burst of 0..burst_max extra edge pairs within 400 us. The
+    level read in the interrupt is random inside a burst; only the burst's
+    last edge carries the settled level (hal.c clears the edge flags before
+    reading the level). The speed may drift through the read."""
     widths = []
     for n, ch in enumerate(text):
         widths += [wide if b == "1" else narrow for b in C39[ch]]
@@ -522,9 +524,9 @@ def chatter_edges(text, narrow, wide, rng, burst_max, reverse=False, speed_drift
     for n, w in enumerate(widths):
         for k in range(rng.randint(0, burst_max)):           # chatter
             dt = rng.randint(5, 400 // (2 * burst_max + 1))
-            raw.append(((t & ~1) | (1 - level)))
+            raw.append((t & ~1) | rng.randint(0, 1))
             t += dt
-            raw.append(((t & ~1) | level))
+            raw.append((t & ~1) | rng.randint(0, 1))
             t += dt
         raw.append((t & ~1) | level)                          # settled level
         t += int(w * (1.0 + speed_drift * n / len(widths)))

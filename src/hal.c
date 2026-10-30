@@ -309,6 +309,13 @@ input_pin (uint32_t pin, bool b_pull_up)
  *         level after it. Every edge is stored; chatter is filtered in the
  *         task (bar_filter.c). A full ring drops the edge and counts it,
  *         and the read it belonged to is rejected.
+ *
+ *  The edge flags are cleared BEFORE the level is read: an edge after the
+ *  clear sets them again and runs this handler once more, so the last
+ *  edge stored for a burst always carries the settled level. (Reading
+ *  first lets an edge between the read and the clear be wiped out, and
+ *  the settled level is then never stored: measured, bars merged.)
+ *
  * @param  now_us  Interrupt time.
  * @return HAL_SIG_BARCODE if an edge was stored, else 0.
  */
@@ -320,11 +327,12 @@ barcode_isr (uint32_t now_us)
 
     if (0U != events)
     {
-        uint32_t const level = (IR_BLACK_LEVEL ==
-                                (gpio_get(PIN_IR_BC) ? 1U : 0U)) ? 1U : 0U;
-        uint32_t const next  = (g_bar_head + 1U) % BAR_RING_LEN;
+        uint32_t level = 0U;
+        uint32_t next  = 0U;
 
-        gpio_acknowledge_irq(PIN_IR_BC, events);
+        gpio_acknowledge_irq(PIN_IR_BC, events);  /* clear, then read     */
+        level = (IR_BLACK_LEVEL == (gpio_get(PIN_IR_BC) ? 1U : 0U)) ? 1U : 0U;
+        next  = (g_bar_head + 1U) % BAR_RING_LEN;
         g_bar_edges++;
 
         if (next != g_bar_tail)
