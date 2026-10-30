@@ -89,11 +89,22 @@
 #define STALL_MIN_DUTY       (0.25f)   /* duty above which a stall counts */
 
 /* Per-wheel speed PID (duty per m/s). Full precision float inside
- * Motion Control only (Tribunal 1, Buddy 2).                           */
-#define PID_KP               (1.20f)
-#define PID_KI               (6.00f)
+ * Motion Control only (Tribunal 1, Buddy 2).
+ * Feed-forward = MOTOR_DEADBAND + PID_KFF x speed. Motor test: 40 % duty
+ * gave ~3957 counts/s = 0.56 m/s, so ~0.7 duty per m/s. The old 2.2 was
+ * 3x too high: the PID had to cancel most of it and swung the duty below
+ * the motor dead band, so the wheels stopped and lurched (measured).
+ * TUNE: MOTOR_DEADBAND = lowest duty that turns a wheel (motor test).  */
+#define PID_KP               (1.00f)
+#define PID_KI               (1.50f)
 #define PID_KD               (0.00f)
-#define PID_KFF              (2.20f)   /* feed-forward, also open loop  */
+#define PID_KFF              (0.70f)   /* duty per m/s above dead band  */
+#define PID_I_LIMIT          (0.15f)   /* integral limit, m (x KI)      */
+#define MOTOR_DEADBAND       (0.15f)   /* duty below which it won't turn */
+#define FF_MIN_SPEED_MPS     (0.005f)  /* below this the target is "stop" */
+/* Encoder speed is averaged over this many control periods (40 ms):
+ * one 10 ms period holds only ~6 counts at 9 cm/s.                     */
+#define SPEED_AVG_PERIODS    (4U)
 /* Speed set-point ramp: limits the jerk that the IMU would otherwise
  * read as tilt, hump or impact. TUNE.                                  */
 #define ACCEL_LIMIT_MPS2     (0.50f)

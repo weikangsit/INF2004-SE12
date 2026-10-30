@@ -15,10 +15,13 @@
  *  the Week 6 feedback asked; stall detection is then off and only the
  *  command time limit protects the motors.
  *
- *  NOTE: (void) casts mark return values that are deliberately ignored.
+ *  NOTE: (void) casts mark return values that are deliberately ignored;
+ *  (UB *) and (int) casts match tm_printf()'s parameter and %d types.
  */
 #include <math.h>
 #include <string.h>
+
+#include <tm/tmonitor.h>
 
 #include "port.h"
 
@@ -35,7 +38,6 @@
 #define PI_F                 (3.14159265f)
 #define M_PER_COUNT          ((PI_F * WHEEL_DIAMETER_M) / ENC_COUNTS_PER_REV)
 #define DT_S                 ((float32_t) PERIOD_MOTION_MS / 1000.0f)
-#define I_LIMIT              (0.5f)
 #define HALF                 (0.5f)
 #define DEG_PER_RAD          (180.0f / PI_F)
 #define HALF_DEG             (2.0f)        /* heading is in 0.5 deg       */
@@ -47,6 +49,7 @@
 #define LIMIT_EXTRA_MS       (2000U)
 #define MIN_LIMIT_SPEED_MPS  (0.05f)
 #define TEST_PHASES          (4U)
+#define COUNT_PRINT_MS       (500U)    /* encoder print when stopped  */
 
 /* Packed command word (32 bits, Change Requirement 1). */
 #define CMD_ID_SHIFT         (0U)
@@ -145,6 +148,12 @@ typedef struct
     uint32_t      limit_ms;      /* 0 = no time limit                     */
     int32_t       prev_cl;
     int32_t       prev_cr;
+    int32_t       hist_l[SPEED_AVG_PERIODS];  /* last count deltas       */
+    int32_t       hist_r[SPEED_AVG_PERIODS];
+    uint32_t      hist_idx;
+    int32_t       printed_cl;    /* counts at the last stopped print      */
+    int32_t       printed_cr;
+    uint32_t      printed_ms;
     int32_t       cal_l0;        /* raw counts at self-test / phase start */
     int32_t       cal_r0;
     uint32_t      test_phase;
@@ -189,6 +198,8 @@ static void      closed_loop_drive (motion_in_t const * p_in);
 static uint32_t  edge_clamp (uint32_t edge_ms, uint32_t now);
 static void      brake_to (motion_mode_t mode);
 static void      done_post (motion_result_t result);
+static float32_t feed_forward (float32_t target);
+static void      counts_print (motion_in_t const * p_in);
 static float32_t pid_step (wheel_pid_t * p_pid, float32_t target,
                            float32_t measured);
 static void      pid_reset (wheel_pid_t * p_pid);
@@ -386,6 +397,7 @@ motion_control_task (INT stacd, void * p_exinf)
         commands_take(&in);
         b_done = targets_set(&in);
         outputs_drive(&in, b_done);
+        counts_print(&in);
         state_publish();
     }
 }
@@ -442,31 +454,51 @@ inputs_read (motion_in_t * p_in)
 
 /*!
  * @brief  Wheel speed and travel from the encoders, or from the last
- *         targets when driving open loop.
+ *         targets when driving open loop. Travel uses every count; the
+ *         speed fed to the PID is the average of the last
+ *         SPEED_AVG_PERIODS periods, which removes most of the +/-1 count
+ *         quantisation noise.
  * @param  p_in  Inputs of this period.
  */
 static void
 speed_update (motion_in_t const * p_in)
 {
+    /* Count deltas per period are small, so the floats are exact. */
+    int32_t const delta_l = g_sign_l * (p_in->count_l - g_ctx.prev_cl);
+    int32_t const delta_r = g_sign_r * (p_in->count_r - g_ctx.prev_cr);
+    int32_t       sum_l   = 0;
+    int32_t       sum_r   = 0;
+    uint32_t      idx     = 0U;
+
+    g_ctx.prev_cl = p_in->count_l;
+    g_ctx.prev_cr = p_in->count_r;
+
     if (g_b_open_loop)
     {
         g_ctx.speed_l = g_ctx.tgt_l;
         g_ctx.speed_r = g_ctx.tgt_r;
+        g_ctx.dist_l += g_ctx.speed_l * DT_S;
+        g_ctx.dist_r += g_ctx.speed_r * DT_S;
     }
     else
     {
-        /* Count deltas per period are small, so the float is exact. */
-        int32_t const delta_l = g_sign_l * (p_in->count_l - g_ctx.prev_cl);
-        int32_t const delta_r = g_sign_r * (p_in->count_r - g_ctx.prev_cr);
+        g_ctx.hist_l[g_ctx.hist_idx] = delta_l;
+        g_ctx.hist_r[g_ctx.hist_idx] = delta_r;
+        g_ctx.hist_idx = (g_ctx.hist_idx + 1U) % SPEED_AVG_PERIODS;
 
-        g_ctx.speed_l = ((float32_t) delta_l * M_PER_COUNT) / DT_S;
-        g_ctx.speed_r = ((float32_t) delta_r * M_PER_COUNT) / DT_S;
+        for (idx = 0U; idx < SPEED_AVG_PERIODS; idx++)
+        {
+            sum_l += g_ctx.hist_l[idx];
+            sum_r += g_ctx.hist_r[idx];
+        }
+
+        g_ctx.speed_l = ((float32_t) sum_l * M_PER_COUNT) /
+                        (DT_S * (float32_t) SPEED_AVG_PERIODS);
+        g_ctx.speed_r = ((float32_t) sum_r * M_PER_COUNT) /
+                        (DT_S * (float32_t) SPEED_AVG_PERIODS);
+        g_ctx.dist_l += (float32_t) delta_l * M_PER_COUNT;
+        g_ctx.dist_r += (float32_t) delta_r * M_PER_COUNT;
     }
-
-    g_ctx.prev_cl = p_in->count_l;
-    g_ctx.prev_cr = p_in->count_r;
-    g_ctx.dist_l     += g_ctx.speed_l * DT_S;
-    g_ctx.dist_r     += g_ctx.speed_r * DT_S;
 }
 
 /*!
@@ -892,8 +924,8 @@ closed_loop_drive (motion_in_t const * p_in)
 
     if (g_b_open_loop)
     {
-        g_ctx.duty_l = clamp_f(PID_KFF * g_ctx.tgt_l, -1.0f, 1.0f);
-        g_ctx.duty_r = clamp_f(PID_KFF * g_ctx.tgt_r, -1.0f, 1.0f);
+        g_ctx.duty_l = clamp_f(feed_forward(g_ctx.tgt_l), -1.0f, 1.0f);
+        g_ctx.duty_r = clamp_f(feed_forward(g_ctx.tgt_r), -1.0f, 1.0f);
     }
     else
     {
@@ -1007,23 +1039,79 @@ done_post (motion_result_t result)
 }
 
 /*!
- * @brief  One PID step with feed-forward and a clamped integrator.
+ * @brief  One PID step on top of the feed-forward, with a clamped
+ *         integrator that stops integrating while the output is
+ *         saturated in the direction of the error (anti-windup).
  * @param  p_pid     Controller state.
  * @param  target    Target speed, m/s.
- * @param  measured  Measured speed, m/s.
+ * @param  measured  Measured (averaged) speed, m/s.
  * @return Duty, -1..1 before clamping.
  */
 static float32_t
 pid_step (wheel_pid_t * p_pid, float32_t target, float32_t measured)
 {
-    float32_t const err = target - measured;
-    float32_t const der = (err - p_pid->prev_err) / DT_S;
+    float32_t const err     = target - measured;
+    float32_t const der     = (err - p_pid->prev_err) / DT_S;
+    float32_t const base    = feed_forward(target) + (PID_KP * err) +
+                              (PID_KD * der);
+    float32_t const integ   = clamp_f(p_pid->integ + (err * DT_S),
+                                      -PID_I_LIMIT, PID_I_LIMIT);
+    float32_t const out     = base + (PID_KI * integ);
+    bool const      b_wound = ((out > 1.0f) && (err > 0.0f)) ||
+                              ((out < -1.0f) && (err < 0.0f));
 
-    p_pid->integ    = clamp_f(p_pid->integ + (err * DT_S), -I_LIMIT, I_LIMIT);
+    if (!b_wound)
+    {
+        p_pid->integ = integ;
+    }
+
     p_pid->prev_err = err;
 
-    return ((PID_KFF * target) + (PID_KP * err) + (PID_KI * p_pid->integ) +
-            (PID_KD * der));
+    return (base + (PID_KI * p_pid->integ));
+}
+
+/*!
+ * @brief  Open-loop duty for a target speed: the motor dead band plus a
+ *         slope from the measured duty-to-speed ratio. A target below
+ *         FF_MIN_SPEED_MPS means stop (no dead-band kick).
+ * @param  target  Target wheel speed, m/s (sign = direction).
+ * @return Duty, -1..1 before clamping.
+ */
+static float32_t
+feed_forward (float32_t target)
+{
+    float32_t const magnitude = fabsf(target);
+    float32_t       duty      = 0.0f;
+
+    if (magnitude >= FF_MIN_SPEED_MPS)
+    {
+        duty = MOTOR_DEADBAND + (PID_KFF * magnitude);
+        duty = (target < 0.0f) ? -duty : duty;
+    }
+
+    return (duty);
+}
+
+/*!
+ * @brief  While stopped, print the raw encoder counts on the USB console
+ *         when they change (at most every COUNT_PRINT_MS). Turn a wheel
+ *         one full turn by hand and the change is ENC_COUNTS_PER_REV.
+ * @param  p_in  Inputs of this period.
+ */
+static void
+counts_print (motion_in_t const * p_in)
+{
+    if ((MS_STOPPED == g_ctx.mode) &&
+        ((p_in->now_ms - g_ctx.printed_ms) >= COUNT_PRINT_MS) &&
+        ((p_in->count_l != g_ctx.printed_cl) ||
+         (p_in->count_r != g_ctx.printed_cr)))
+    {
+        g_ctx.printed_ms = p_in->now_ms;
+        g_ctx.printed_cl = p_in->count_l;
+        g_ctx.printed_cr = p_in->count_r;
+        tm_printf((UB *) "enc: L %d R %d (raw counts)\n",
+                  (int) p_in->count_l, (int) p_in->count_r);
+    }
 }
 
 /*!
