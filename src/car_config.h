@@ -152,6 +152,13 @@
  * feedback loop). TUNE.                                                */
 #define HUMP_MIN_MM          (10.0f)
 #define IMPACT_G             (1.50f)   /* horizontal jerk -> collision  */
+/* A jump only counts if the next reading is still this far from the
+ * reading before it (one-sample spikes from a loose mount or I2C noise
+ * come straight back). TUNE.                                          */
+#define IMPACT_CONFIRM_G     (0.75f)
+/* Readings at or beyond this on any axis are saturated (range +/-2 g)
+ * or corrupt and are ignored by the impact check.                    */
+#define ACC_SAT_G            (1.95f)
 #define OVERTILT_DEG         (35.0f)
 /* The tilt must last this long: motor jerks are shorter (measured:
  * false over-tilt trips on motor jerks). TUNE.                         */

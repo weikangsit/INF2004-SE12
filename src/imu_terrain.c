@@ -68,6 +68,7 @@
 #define TURNING_DPS          (30.0f)
 #define MOVING_MMS           (20)         /* sum of wheel speeds          */
 #define TENTHS               (10.0f)
+#define MILLI_G              (1000.0f)
 #define AXES                 (3U)
 #define AXIS_X               (0U)
 #define AXIS_Y               (1U)
@@ -93,6 +94,8 @@ typedef struct
     vec3_t    acc_f;           /* low-pass-filtered acceleration, g      */
     vec3_t    acc_prev;        /* previous raw sample (impact check)     */
     bool      b_prev_valid;    /* acc_prev holds a real sample           */
+    vec3_t    acc_ref;         /* reading before an impact candidate     */
+    bool      b_impact_pending; /* jump seen, waiting for confirmation   */
     float32_t prev_hdg;
     float32_t rate;            /* deg/s                                  */
     int32_t   prev_dist_mm;
@@ -125,6 +128,9 @@ static int16_t   le16 (uint8_t const * p_bytes);
 static int16_t   be16 (uint8_t const * p_bytes);
 static void      sample_process (vec3_t const * p_acc, vec3_t const * p_mag);
 static void      impact_check (vec3_t const * p_acc);
+static float32_t horizontal_jump (vec3_t const * p_now,
+                                  vec3_t const * p_then);
+static bool      sample_saturated (vec3_t const * p_acc);
 static void      tilt_check (float32_t pitch_deg, float32_t roll_deg);
 static void      hump_track (float32_t pitch, float32_t pitch_deg,
                              int32_t dist_mm);
@@ -458,24 +464,102 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
 }
 
 /*!
- * @brief  Collision: a sudden horizontal jump between two raw samples.
- *         The first sample after boot only sets the reference.
+ * @brief  Collision: a sudden horizontal jump between two raw samples,
+ *         confirmed by the next sample.
+ *
+ *  A single corrupted or rattled reading (loose mount, I2C noise from the
+ *  motors) jumps and then comes straight back; a real impact leaves the
+ *  next reading still at least IMPACT_CONFIRM_G away from the reading
+ *  before the jump. Samples at or near the +/-2 g sensor limit on any
+ *  axis are saturated or corrupt and are skipped entirely. The first good
+ *  sample after boot only sets the reference. Every candidate and its
+ *  outcome is printed on the USB console for tuning.
+ *
  * @param  p_acc  Raw acceleration, g.
  */
 static void
 impact_check (vec3_t const * p_acc)
 {
-    if (g_ctx.b_prev_valid &&
-        ((fabsf(p_acc->axis[AXIS_X] - g_ctx.acc_prev.axis[AXIS_X]) >
-          IMPACT_G) ||
-         (fabsf(p_acc->axis[AXIS_Y] - g_ctx.acc_prev.axis[AXIS_Y]) >
-          IMPACT_G)))
+    if (sample_saturated(p_acc))
     {
-        safety_report(SAFETY_EVT_COLLISION);
+        tm_printf((UB *) "imu: saturated sample ignored (x %d y %d mg)\n",
+                  (int) round_i(p_acc->axis[AXIS_X] * MILLI_G),
+                  (int) round_i(p_acc->axis[AXIS_Y] * MILLI_G));
+    }
+    else
+    {
+        if (g_ctx.b_impact_pending)
+        {
+            bool const b_confirmed = (horizontal_jump(p_acc, &g_ctx.acc_ref)
+                                      > IMPACT_CONFIRM_G);
+
+            g_ctx.b_impact_pending = false;
+            tm_printf((UB *) "imu: impact %s\n",
+                      b_confirmed ? "confirmed" : "rejected (one sample)");
+
+            if (b_confirmed)
+            {
+                safety_report(SAFETY_EVT_COLLISION);
+            }
+        }
+        else if (g_ctx.b_prev_valid &&
+                 (horizontal_jump(p_acc, &g_ctx.acc_prev) > IMPACT_G))
+        {
+            g_ctx.b_impact_pending = true;
+            g_ctx.acc_ref          = g_ctx.acc_prev;
+            tm_printf((UB *) "imu: impact? x %d -> %d, y %d -> %d (mg)\n",
+                      (int) round_i(g_ctx.acc_prev.axis[AXIS_X] * MILLI_G),
+                      (int) round_i(p_acc->axis[AXIS_X] * MILLI_G),
+                      (int) round_i(g_ctx.acc_prev.axis[AXIS_Y] * MILLI_G),
+                      (int) round_i(p_acc->axis[AXIS_Y] * MILLI_G));
+        }
+        else
+        {
+            /* No jump. */
+        }
+
+        g_ctx.acc_prev     = *p_acc;
+        g_ctx.b_prev_valid = true;
+    }
+}
+
+/*!
+ * @brief  Largest horizontal (X or Y) difference between two samples.
+ * @param  p_now   Newer sample, g.
+ * @param  p_then  Older sample, g.
+ * @return Difference, g.
+ */
+static float32_t
+horizontal_jump (vec3_t const * p_now, vec3_t const * p_then)
+{
+    float32_t const jump_x = fabsf(p_now->axis[AXIS_X] -
+                                   p_then->axis[AXIS_X]);
+    float32_t const jump_y = fabsf(p_now->axis[AXIS_Y] -
+                                   p_then->axis[AXIS_Y]);
+
+    return (fmaxf(jump_x, jump_y));
+}
+
+/*!
+ * @brief  Check a sample against the sensor's +/-2 g limit.
+ * @param  p_acc  Raw acceleration, g.
+ * @return True if any axis is at or beyond ACC_SAT_G.
+ */
+static bool
+sample_saturated (vec3_t const * p_acc)
+{
+    bool     b_saturated = false;
+    uint32_t idx         = 0U;
+
+    for (idx = 0U; idx < AXES; idx++)
+    {
+        if (fabsf(p_acc->axis[idx]) >= ACC_SAT_G)
+        {
+            b_saturated = true;
+        }
     }
 
-    g_ctx.acc_prev     = *p_acc;
-    g_ctx.b_prev_valid = true;
+    return (b_saturated);
 }
 
 /*!
