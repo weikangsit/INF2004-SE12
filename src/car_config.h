@@ -94,13 +94,20 @@
  * gave ~3957 counts/s = 0.56 m/s, so ~0.7 duty per m/s. The old 2.2 was
  * 3x too high: the PID had to cancel most of it and swung the duty below
  * the motor dead band, so the wheels stopped and lurched (measured).
- * TUNE: MOTOR_DEADBAND = lowest duty that turns a wheel (motor test).  */
+ * Each wheel has its own dead band and slope: the motors differ, and a
+ * weaker one the integrator cannot make up pulls the car to one side
+ * (measured: right wheel slower on the floor, car curved right).
+ * TUNE: dead band = lowest duty that turns that wheel (motor test);
+ * on the floor, raise a wheel's KFF until its steady duty on the
+ * dashboard matches the other wheel's.                                 */
 #define PID_KP               (1.00f)
 #define PID_KI               (1.50f)
 #define PID_KD               (0.00f)
-#define PID_KFF              (0.70f)   /* duty per m/s above dead band  */
-#define PID_I_LIMIT          (0.15f)   /* integral limit, m (x KI)      */
-#define MOTOR_DEADBAND       (0.15f)   /* duty below which it won't turn */
+#define PID_KFF_L            (0.70f)   /* duty per m/s above dead band  */
+#define PID_KFF_R            (0.70f)
+#define MOTOR_DEADBAND_L     (0.15f)   /* duty below which it won't turn */
+#define MOTOR_DEADBAND_R     (0.15f)
+#define PID_I_LIMIT          (0.35f)   /* integral limit, m (x KI = 0.5) */
 #define FF_MIN_SPEED_MPS     (0.005f)  /* below this the target is "stop" */
 /* Encoder speed is averaged over this many control periods (40 ms):
  * one 10 ms period holds only ~6 counts at 9 cm/s.                     */

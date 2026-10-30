@@ -120,6 +120,13 @@ typedef struct
     float32_t prev_err;
 } wheel_pid_t;
 
+/** Open-loop model of one wheel: duty = dead_band + slope x speed. */
+typedef struct
+{
+    float32_t dead_band;     /* duty                                      */
+    float32_t slope;         /* duty per m/s                              */
+} wheel_ff_t;
+
 /** Everything the task keeps between periods (task-private). */
 typedef struct
 {
@@ -179,6 +186,9 @@ static uint8_t      g_next_seq     = 1U;     /* Nav only, see header     */
 static volatile bool g_b_open_loop = false;
 static int32_t      g_sign_l       = ENC_SIGN_LEFT;
 static int32_t      g_sign_r       = ENC_SIGN_RIGHT;
+
+static wheel_ff_t const g_ff_l = { MOTOR_DEADBAND_L, PID_KFF_L };
+static wheel_ff_t const g_ff_r = { MOTOR_DEADBAND_R, PID_KFF_R };
 static motion_ctx_t g_ctx;
 
 static uint8_t   cmd_send (cmd_id_t id, uint32_t speed_cms, uint32_t dist_cm,
@@ -198,10 +208,11 @@ static void      closed_loop_drive (motion_in_t const * p_in);
 static uint32_t  edge_clamp (uint32_t edge_ms, uint32_t now);
 static void      brake_to (motion_mode_t mode);
 static void      done_post (motion_result_t result);
-static float32_t feed_forward (float32_t target);
+static float32_t feed_forward (float32_t target,
+                               wheel_ff_t const * p_ff);
 static void      counts_print (motion_in_t const * p_in);
 static float32_t pid_step (wheel_pid_t * p_pid, float32_t target,
-                           float32_t measured);
+                           float32_t measured, wheel_ff_t const * p_ff);
 static void      pid_reset (wheel_pid_t * p_pid);
 static float32_t clamp_f (float32_t value, float32_t low, float32_t high);
 static float32_t wrap180 (float32_t deg);
@@ -924,15 +935,19 @@ closed_loop_drive (motion_in_t const * p_in)
 
     if (g_b_open_loop)
     {
-        g_ctx.duty_l = clamp_f(feed_forward(g_ctx.tgt_l), -1.0f, 1.0f);
-        g_ctx.duty_r = clamp_f(feed_forward(g_ctx.tgt_r), -1.0f, 1.0f);
+        g_ctx.duty_l = clamp_f(feed_forward(g_ctx.tgt_l, &g_ff_l),
+                               -1.0f, 1.0f);
+        g_ctx.duty_r = clamp_f(feed_forward(g_ctx.tgt_r, &g_ff_r),
+                               -1.0f, 1.0f);
     }
     else
     {
         g_ctx.duty_l = clamp_f(pid_step(&g_ctx.pid_l, g_ctx.tgt_l,
-                                        g_ctx.speed_l), -1.0f, 1.0f);
+                                        g_ctx.speed_l, &g_ff_l),
+                               -1.0f, 1.0f);
         g_ctx.duty_r = clamp_f(pid_step(&g_ctx.pid_r, g_ctx.tgt_r,
-                                        g_ctx.speed_r), -1.0f, 1.0f);
+                                        g_ctx.speed_r, &g_ff_r),
+                               -1.0f, 1.0f);
 
         edge_l = edge_clamp(edge_l, now);
         edge_r = edge_clamp(edge_r, now);
@@ -1045,14 +1060,16 @@ done_post (motion_result_t result)
  * @param  p_pid     Controller state.
  * @param  target    Target speed, m/s.
  * @param  measured  Measured (averaged) speed, m/s.
+ * @param  p_ff      That wheel's open-loop model.
  * @return Duty, -1..1 before clamping.
  */
 static float32_t
-pid_step (wheel_pid_t * p_pid, float32_t target, float32_t measured)
+pid_step (wheel_pid_t * p_pid, float32_t target, float32_t measured,
+          wheel_ff_t const * p_ff)
 {
     float32_t const err     = target - measured;
     float32_t const der     = (err - p_pid->prev_err) / DT_S;
-    float32_t const base    = feed_forward(target) + (PID_KP * err) +
+    float32_t const base    = feed_forward(target, p_ff) + (PID_KP * err) +
                               (PID_KD * der);
     float32_t const integ   = clamp_f(p_pid->integ + (err * DT_S),
                                       -PID_I_LIMIT, PID_I_LIMIT);
@@ -1075,17 +1092,18 @@ pid_step (wheel_pid_t * p_pid, float32_t target, float32_t measured)
  *         slope from the measured duty-to-speed ratio. A target below
  *         FF_MIN_SPEED_MPS means stop (no dead-band kick).
  * @param  target  Target wheel speed, m/s (sign = direction).
+ * @param  p_ff    That wheel's open-loop model.
  * @return Duty, -1..1 before clamping.
  */
 static float32_t
-feed_forward (float32_t target)
+feed_forward (float32_t target, wheel_ff_t const * p_ff)
 {
     float32_t const magnitude = fabsf(target);
     float32_t       duty      = 0.0f;
 
     if (magnitude >= FF_MIN_SPEED_MPS)
     {
-        duty = MOTOR_DEADBAND + (PID_KFF * magnitude);
+        duty = p_ff->dead_band + (p_ff->slope * magnitude);
         duty = (target < 0.0f) ? -duty : duty;
     }
 
