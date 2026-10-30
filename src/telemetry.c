@@ -4,38 +4,58 @@
  *  Any task reports an event with telemetry_post_event(): the event is
  *  packed at once (1-4 bytes, proto.h) and queued on telemetry_q. Every
  *  100 ms this task forwards the queued events, refreshes the live fault
- *  bits and publishes one 18-byte telemetry frame through comms.
+ *  bits and publishes one 18-byte telemetry frame through comms. The
+ *  frame is built from the packed shared state record (vehicle_state.h),
+ *  so only integer unit conversions are needed here.
  *
  *  NOTE: (void) casts mark return values that are deliberately ignored.
  */
-#include <math.h>
+#include <string.h>
 
 #include "port.h"
 
-#include "app.h"
 #include "barcode_map.h"
+#include "car_config.h"
 #include "comms.h"
 #include "fault.h"
-#include "imu.h"
+#include "imu_terrain.h"
+#include "safety.h"
+#include "systime.h"
 #include "telemetry.h"
-#include "ultrasonic.h"
+#include "ultrasonic_scan.h"
+#include "vehicle_state.h"
 
-#define CENTI_PER_UNIT       (100.0f)  /* m -> cm, ratio -> percent      */
-#define HALVES_PER_UNIT      (2.0f)    /* deg -> 0.5 deg, mm -> 0.5 mm   */
-#define UNIT_SCALE           (1.0f)    /* already in wire units          */
-#define FULL_CIRCLE_DEG      (360)
 #define MS_PER_TICK          (100U)    /* uptime field resolution        */
 #define UPTIME_MASK          (0xFFFFU)
-#define RANGE_MAX_CM         (510.0f)  /* 511 is reserved for no echo    */
-#define RANGE_NO_ECHO_CM     (900.0f)  /* us_front_cm() reports 999      */
-#define SCALE_LIMIT          (32767.0f) /* keeps lroundf() in int16 range */
+#define RANGE_MAX_CM         (510U)    /* 511 is reserved for no echo    */
+#define MM_PER_CM            (10)
+#define HALF_DEG_PER_DEG     (2U)
+#define FULL_CIRCLE_DEG      (360U)
+#define QUEUE_DEPTH          (16U)
+#define MBF_SLOT_BYTES       (8U)      /* 4-byte header + up to 4 bytes  */
 
-static void     live_faults_refresh (float32_t front_cm);
-static void     frame_fill (proto_telem_t * p_telem, float32_t front_cm);
-static uint8_t  line_bits_get (motion_state_t const * p_state);
-static uint8_t  barcode_bits_get (char letter);
-static int32_t  scale_round (float32_t value, float32_t factor);
-static void     event_queue_put (uint8_t const * p_frame, uint32_t len);
+static ID g_telemetry_q = 0;
+
+static void    live_faults_refresh (uint16_t front_cm);
+static void    frame_fill (proto_telem_t * p_telem, uint16_t front_cm);
+static int16_t div_round (int32_t value, int32_t divisor);
+static void    event_queue_put (uint8_t const * p_frame, uint32_t len);
+
+/*!
+ * @brief  Create the event queue. Call from usermain() before the tasks
+ *         start.
+ */
+void
+telemetry_init (void)
+{
+    T_CMBF create;
+
+    (void) memset(&create, 0, sizeof(create));
+    create.mbfatr  = TA_TFIFO;
+    create.bufsz   = (SZ) (QUEUE_DEPTH * MBF_SLOT_BYTES);      /* 128 B   */
+    create.maxmsz  = (INT) PROTO_EVENT_MAX_LEN;
+    g_telemetry_q  = tk_cre_mbf(&create);
+}
 
 /*!
  * @brief  Report an event. Safe to call from any task.
@@ -92,14 +112,14 @@ telemetry_task (INT stacd, void * p_exinf)
 
     for (;;)
     {
-        uint8_t       event[PROTO_EVENT_MAX_LEN];
-        uint8_t       frame[PROTO_TELEM_LEN];
-        proto_telem_t telem;
-        float32_t     front_cm  = 0.0f;
-        INT           event_len = 0;
+        uint8_t        event[PROTO_EVENT_MAX_LEN];
+        uint8_t        frame[PROTO_TELEM_LEN];
+        proto_telem_t  telem;
+        uint16_t       front_cm  = US_RANGE_NO_ECHO;
+        INT            event_len = 0;
 
-        period_wait(&next_us, PERIOD_TELEM_MS);
-        heartbeat(HB_TELEM);
+        systime_period_wait(&next_us, PERIOD_TELEM_MS);
+        safety_heartbeat(SAFETY_HB_TELEM);
 
         /* Step 1: forward every queued event. */
         event_len = tk_rcv_mbf(g_telemetry_q, event, TMO_POL);
@@ -112,7 +132,7 @@ telemetry_task (INT stacd, void * p_exinf)
         }
 
         /* Step 2: refresh live faults, then publish one frame. */
-        front_cm = us_front_cm();
+        front_cm = ultrasonic_scan_front_cm();
         live_faults_refresh(front_cm);
         frame_fill(&telem, front_cm);
         (void) comms_publish(COMMS_TOPIC_TELEMETRY, frame,
@@ -125,16 +145,16 @@ telemetry_task (INT stacd, void * p_exinf)
 
 /*!
  * @brief  Set or clear the faults that describe live sensor / link state.
- * @param  front_cm  Latest front ultrasonic range (999 = no echo).
+ * @param  front_cm  Latest front ultrasonic range (US_RANGE_NO_ECHO).
  */
 static void
-live_faults_refresh (float32_t front_cm)
+live_faults_refresh (uint16_t front_cm)
 {
     static fault_code_t const codes[] = { FC_IMU, FC_NO_ECHO, FC_WIFI_LOSS };
     bool const                b_active[] =
     {
-        !imu_is_ok(),
-        (front_cm >= RANGE_NO_ECHO_CM),
+        !imu_terrain_is_ok(),
+        (US_RANGE_NO_ECHO == front_cm),
         !comms_is_online()
     };
     uint32_t                  idx = 0U;
@@ -155,16 +175,16 @@ live_faults_refresh (float32_t front_cm)
 /*!
  * @brief  Fill the telemetry values (wire units) from the shared state.
  * @param  p_telem   Output values; proto_pack_telem() clamps each field.
- * @param  front_cm  Latest front ultrasonic range (999 = no echo).
+ * @param  front_cm  Latest front ultrasonic range (US_RANGE_NO_ECHO).
  */
 static void
-frame_fill (proto_telem_t * p_telem, float32_t front_cm)
+frame_fill (proto_telem_t * p_telem, uint16_t front_cm)
 {
-    motion_state_t state;
-    int32_t        heading = 0;
-    uint32_t       status  = 0U;
+    vehicle_state_t state;
+    uint32_t        status  = 0U;
+    uint32_t        heading = 0U;
 
-    state_read(&state);
+    vehicle_state_read(&state);
 
     if (safety_is_latched())
     {
@@ -176,119 +196,57 @@ frame_fill (proto_telem_t * p_telem, float32_t front_cm)
         status |= PROTO_ST_CFG_MQTT;
     }
 
-    heading = scale_round(state.heading_deg, UNIT_SCALE);
+    /* 0..719 half degrees -> 0..359 degrees, rounded; 360 wraps to 0. */
+    heading = ((uint32_t) state.heading_half_deg + 1U) / HALF_DEG_PER_DEG;
     if (heading >= FULL_CIRCLE_DEG)
     {
-        heading -= FULL_CIRCLE_DEG;               /* 359.6 rounds to 360   */
+        heading -= FULL_CIRCLE_DEG;
     }
 
-    /* Each narrowing cast below keeps a value that proto_pack_telem()
-     * clamps again to the field width, so out-of-range input is safe. */
-    p_telem->state          = state.sys_state;
+    /* The shared record already uses the telemetry units for most fields
+     * (same bit order for line and barcode); the narrowing casts keep
+     * values that proto_pack_telem() clamps again to each field width. */
+    p_telem->state          = state.nav_state;
     p_telem->motion_class   = state.motion_class;
-    p_telem->line_bits      = line_bits_get(&state);
-    p_telem->barcode        = barcode_bits_get(state.last_barcode);
+    p_telem->line_bits      = state.ir_black;
+    p_telem->barcode        = state.last_barcode;
     p_telem->fault_mask     = fault_get_mask();
     p_telem->status         = (uint8_t) status;
-    p_telem->speed_l_cms    = (int16_t) scale_round(state.speed_l_mps,
-                                                    CENTI_PER_UNIT);
-    p_telem->speed_r_cms    = (int16_t) scale_round(state.speed_r_mps,
-                                                    CENTI_PER_UNIT);
-    p_telem->duty_l_pct     = (int16_t) scale_round(state.duty_l,
-                                                    CENTI_PER_UNIT);
-    p_telem->duty_r_pct     = (int16_t) scale_round(state.duty_r,
-                                                    CENTI_PER_UNIT);
-    p_telem->pitch_half_deg = (int16_t) scale_round(state.pitch_deg,
-                                                    HALVES_PER_UNIT);
-    p_telem->roll_deg       = (int16_t) scale_round(state.roll_deg,
-                                                    UNIT_SCALE);
+    p_telem->speed_l_cms    = div_round(state.speed_l_mms, MM_PER_CM);
+    p_telem->speed_r_cms    = div_round(state.speed_r_mms, MM_PER_CM);
+    p_telem->duty_l_pct     = state.duty_l_pct;
+    p_telem->duty_r_pct     = state.duty_r_pct;
+    p_telem->pitch_half_deg = state.pitch_half_deg;
+    p_telem->roll_deg       = state.roll_deg;
     p_telem->heading_deg    = (uint16_t) heading;
-    p_telem->turn_rate_dps  = (int16_t) scale_round(state.turn_rate_dps,
-                                                    UNIT_SCALE);
-    p_telem->range_cm       = (front_cm >= RANGE_NO_ECHO_CM) ?
+    p_telem->turn_rate_dps  = state.turn_rate_dps;
+    p_telem->range_cm       = (US_RANGE_NO_ECHO == front_cm) ?
                               PROTO_RANGE_NO_ECHO :
-                              (uint16_t) scale_round(fminf(front_cm,
-                                                           RANGE_MAX_CM),
-                                                     UNIT_SCALE);
-    p_telem->distance_cm    = (int16_t) scale_round(state.dist_m,
-                                                    CENTI_PER_UNIT);
-    p_telem->hump_half_mm   = (uint16_t) scale_round(state.hump_peak_mm,
-                                                     HALVES_PER_UNIT);
-    p_telem->uptime_ticks   = (uint16_t) ((now_ms() / MS_PER_TICK) &
+                              ((front_cm > RANGE_MAX_CM) ?
+                               (uint16_t) RANGE_MAX_CM : front_cm);
+    p_telem->distance_cm    = div_round(state.dist_mm, MM_PER_CM);
+    p_telem->hump_half_mm   = state.hump_peak_half_mm;
+    p_telem->uptime_ticks   = (uint16_t) ((systime_now_ms() / MS_PER_TICK) &
                                           UPTIME_MASK);
 }
 
 /*!
- * @brief  The two digital line sensors as two bits (1 = black).
- *
- *  The Line task stores the raw readings in ir_black in every state, in
- *  the same bit order as the telemetry field (LINE_IR_* = PROTO_LINE_*).
- *
- * @param  p_state  Snapshot of the shared state record.
- * @return PROTO_LINE_LEFT / PROTO_LINE_RIGHT bits.
+ * @brief  Divide, rounding half away from zero, limited to int16_t.
+ * @param  value    Dividend.
+ * @param  divisor  Positive divisor.
+ * @return Rounded quotient.
  */
-static uint8_t
-line_bits_get (motion_state_t const * p_state)
+static int16_t
+div_round (int32_t value, int32_t divisor)
 {
-    uint32_t const raw  = p_state->ir_black;
-    uint32_t       bits = 0U;
+    int32_t const half     = divisor / 2;
+    int32_t const quotient = (value >= 0) ? ((value + half) / divisor) :
+                                            ((value - half) / divisor);
+    int32_t const limited  = (quotient > INT16_MAX) ? INT16_MAX :
+                             ((quotient < INT16_MIN) ? INT16_MIN : quotient);
 
-    if (0U != (raw & LINE_IR_LEFT))
-    {
-        bits |= PROTO_LINE_LEFT;
-    }
-
-    if (0U != (raw & LINE_IR_RIGHT))
-    {
-        bits |= PROTO_LINE_RIGHT;
-    }
-
-    /* At most two bits are set, so the value fits a uint8_t. */
-    return ((uint8_t) bits);
-}
-
-/*!
- * @brief  Last barcode as 3 bits: valid flag + (letter - 'A') for A-D.
- * @param  letter  Last decoded character (0 = none).
- * @return PROTO_BAR_VALID | index, or 0 for none or a letter outside A-D.
- */
-static uint8_t
-barcode_bits_get (char letter)
-{
-    uint8_t bits = 0U;
-
-    if ((letter >= 'A') && (letter <= 'D'))
-    {
-        /* letter - 'A' is 0..3 here, so the result fits 3 bits. */
-        bits = (uint8_t) (PROTO_BAR_VALID | (uint32_t) (letter - 'A'));
-    }
-
-    return (bits);
-}
-
-/*!
- * @brief  Multiply and round to the nearest integer.
- * @param  value   Value to scale.
- * @param  factor  Wire units per unit of value.
- * @return Rounded result, limited to the int16_t range; 0 for a NaN or
- *         infinite input (Barr-C 5.4.b.v).
- */
-static int32_t
-scale_round (float32_t value, float32_t factor)
-{
-    float32_t const scaled = value * factor;
-    int32_t         result = 0;
-
-    /* Clamp first so lroundf() never overflows; the packer clamps again
-     * to each field's real width. */
-    if (isfinite(scaled))
-    {
-        /* Clamped to +/-32767 first, so the result fits an int32_t. */
-        result = (int32_t) lroundf(fmaxf(fminf(scaled, SCALE_LIMIT),
-                                         -SCALE_LIMIT));
-    }
-
-    return (result);
+    /* limited is within the int16_t range. */
+    return ((int16_t) limited);
 }
 
 /*!

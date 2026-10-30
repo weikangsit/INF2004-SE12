@@ -24,6 +24,7 @@ void comms_init (void);
 bool comms_publish (comms_topic_t topic, uint8_t const * p_data,
                     uint32_t len);
 bool comms_is_online (void);
+bool comms_radio_is_alive (void);
 
 #endif /* COMMS_H */
 

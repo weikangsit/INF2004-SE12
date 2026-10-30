@@ -31,6 +31,7 @@
     8: ["ENC_CAL", [["result", 3, 0], ["left", 9, 1], ["right", 9, 1]]],
     9: ["MOTOR_TEST", [["phase", 2, 0], ["left", 13, 1], ["right", 13, 1]]],
     10: ["BOOT", [["hours", 5, 0], ["minutes", 6, 0], ["seconds", 6, 0]]],
+    11: ["MAG_CAL", [["result", 1, 0]]],
   };
   const EVENT_KIND_BITS = 4;
 
@@ -44,7 +45,7 @@
                   "reacquire failed", "self-test", "telemetry late", "software"];
   const WARNINGS = (1 << 4) | (1 << 14);   // WiFi loss, telemetry late: reported only
   const HB_TASKS = ["line", "motion", "imu", "ultrasonic", "nav", "comms", "telemetry"];
-  const FC_STALL = 0, FC_HEARTBEAT = 9;
+  const FC_STALL = 0, FC_HEARTBEAT = 9, FC_NO_ROUTE = 11;
   // motion.c states that can stall (EV_FAULT stall: value2)
   const MOTION_STATES = ["stopped", "driving straight", "reversing", "turning left", "turning right", "U-turning"];
   // EV_FAULT stall detail bits (motion.c): which wheel had no encoder edges, or the time limit
@@ -145,6 +146,7 @@
                 (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
       case 5: return "FAULT: " + (FAULTS[f.code] || f.code) +
                 (f.code === FC_HEARTBEAT ? " (" + (HB_TASKS[f.detail] || f.detail) + ")" : "") +
+                (f.code === FC_NO_ROUTE && f.detail === 1 ? " (scan cannot proceed safely: too few valid echoes)" : "") +
                 (f.code === FC_STALL && f.detail ? " (" + stallReason(f.detail) + " while " +
                   (MOTION_STATES[f.state] || "state " + f.state) + ")" : "");
       case 6: return "turn check: encoder " + f.encoder + "\u00b0 vs IMU " + f.imu + "\u00b0";
@@ -163,6 +165,8 @@
       }
       case 10: return "car connected, firmware built " + [f.hours, f.minutes, f.seconds]
                  .map((x) => String(x).padStart(2, "0")).join(":");
+      case 11: return f.result === 0 ? "magnetometer calibrated"
+                 : "magnetometer calibration FAILED (field barely changed - spin the car fully)";
       default: return "event " + kind;
     }
   }
@@ -174,7 +178,7 @@
     if (!entry || u8.length !== Math.ceil((EVENT_KIND_BITS + bitsOf(entry[1])) / 8)) return null;
     const f = unpack(u8, EVENT_KIND_BITS, entry[1]);
     return { kind: entry[0], fields: f, text: eventText(kind, f),
-             fault: kind === 5 ? !(WARNINGS & (1 << f.code)) : kind === 8 && f.result !== 0 };
+             fault: kind === 5 ? !(WARNINGS & (1 << f.code)) : (kind === 8 || kind === 11) && f.result !== 0 };
   }
 
   /** CFG_ACK: bits 0..3 letters in use, bit 4 table came over MQTT. */

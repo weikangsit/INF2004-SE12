@@ -30,6 +30,7 @@ EVENT_LAYOUT = {
     8: ("ENC_CAL", [("result", 3, 0), ("left", 9, 1), ("right", 9, 1)]),
     9: ("MOTOR_TEST", [("phase", 2, 0), ("left", 13, 1), ("right", 13, 1)]),
     10: ("BOOT", [("hours", 5, 0), ("minutes", 6, 0), ("seconds", 6, 0)]),
+    11: ("MAG_CAL", [("result", 1, 0)]),
 }
 EVENT_KIND_BITS = 4
 LETTERS = "ABCD"

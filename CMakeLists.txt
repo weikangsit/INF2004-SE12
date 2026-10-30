@@ -244,20 +244,34 @@ set(KERNEL_SOURCES
 
 set(APP_SOURCES
     src/main.c
-    src/hal.c            # SDK side (hardware/... headers, no kernel)
+    # team: board support, shared state and supervision
+    src/hal.c            # SDK side: GPIO IRQ dispatcher, servo, LED, buttons
     src/hal_irq.c        # kernel side of the GPIO interrupt
     src/i2c_drv.c        # SDK side
-    src/line_barcode.c
-    src/barcode_map.c
-    src/motion.c
-    src/imu.c
-    src/ultrasonic.c
-    src/nav_fsm.c
-    src/comms.c          # replaces the template's demo mqtt_utk.c
-    src/proto.c          # packed MQTT payloads (Change Requirement 1)
+    src/port.c           # SDK side: timer and GPIO services
+    src/systime.c
+    src/bitpack.c        # minimum-bit packing (Change Requirement 1)
+    src/vehicle_state.c  # packed shared state record (state_mtx)
     src/fault.c          # shared fault bitmask
-    src/telemetry.c
     src/safety.c
+    src/nav_fsm.c
+    # Buddy 1: WiFi / MQTT / telemetry
+    src/comms.c          # replaces the template's demo mqtt_utk.c
+    src/telemetry.c
+    src/proto.c
+    src/barcode_map.c
+    # Buddy 2: motion
+    src/motion_control.c
+    src/motor_driver.c   # SDK side
+    # Buddy 3: line and barcode
+    src/sensor_line.c
+    src/barcode.c
+    src/code39.c
+    # Buddy 4: IMU terrain
+    src/imu_terrain.c
+    # Buddy 5: ultrasonic scan
+    src/ultrasonic_scan.c
+    src/obstacle_profile.c
 )
 
 add_executable(robocar_g12 ${KERNEL_SOURCES} ${APP_SOURCES})

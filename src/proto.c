@@ -3,12 +3,14 @@
  *
  *  Every payload is a little-endian bit stream: the first field starts at
  *  bit 0 of byte 0, and each field is written least significant bit first.
- *  A signed field is stored as two's complement in its own width. Each
+ *  A signed field is stored as two's complement in its own width (see
+ *  bitpack.h, which does the packing). Each
  *  layout below is mirrored in web/static/proto.js and checked by
  *  web/test_proto.py.
  */
 #include <string.h>
 
+#include "bitpack.h"
 #include "proto.h"
 
 #define BITS_PER_BYTE        (8U)
@@ -30,22 +32,15 @@
 #define TENTHS_PER_HALF      (5)       /* x0.1 mm -> 0.5 mm steps        */
 #define HHMM_SPLIT           (100)     /* HHMM -> hours, minutes         */
 
-/** One field of a packed layout. */
-typedef struct
-{
-    uint8_t width;      /* bits                                         */
-    bool    b_signed;   /* two's complement if true                     */
-} field_t;
-
 /** Fields of one EVENT kind (after the 4-bit kind). */
 typedef struct
 {
     uint8_t count;
-    field_t fields[EVENT_FIELDS_MAX];
+    bitpack_field_t fields[EVENT_FIELDS_MAX];
 } event_layout_t;
 
 /** Telemetry layout: the order matches proto_telem_t. */
-static field_t const g_telem_layout[TELEM_FIELD_COUNT] =
+static bitpack_field_t const g_telem_layout[TELEM_FIELD_COUNT] =
 {
     { 4U,  false },   /* state          */
     { 2U,  false },   /* motion_class   */
@@ -81,20 +76,16 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
     { 2U, { { 8U, false }, { 14U, true } } },                   /* SUMMARY */
     { 3U, { { 3U, false }, { 9U, true }, { 9U, true } } },      /* ENC_CAL */
     { 3U, { { 2U, false }, { 13U, true }, { 13U, true } } },    /* MOTOR   */
-    { 3U, { { 5U, false }, { 6U, false }, { 6U, false } } }     /* BOOT    */
+    { 3U, { { 5U, false }, { 6U, false }, { 6U, false } } },    /* BOOT    */
+    { 1U, { { 1U, false } } }                                   /* MAG_CAL */
 };
 
 /** BARCODE: symbol, valid, configured, action, edge count. */
-static field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
+static bitpack_field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
 {
     { 2U, false }, { 1U, false }, { 1U, false }, { 2U, false }, { 6U, false }
 };
 
-static void     bits_put (uint8_t * p_frame, uint32_t * p_pos,
-                          int32_t value, field_t const * p_field);
-static uint32_t pack_fields (uint8_t * p_frame, uint32_t start_pos,
-                             int32_t const * p_values,
-                             field_t const * p_fields, uint32_t count);
 static uint32_t event_values (proto_event_t kind, uint8_t code,
                               int16_t value1, int16_t value2,
                               int32_t * p_values);
@@ -119,8 +110,8 @@ proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame)
     };
 
     (void) memset(p_frame, 0, PROTO_TELEM_LEN);
-    (void) pack_fields(p_frame, 0U, values, g_telem_layout,
-                       TELEM_FIELD_COUNT);
+    (void) bitpack_put_list(p_frame, 0U, values, g_telem_layout,
+                            TELEM_FIELD_COUNT);
 
     return (PROTO_TELEM_LEN);
 }
@@ -138,26 +129,28 @@ uint32_t
 proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
                   int16_t value2, uint8_t * p_frame)
 {
-    static field_t const kind_field = { EVENT_KIND_BITS, false };
-    int32_t              values[BARCODE_FIELD_COUNT];
-    uint32_t const       count = event_values(kind, code, value1, value2,
-                                              values);
-    uint32_t             pos   = 0U;
-    uint32_t             len   = 0U;
+    static bitpack_field_t const kind_field = { EVENT_KIND_BITS, false };
+    int32_t                      values[BARCODE_FIELD_COUNT];
+    uint32_t const               count = event_values(kind, code, value1,
+                                                      value2, values);
+    uint32_t                     pos   = 0U;
+    uint32_t                     len   = 0U;
 
     if (0U != count)
     {
         (void) memset(p_frame, 0, PROTO_EVENT_MAX_LEN);
-        bits_put(p_frame, &pos, (int32_t) kind, &kind_field);  /* 1..10 */
+        pos = bitpack_put(p_frame, pos, (int32_t) kind,   /* 1..11 */
+                          &kind_field);
 
         if (EV_BARCODE == kind)
         {
-            pos = pack_fields(p_frame, pos, values, g_barcode_layout, count);
+            pos = bitpack_put_list(p_frame, pos, values, g_barcode_layout,
+                                   count);
         }
         else
         {
-            pos = pack_fields(p_frame, pos, values,
-                              g_event_layout[kind].fields, count);
+            pos = bitpack_put_list(p_frame, pos, values,
+                                   g_event_layout[kind].fields, count);
         }
 
         len = (pos + BITS_PER_BYTE - 1U) / BITS_PER_BYTE;
@@ -202,13 +195,13 @@ proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
     if ((PROTO_CMD_LEN == len) &&
         (CMD_TAG == ((uint32_t) p_frame[0] & CMD_TAG_MASK)))
     {
-        uint32_t id = (uint32_t) p_frame[0] & CMD_ID_MASK;
+        uint32_t cmd_id = (uint32_t) p_frame[0] & CMD_ID_MASK;
 
         /* PROTO_CMD_COUNT is 6, so the cast keeps its value. */
-        if (id < (uint32_t) PROTO_CMD_COUNT)
+        if (cmd_id < (uint32_t) PROTO_CMD_COUNT)
         {
-            /* id is below PROTO_CMD_COUNT, so it is a valid enum value. */
-            *p_cmd = (proto_cmd_t) id;
+            /* cmd_id is below PROTO_CMD_COUNT, so it is a valid enum value. */
+            *p_cmd = (proto_cmd_t) cmd_id;
             b_ok = true;
         }
     }
@@ -315,6 +308,7 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
         case EV_FAULT:
         case EV_TURN_XCHECK:
         case EV_ENC_CAL:
+        case EV_MAG_CAL:
         {
             /* Code first (unless the kind has none), then value1, value2. */
             int32_t const raw[EVENT_INPUT_COUNT] = { code, value1, value2 };
@@ -335,91 +329,6 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
     }
 
     return (count);
-}
-
-/*!
- * @brief  Pack a list of fields starting at a bit position.
- * @param  p_frame    Frame, already zeroed.
- * @param  start_pos  Bit position of the first field.
- * @param  p_values   One value per field.
- * @param  p_fields   Field widths and signedness.
- * @param  count      Number of fields.
- * @return Bit position after the last field.
- */
-static uint32_t
-pack_fields (uint8_t * p_frame, uint32_t start_pos, int32_t const * p_values,
-             field_t const * p_fields, uint32_t count)
-{
-    uint32_t pos = start_pos;
-    uint32_t idx = 0U;
-
-    for (idx = 0U; idx < count; idx++)
-    {
-        bits_put(p_frame, &pos, p_values[idx], &p_fields[idx]);
-    }
-
-    return (pos);
-}
-
-/*!
- * @brief  Clamp a value to its field range and write it LSB first.
- * @param  p_frame  Frame, already zeroed.
- * @param  p_pos    Bit position, advanced by the field width.
- * @param  value    Value to store.
- * @param  p_field  Width and signedness of the field.
- */
-static void
-bits_put (uint8_t * p_frame, uint32_t * p_pos, int32_t value,
-          field_t const * p_field)
-{
-    uint32_t const width   = p_field->width;    /* 1..16 bits            */
-    uint32_t const span    = 1U << width;
-    int32_t        low     = 0;
-    int32_t        high    = 0;
-    int32_t        clamped = value;
-    uint32_t       raw     = 0U;
-    uint32_t       bit     = 0U;
-
-    if (p_field->b_signed)
-    {
-        /* span <= 65536, so span / 2 fits an int32_t. */
-        high = (int32_t) (span / 2U) - 1;
-        low  = -high - 1;
-    }
-    else
-    {
-        high = (int32_t) (span - 1U);
-    }
-
-    if (value < low)
-    {
-        clamped = low;
-    }
-    else if (value > high)
-    {
-        clamped = high;
-    }
-    else
-    {
-        /* Already in range. */
-    }
-
-    /* Two's complement within the field: add span to negative values.
-     * The result is 0..span-1, so it fits a uint32_t. */
-    raw = (clamped < 0) ? (uint32_t) (clamped + (int32_t) span) :
-                          (uint32_t) clamped;
-
-    for (bit = 0U; bit < width; bit++)
-    {
-        if (0U != ((raw >> bit) & 1U))
-        {
-            /* The shift is 0..7, so the bit fits a uint8_t. */
-            p_frame[*p_pos / BITS_PER_BYTE] |=
-                (uint8_t) (1U << (*p_pos % BITS_PER_BYTE));
-        }
-
-        (*p_pos)++;
-    }
 }
 
 /*** end of file ***/

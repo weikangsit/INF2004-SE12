@@ -92,6 +92,7 @@ typedef enum
                         value1 / value2 = left / right detail             */
     EV_MOTOR_TEST,   /* code = phase 1..4, value1 / value2 = counts L / R */
     EV_BOOT,         /* value1 = build HHMM, value2 = build SS            */
+    EV_MAG_CAL,      /* code 0 ok, 1 failed (too little field change)     */
     EV_KIND_COUNT
 } proto_event_t;
 

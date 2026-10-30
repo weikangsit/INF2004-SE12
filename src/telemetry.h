@@ -7,10 +7,12 @@
 
 #include <stdint.h>
 
+#include <stddef.h>          /* size_t first (PROHIBIT_DEF_SIZE_T) */
 #include <tk/tkernel.h>
 
 #include "proto.h"
 
+void telemetry_init (void);
 void telemetry_task (INT stacd, void * p_exinf);
 void telemetry_post_event (proto_event_t kind, uint8_t code, int16_t value1,
                            int16_t value2);

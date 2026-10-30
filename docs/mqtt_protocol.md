@@ -64,9 +64,9 @@ Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 | 6 | FC_OVERTILT | pitch or roll beyond 35 deg | latched |
 | 7 | FC_LINE_LOST | line-lost timeout | latched |
 | 8 | FC_ESTOP | emergency stop | latched |
-| 9 | FC_HEARTBEAT | a supervised task missed its deadline | latched |
+| 9 | FC_HEARTBEAT | a supervised task missed its deadline (detail = task: 0 line, 1 motion, 2 IMU, 3 ultrasonic, 4 nav, 5 comms radio) | latched |
 | 10 | FC_SENSOR | line sensor calibration failed | latched |
-| 11 | FC_NO_ROUTE | no way around an obstacle | latched |
+| 11 | FC_NO_ROUTE | no way around an obstacle; EVENT detail 1 = scan cannot proceed safely (too few valid echoes) | latched |
 | 12 | FC_REACQUIRE | line not found after a bypass | latched |
 | 13 | FC_SELFTEST | power-on self-test timed out | latched |
 | 14 | FC_TELEM_LATE | telemetry task missed its deadline | warning, sent once |
@@ -92,6 +92,7 @@ fixed per kind, and the decoder rejects any other length.
 | 8 | ENC_CAL | result 3 (0 ok, bit0/bit1 encoder silent, 4 rotated), left 9s, right 9s | 4 |
 | 9 | MOTOR_TEST | phase 2 (0..3 = L+, L-, R+, R-), left counts 13s, right counts 13s | 4 |
 | 10 | BOOT | hours 5, minutes 6, seconds 6 (firmware build time) | 3 |
+| 11 | MAG_CAL | result 1 (0 calibrated, 1 failed: field barely changed) | 1 |
 
 Every EV_FAULT also sets its bit in the fault mask, and a failed ENC_CAL
 sets FC_ENCODER.

@@ -3,9 +3,13 @@ packed payload (Change Requirement 1).
 
 1. Layout parity: the bit tables in src/proto.c, web/static/proto.js and
    proto_ref.py must list the same fields, widths and signedness.
-2. Firmware packer: src/proto.c is compiled for the Cortex-M0+ with the
-   firmware's flags and executed in the Unicorn emulator. Its output is
-   compared with proto_ref for edge and random values (clamping included).
+2. Firmware packer: src/proto.c and src/bitpack.c are compiled for the
+   Cortex-M0+ with the firmware's flags and executed in the Unicorn
+   emulator. Their output is compared with proto_ref for edge and random
+   values (clamping included).
+3. Other pure firmware modules run the same way: the Code 39 decoder
+   (src/code39.c) on synthetic barcode edges, and the obstacle profile and
+   route planner (src/obstacle_profile.c) against a Python reference.
 
 Run:  python test_proto.py
 Part 2 needs arm-none-eabi-gcc (PATH, ARM_GCC, or the Pico toolchains) and
@@ -89,7 +93,14 @@ def test_parity():
 # --------------------------------------------------------- 2. C on Cortex-M0+
 HARNESS = r"""
 #include <stddef.h>
+#include "bitpack.h"
+#include "code39.h"
+#include "obstacle_profile.h"
 #include "proto.h"
+_Static_assert(sizeof(obstacle_ray_t) == 4, "ray size");
+_Static_assert(sizeof(obstacle_limits_t) == 6, "limits size");
+_Static_assert(sizeof(obstacle_profile_t) == 14, "profile size");
+_Static_assert(offsetof(obstacle_profile_t, valid_rays) == 10, "valid");
 /* proto_telem_t layout assumed by test_proto.py */
 _Static_assert(sizeof(proto_telem_t) == 32, "proto_telem_t size");
 _Static_assert(offsetof(proto_telem_t, status) == 6, "status");
@@ -127,8 +138,10 @@ class Cpu:
         subprocess.run([gcc, "-mcpu=cortex-m0plus", "-mthumb", "-mfloat-abi=soft", "-O2",
                         "-std=gnu11", "-ffreestanding", "-nostdlib", "-Wall", "-Wextra",
                         "-Werror", f"-I{SRC}", f"-Wl,-Ttext=0x{CODE:08x}",
-                        "-Wl,--entry=proto_pack_telem", str(SRC / "proto.c"),
-                        str(workdir / "harness.c"), "-lgcc", "-o", str(elf)], check=True)
+                        "-Wl,--entry=proto_pack_telem"] +
+                       [str(SRC / f) for f in ("proto.c", "bitpack.c", "code39.c",
+                                               "obstacle_profile.c")] +
+                       [str(workdir / "harness.c"), "-lgcc", "-o", str(elf)], check=True)
         binary = workdir / "proto_test.bin"
         subprocess.run([tool("objcopy"), "-O", "binary", str(elf), str(binary)], check=True)
         nm = subprocess.run([tool("nm"), str(elf)], check=True, capture_output=True, text=True)
@@ -235,8 +248,8 @@ def test_firmware(cpu):
             count += 1
     check(cpu.call("proto_pack_event", 0, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
           "unknown event kind 0 should give length 0")
-    check(cpu.call("proto_pack_event", 11, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
-          "unknown event kind 11 should give length 0")
+    check(cpu.call("proto_pack_event", 12, 0, 0, 0, stack_args=(RAM + 0x200,)) == 0,
+          "unknown event kind 12 should give length 0")
     report(start, f"proto_pack_event: {count} vectors across all {len(ref.EVENT_LAYOUT)} kinds")
 
     # Commands: every byte value; wrong lengths rejected.
@@ -276,6 +289,167 @@ def test_firmware(cpu):
     report(start, "proto_pack_cfg_ack")
 
 
+# ---------------------------------------------------- 3. other pure modules
+C39 = {"*": "010010100", "A": "100001001", "B": "001001001", "C": "101001000",
+       "D": "000011001", "P": "001010010"}
+
+
+def c39_edges(text, narrow, wide, reverse=False, jitter=None):
+    """Edge times (us) of a Code 39 symbol; bit 0 = level after the edge."""
+    widths = []
+    for n, ch in enumerate(text):
+        widths += [wide if b == "1" else narrow for b in C39[ch]]
+        if n < len(text) - 1:
+            widths.append(narrow)                 # inter-character gap
+    if reverse:
+        widths.reverse()
+    if jitter:
+        widths = [max(1, int(w * jitter.uniform(0.9, 1.1))) for w in widths]
+    t, edges = 100000, []
+    for n, w in enumerate(widths):
+        edges.append((t & ~1) | (1 - n % 2))       # black, white, black ...
+        t += w
+    edges.append((t & ~1) | 0)
+    return edges
+
+
+def test_code39(cpu):
+    start = len(failures)
+    rng = random.Random(3)
+    cases = 0
+    for idx, letter in enumerate("ABCD"):
+        for rev in (False, True):
+            for narrow in (3000, 10000, 20000):   # 15..45 cm/s over 3 mm
+                for ratio in (2.0, 2.5, 3.0):
+                    edges = c39_edges("*" + letter + "*", narrow, int(narrow * ratio),
+                                      rev, rng)
+                    cpu.write(RAM, struct.pack("<%dI" % len(edges), *edges))
+                    got = cpu.call("code39_decode", RAM, len(edges), 15) & 0xFF
+                    check(got == idx, f"code39 {letter} rev={rev} n={narrow} r={ratio}: {got}")
+                    cases += 1
+    bad = [("*A*", 3000, 3300), ("*P*", 3000, 7500), ("*A", 3000, 7500)]
+    for text, narrow, wide in bad:          # unclear ratio, non A-D, too short
+        edges = c39_edges(text, narrow, wide)
+        cpu.write(RAM, struct.pack("<%dI" % len(edges), *edges))
+        got = cpu.call("code39_decode", RAM, len(edges), 15) & 0xFF
+        check(got == 0xFF, f"code39 must reject {text} {narrow}/{wide}: {got}")
+        cases += 1
+    report(start, f"code39_decode: {cases} cases (A-D both directions, 15-45 cm/s, "
+                  "+/-10 % jitter, ratio/letter/length rejects)")
+
+
+NO_ECHO = 0xFFFF
+
+
+def ref_build(rays, lim):
+    """Python reference of obstacle_profile_build()."""
+    scan, half, _ = lim
+    prof = dict(closest=NO_ECHO, closest_deg=90, width=0, valid=0, in_path=False,
+                centre=False)
+    xs = []
+    left = max(range(len(rays)), key=lambda i: (rays[i][0], -i))
+    right = min(range(len(rays)), key=lambda i: (rays[i][0], i))
+    for ang, rng_cm in rays:
+        if rng_cm == NO_ECHO:
+            continue
+        prof["valid"] += 1
+        if abs(ang - 90) <= 15:
+            prof["centre"] = True
+        if rng_cm < scan:
+            x = cdiv(rng_cm * ref_cos(ang), 1000)
+            xs.append(x)
+            if -half <= x <= half:
+                prof["in_path"] = True
+            if rng_cm < prof["closest"]:
+                prof["closest"], prof["closest_deg"] = rng_cm, ang
+    if xs:
+        prof["width"] = max(xs) - min(xs)
+    prof["left"], prof["right"] = rays[left][1], rays[right][1]
+    return prof
+
+
+def ref_sin(a):
+    p = a * (180 - a)
+    return cdiv(4 * p * 1000, 40500 - p)
+
+
+def ref_cos(a):
+    a = min(a, 180)
+    return ref_sin(90 - a) if a <= 90 else -ref_sin(a - 90)
+
+
+def ref_plan(p, lim, retry):
+    side = lim[2]
+    lk, rk = p["left"] != NO_ECHO, p["right"] != NO_ECHO
+    lok, rok = lk and p["left"] >= side, rk and p["right"] >= side
+    if p["valid"] == 0:
+        return 5
+    if not p["in_path"]:
+        return 0 if p["centre"] else 5
+    if lok or rok:
+        if lok and rok:
+            return 1 if p["left"] >= p["right"] else 2
+        return 1 if lok else 2
+    if not lk and not rk:
+        return 5
+    return 4 if retry else 3
+
+
+def test_obstacle(cpu):
+    import math
+    start = len(failures)
+    for ang in range(0, 181):
+        got = struct.unpack("<i", struct.pack("<I", cpu.call("obstacle_profile_cos1000", ang)))[0]
+        check(abs(got - 1000 * math.cos(math.radians(ang))) <= 3, f"cos {ang}: {got}")
+    rng = random.Random(9)
+    lim = (40, 12, 30)
+    cpu.write(RAM + 0x400, struct.pack("<HHH", *lim))
+    count = 0
+    for trial in range(400):
+        n = rng.randint(1, 12)
+        rays = []
+        for _ in range(n):
+            ang = rng.randint(15, 165)
+            r = rng.choice([NO_ECHO, rng.randint(2, 39), rng.randint(40, 300)])
+            rays.append((ang, r))
+        cpu.write(RAM, b"".join(struct.pack("<HH", a, r) for a, r in rays))
+        cpu.call("obstacle_profile_build", RAM, n, RAM + 0x400, RAM + 0x500)
+        c, cd, w, cl, cr, valid, inp, cen = struct.unpack("<HHHHHBBB", cpu.read(RAM + 0x500, 13))
+        ref = ref_build(rays, lim)
+        got = dict(closest=c, closest_deg=cd, width=w, valid=valid, in_path=bool(inp),
+                   centre=bool(cen), left=cl, right=cr)
+        check(got == ref, f"profile {rays}: {got} != {ref}")
+        for retry in (0, 1):
+            route = cpu.call("obstacle_profile_plan", RAM + 0x500, RAM + 0x400, retry) & 0xFF
+            check(route == ref_plan(ref, lim, retry), f"plan {rays} retry={retry}: {route}")
+        count += 1
+    report(start, f"obstacle_profile: cos 0-180 deg, {count} random sweeps "
+                  "(no-echo rays, profile and route vs reference)")
+
+
+def test_bitpack(cpu):
+    start = len(failures)
+    rng = random.Random(5)
+    for _ in range(300):
+        width, signed = rng.randint(1, 31), rng.randint(0, 1)
+        lo, hi = ref.field_range(width, signed)
+        val = rng.choice([lo, hi, lo - 1, hi + 1, rng.randint(lo, hi)])
+        val = max(-2**31, min(2**31 - 1, val))
+        pos = rng.randint(0, 40)
+        cpu.write(RAM + 0x300, [0xA5] * 12)          # dirty buffer: put must clear
+        cpu.write(RAM + 0x600, struct.pack("<BB", width, signed))
+        cpu.call("bitpack_put", RAM + 0x300, pos, val, RAM + 0x600)
+        got = cpu.call("bitpack_get", RAM + 0x300, pos, RAM + 0x600)
+        got = struct.unpack("<i", struct.pack("<I", got))[0]
+        check(got == ref.clamp(val, width, signed), f"bitpack w={width} s={signed} {val}: {got}")
+        before = cpu.read(RAM + 0x300, 12)
+        for bit in list(range(0, pos)) + list(range(pos + width, 96)):
+            check((before[bit >> 3] >> (bit & 7)) & 1 == (0xA5 >> (bit & 7)) & 1,
+                  f"bitpack w={width} pos={pos} touched bit {bit}")
+    report(start, "bitpack_put/get: 300 random fields (widths 1-31, clamping, "
+                  "neighbouring bits untouched)")
+
+
 def main():
     test_parity()
     gcc = find_gcc()
@@ -288,7 +462,11 @@ def main():
               "arm-none-eabi-gcc not found" if not gcc else "pip install unicorn")
     else:
         with tempfile.TemporaryDirectory() as tmp:
-            test_firmware(Cpu(gcc, Path(tmp)))
+            cpu = Cpu(gcc, Path(tmp))
+            test_firmware(cpu)
+            test_bitpack(cpu)
+            test_code39(cpu)
+            test_obstacle(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

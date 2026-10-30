@@ -10,8 +10,10 @@
  *  and other tasks only copy frames into the publish queue.
  *
  *  Tribunal 1 decisions implemented here:
- *   - A remote e-stop sets EVT_ESTOP directly when it arrives, so the
- *     Safety Monitor sees it on its next 50 ms check (FR7, 100 ms).
+ *   - A remote e-stop goes to the Safety Monitor directly when it
+ *     arrives (safety_report()), which wakes it at once (FR7, 100 ms).
+ *   - The radio task's liveness is reported separately from the link
+ *     (Version C): a stalled radio task brakes, a WiFi drop does not.
  *   - The publish queue holds 1 s of telemetry plus events and drops the
  *     oldest frame when full; publishing never blocks a caller.
  *   - WiFi loss is only reported (FC_WIFI_LOSS); it never stops the car.
@@ -36,11 +38,15 @@
 
 #include "port.h"
 
-#include "app.h"
 #include "barcode_map.h"
+#include "car_config.h"
 #include "comms.h"
+#include "cyw43_utk.h"
 #include "mqtt_utk.h"
+#include "nav_fsm.h"
 #include "proto.h"
+#include "safety.h"
+#include "systime.h"
 #include "telemetry.h"
 
 /* Timing (ms). */
@@ -243,10 +249,40 @@ comms_publish (comms_topic_t topic, uint8_t const * p_data, uint32_t len)
 bool
 comms_is_online (void)
 {
-    uint32_t const idle_ms     = now_ms() - g_last_hook_ms;
+    uint32_t const idle_ms     = systime_now_ms() - g_last_hook_ms;
     bool const     b_connected = g_link.b_connected;
 
     return (b_connected && (idle_ms < HOOK_STALE_MS));
+}
+
+/*!
+ * @brief  Liveness of the template's radio (Comms) task, for the Safety
+ *         Monitor. Its poll counter keeps counting while WiFi is down, so
+ *         a counter that stops means the task itself has stalled.
+ *
+ *  NOTE: Before the radio has finished starting, and if its start-up
+ *  failed (the template then parks the task on purpose), the radio is
+ *  reported alive: that is "no WiFi" (FC_WIFI_LOSS, warning only), not a
+ *  stalled task. Only the Safety Monitor calls this (single caller).
+ *
+ * @return True if the radio task has polled since the previous call.
+ */
+bool
+comms_radio_is_alive (void)
+{
+    static uint32_t    last_count = 0U;
+    T_CYW43_UTK_STATUS status;
+    bool               b_alive    = true;
+
+    cyw43_utk_get_status(&status);
+
+    if ((0U != status.init_complete) && (0 == status.init_result))
+    {
+        b_alive    = (status.poll_count != last_count);
+        last_count = status.poll_count;
+    }
+
+    return (b_alive);
 }
 
 /*!
@@ -259,7 +295,7 @@ comms_is_online (void)
 void
 mqtt_utk_start (void)
 {
-    uint32_t const now     = now_ms();
+    uint32_t const now     = systime_now_ms();
     uint32_t const idle_ms = now - g_last_hook_ms;
 
     /* A gap in the calls means the WiFi link dropped: the TCP session is
@@ -651,7 +687,7 @@ digits_read (char const * p_text)
 }
 
 /*!
- * @brief  A CMD frame arrived. An e-stop sets EVT_ESTOP before anything
+ * @brief  A CMD frame arrived. An e-stop goes to Safety before anything
  *         else (FR7); every command is then passed to the Navigation FSM.
  *         A command that does not fit in the full queue is dropped, but
  *         an e-stop has already reached Safety through the flag.
@@ -670,13 +706,12 @@ rx_handle_cmd (void)
 
         if (PROTO_CMD_ESTOP == cmd)
         {
-            (void) tk_set_flg(g_evt_flg, EVT_ESTOP);
+            safety_report(SAFETY_EVT_ESTOP);
             tm_printf((UB *) "comms: e-stop received at %d us\n",
                       (int) port_time_us_32());
         }
 
-        (void) tk_snd_mbf(g_remote_cmd_q, &cmd_byte, (INT) sizeof(cmd_byte),
-                          TMO_POL);
+        nav_fsm_post_remote(cmd_byte);
     }
 }
 
@@ -707,7 +742,7 @@ static uint16_t
 stamp_now (void)
 {
     /* Deliberate truncation: only differences of stamps are used. */
-    return ((uint16_t) now_ms());
+    return (systime_stamp());
 }
 
 /*!

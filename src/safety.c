@@ -1,110 +1,283 @@
-/**
- * @file    safety.c
- * @brief   Safety Monitor Task (priority 1) - FR7 / NFR3.
+/** @file    safety.c
+ *  @brief   Safety Monitor task (team), see safety.h.
  *
- *  Every 50 ms: check all 7 task heartbeats and the collision /
- *  over-tilt / line-lost / e-stop events. On any fault it brakes the
- *  motors DIRECTLY (GP8-GP11 LOW), latches, and posts STOP.
+ *  Response time: a fault event wakes the task immediately (it waits on
+ *  its event flag with a PERIOD_SAFETY_MS timeout, Tribunal 1 Version C);
+ *  the brake follows in the same activation. Heartbeats are checked at
+ *  least every PERIOD_SAFETY_MS.
+ *
+ *  Policy (Tribunal 1):
+ *   - A missed deadline of Line, Motion, IMU, Ultrasonic or Nav brakes.
+ *   - A missed Telemetry deadline is a warning only (FC_TELEM_LATE).
+ *   - WiFi loss never brakes (comms.c reports FC_WIFI_LOSS), but a stalled
+ *     radio task does: remote e-stop would no longer be possible. Its
+ *     liveness is the template's radio poll counter, which keeps counting
+ *     while WiFi is down.
+ *
+ *  NOTE: (void) casts mark return values that are deliberately ignored.
  */
+#include <string.h>
 
 #include "port.h"
 
-#include "app.h"
-#include "hal.h"
+#include "car_config.h"
+#include "comms.h"
+#include "fault.h"
+#include "motion_control.h"
+#include "motor_driver.h"
+#include "proto.h"
+#include "safety.h"
+#include "systime.h"
+#include "telemetry.h"
 
-#define BOOT_GRACE_MS   (2000U)
-#define N_HB            (7U)
+#define ALL_EVENTS           (SAFETY_EVT_COLLISION | SAFETY_EVT_OVERTILT |  \
+                              SAFETY_EVT_LINE_LOST | SAFETY_EVT_ESTOP)
+#define ALL_HEARTBEATS       (0x7FU)
+#define TASK_COUNT           (7U)
 
-static volatile bool g_latched;
-
-bool safety_is_latched(void) { return g_latched; }
-
-void safety_clear(void)
+/** Supervision of one task. */
+typedef struct
 {
-    (void)tk_clr_flg(g_evt_flg,
-                     ~(UINT)(EVT_COLLISION | EVT_LINE_LOST | EVT_ESTOP | EVT_OVERTILT));
-    g_latched = false;
-    fault_clear_all();   /* live bits are re-set by Telemetry within 100 ms */
+    uint32_t bit;            /* SAFETY_HB_*                               */
+    uint32_t deadline_ms;
+    bool     b_warn_only;
+} hb_rule_t;
+
+static hb_rule_t const g_rules[TASK_COUNT] =
+{
+    { SAFETY_HB_LINE,   HB_DEADLINE_LINE_MS,   false },
+    { SAFETY_HB_MOTION, HB_DEADLINE_MOTION_MS, false },
+    { SAFETY_HB_IMU,    HB_DEADLINE_IMU_MS,    false },
+    { SAFETY_HB_US,     HB_DEADLINE_US_MS,     false },
+    { SAFETY_HB_NAV,    HB_DEADLINE_NAV_MS,    false },
+    { SAFETY_HB_COMMS,  HB_DEADLINE_COMMS_MS,  false },
+    { SAFETY_HB_TELEM,  HB_DEADLINE_TELEM_MS,  true  }
+};
+
+static ID            g_evt_flg   = 0;
+static ID            g_hb_flg    = 0;
+static volatile bool g_b_latched = false;
+
+static void events_handle (uint32_t events);
+static void heartbeats_check (uint32_t now, uint32_t boot_ms,
+                              uint32_t * p_last_seen);
+static void trip (fault_code_t code, uint32_t detail);
+static ID   flag_create (void);
+
+/*!
+ * @brief  Create the event and heartbeat flags. Call from usermain()
+ *         before the tasks start.
+ */
+void
+safety_init (void)
+{
+    g_evt_flg = flag_create();
+    g_hb_flg  = flag_create();
 }
 
-static void trip(fault_code_t code, int16_t detail)
+/*!
+ * @brief  Safety Monitor task body (priority PRI_SAFETY).
+ * @param  stacd    Start code (unused).
+ * @param  p_exinf  Extended information (unused).
+ */
+void
+safety_task (INT stacd, void * p_exinf)
 {
-    hal_motor_brake();                 /* first, before anything else */
-    if (!g_latched)
+    uint32_t const boot_ms = systime_now_ms();
+    uint32_t       last_seen[TASK_COUNT];
+    uint32_t       last_check = boot_ms;
+    uint32_t       idx        = 0U;
+
+    (void) stacd;
+    (void) p_exinf;
+
+    for (idx = 0U; idx < TASK_COUNT; idx++)
     {
-        g_latched = true;
-        stop();
-        telemetry_post_event(EV_FAULT, (uint8_t)code, detail, 0);
-    }
-}
-
-void safety_task(INT stacd, void *exinf)
-{
-    uint64_t next_us = time_us_64();
-    uint32_t last_seen[N_HB];
-    uint32_t boot_ms = now_ms();
-    uint32_t i;
-
-    (void)stacd;
-    (void)exinf;
-
-    for (i = 0U; i < N_HB; i++)
-    {
-        last_seen[i] = boot_ms;
+        last_seen[idx] = boot_ms;
     }
 
     for (;;)
     {
-        UINT     hb = 0U;
-        UINT     ev = 0U;
-        uint32_t t;
+        UINT     events = 0U;
+        uint32_t now    = 0U;
 
-        period_wait(&next_us, PERIOD_SAFETY_MS);
-        t = now_ms();
-
-        /* ---- heartbeats ---- */
-        (void)tk_wai_flg(g_hb_flg, HB_ALL, TWF_ORW | TWF_CLR, &hb, TMO_POL);
-        for (i = 0U; i < N_HB; i++)
+        if (E_OK == tk_wai_flg(g_evt_flg, ALL_EVENTS, TWF_ORW | TWF_BITCLR,
+                               &events, (TMO) PERIOD_SAFETY_MS))
         {
-            if (0U == (HB_ALL & (1U << i)))
-            {
-                continue;                          /* not supervised */
-            }
-            if (0U != (hb & (1U << i)))
-            {
-                last_seen[i] = t;
-            }
-            else if (((t - boot_ms) > BOOT_GRACE_MS) &&
-                     ((t - last_seen[i]) > SAFETY_HB_TIMEOUT_MS))
-            {
-                if (0U != (HB_WARN & (1U << i)))
-                {
-                    fault_set(FC_TELEM_LATE);         /* warning only */
-                }
-                else
-                {
-                    trip(FC_HEARTBEAT, (int16_t)i);   /* v1 = missing HB_* bit */
-                }
-            }
-            else
-            {
-                /* within deadline */
-            }
+            events_handle((uint32_t) events);
         }
 
-        /* ---- safety events (leave other bits untouched) ---- */
-        (void)tk_wai_flg(g_evt_flg,
-                         EVT_COLLISION | EVT_LINE_LOST | EVT_ESTOP | EVT_OVERTILT,
-                         TWF_ORW | TWF_BITCLR, &ev, TMO_POL);
-        if (0U != (ev & EVT_COLLISION)) { trip(FC_COLLISION, 0); }
-        if (0U != (ev & EVT_OVERTILT))  { trip(FC_OVERTILT, 0);  }
-        if (0U != (ev & EVT_LINE_LOST)) { trip(FC_LINE_LOST, 0); }
-        if (0U != (ev & EVT_ESTOP))     { trip(FC_ESTOP, 0);     }
-
-        /* keep the brake asserted while latched */
-        if (g_latched)
+        now = systime_now_ms();
+        if ((now - last_check) >= PERIOD_SAFETY_MS)
         {
-            hal_motor_brake();
+            last_check = now;
+            heartbeats_check(now, boot_ms, last_seen);
+        }
+
+        /* Keep the brake asserted while latched. */
+        if (g_b_latched)
+        {
+            motor_driver_brake();
         }
     }
 }
+
+/*!
+ * @brief  Report liveness (each supervised task, every period).
+ * @param  task_bit  The caller's SAFETY_HB_* bit.
+ */
+void
+safety_heartbeat (uint32_t task_bit)
+{
+    /* SAFETY_HB_* bits fit a UINT pattern. */
+    (void) tk_set_flg(g_hb_flg, (UINT) task_bit);
+}
+
+/*!
+ * @brief  Report fault events; the Safety Monitor wakes at once. Safe
+ *         from any task.
+ * @param  events  SAFETY_EVT_* bits.
+ */
+void
+safety_report (uint32_t events)
+{
+    /* SAFETY_EVT_* bits fit a UINT pattern. */
+    (void) tk_set_flg(g_evt_flg, (UINT) events);
+}
+
+/*!
+ * @brief  Report the safety latch.
+ * @return True from a trip until safety_clear().
+ */
+bool
+safety_is_latched (void)
+{
+    return (g_b_latched);
+}
+
+/*!
+ * @brief  Operator reset: clear pending events, the latch, the motor
+ *         inhibit and the fault mask (live bits are re-set by Telemetry
+ *         within 100 ms).
+ */
+void
+safety_clear (void)
+{
+    (void) tk_clr_flg(g_evt_flg, ~(UINT) ALL_EVENTS);
+    g_b_latched = false;
+    motor_driver_inhibit(false);
+    fault_clear_all();
+}
+
+/*!
+ * @brief  Trip on every fault event received.
+ * @param  events  SAFETY_EVT_* bits.
+ */
+static void
+events_handle (uint32_t events)
+{
+    if (0U != (events & SAFETY_EVT_ESTOP))
+    {
+        trip(FC_ESTOP, 0U);
+    }
+
+    if (0U != (events & SAFETY_EVT_COLLISION))
+    {
+        trip(FC_COLLISION, 0U);
+    }
+
+    if (0U != (events & SAFETY_EVT_OVERTILT))
+    {
+        trip(FC_OVERTILT, 0U);
+    }
+
+    if (0U != (events & SAFETY_EVT_LINE_LOST))
+    {
+        trip(FC_LINE_LOST, 0U);
+    }
+}
+
+/*!
+ * @brief  Check every task's heartbeat against its deadline.
+ * @param  now          Current time, ms.
+ * @param  boot_ms      Start time of the task (grace period).
+ * @param  p_last_seen  Last heartbeat time per rule (updated).
+ */
+static void
+heartbeats_check (uint32_t now, uint32_t boot_ms, uint32_t * p_last_seen)
+{
+    UINT     beats = 0U;
+    uint32_t idx   = 0U;
+
+    (void) tk_wai_flg(g_hb_flg, ALL_HEARTBEATS, TWF_ORW | TWF_CLR, &beats,
+                      TMO_POL);
+
+    if (comms_radio_is_alive())
+    {
+        beats |= SAFETY_HB_COMMS;
+    }
+
+    for (idx = 0U; idx < TASK_COUNT; idx++)
+    {
+        hb_rule_t const * const p_rule = &g_rules[idx];
+
+        if (0U != ((uint32_t) beats & p_rule->bit))
+        {
+            p_last_seen[idx] = now;
+        }
+        else if (((now - boot_ms) > SAFETY_BOOT_GRACE_MS) &&
+                 ((now - p_last_seen[idx]) > p_rule->deadline_ms))
+        {
+            if (p_rule->b_warn_only)
+            {
+                fault_set(FC_TELEM_LATE);
+            }
+            else
+            {
+                trip(FC_HEARTBEAT, idx);          /* detail = task bit no. */
+            }
+        }
+        else
+        {
+            /* Within its deadline. */
+        }
+    }
+}
+
+/*!
+ * @brief  Inhibit and brake the motors first, then latch, stop Motion
+ *         Control and report the fault (once per latch).
+ * @param  code    Fault.
+ * @param  detail  EV_FAULT detail (missing heartbeat task number).
+ */
+static void
+trip (fault_code_t code, uint32_t detail)
+{
+    motor_driver_inhibit(true);                   /* brakes immediately   */
+
+    if (!g_b_latched)
+    {
+        g_b_latched = true;
+        motion_control_stop();
+        /* code < 16 and detail < 7, so both fit. */
+        telemetry_post_event(EV_FAULT, (uint8_t) code, (int16_t) detail, 0);
+    }
+}
+
+/*!
+ * @brief  Create an empty multi-wait event flag.
+ * @return Flag ID.
+ */
+static ID
+flag_create (void)
+{
+    T_CFLG create;
+
+    (void) memset(&create, 0, sizeof(create));
+    create.flgatr  = TA_TFIFO | TA_WMUL;
+    create.iflgptn = 0U;
+
+    return (tk_cre_flg(&create));
+}
+
+/*** end of file ***/
