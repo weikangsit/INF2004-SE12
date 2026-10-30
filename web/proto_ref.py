@@ -20,8 +20,8 @@ TELEM_LEN = 18
 # kind -> (name, fields after the 4-bit kind)
 EVENT_LAYOUT = {
     1: ("STATE", [("state", 4, 0)]),
-    2: ("BARCODE", [("symbol", 2, 0), ("valid", 1, 0), ("configured", 1, 0),
-                    ("action", 2, 0), ("edges", 6, 0)]),
+    2: ("BARCODE", [("slot", 2, 0), ("valid", 1, 0), ("read", 1, 0),
+                    ("edges", 6, 0)]),
     3: ("HUMP", [("height", 8, 0)]),
     4: ("OBSTACLE", [("bearing", 8, 0), ("range", 9, 0), ("width", 7, 0)]),
     5: ("FAULT", [("code", 4, 0), ("detail", 4, 0), ("state", 3, 0)]),
@@ -34,7 +34,7 @@ EVENT_LAYOUT = {
     12: ("DEADBAND", [("wheel", 1, 0), ("deadband", 7, 0), ("kff", 8, 0)]),
 }
 EVENT_KIND_BITS = 4
-LETTERS = "ABCD"
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 CMDS = {"start": 0, "stop": 1, "estop": 2, "finish": 3, "reset": 4, "motor_test": 5,
         "deadband_test": 6}
 CMD_TAG = 0x40
@@ -106,11 +106,8 @@ def decode_event(data):
     return kind, unpack(data, EVENT_LAYOUT[kind][1], EVENT_KIND_BITS)
 
 
-CFG_FORMAT_BIT = 0x1000      # marks the action -> letter format
-
-
 def encode_config(table):
-    """table: {action code 0..3: "A".."D" or None} -> 2-byte CONFIG frame.
+    """table: {action code 0..3: "A".."Z" or None} -> 3-byte CONFIG frame.
 
     Action codes: 0 straight, 1 left, 2 right, 3 U-turn. A letter may be
     given to one action only.
@@ -122,17 +119,14 @@ def encode_config(table):
         if letter is not None:
             assert letter in LETTERS and letter not in used, letter
             used.add(letter)
-            word |= (1 << n) | (LETTERS.index(letter) << (4 + 2 * n))
-    word |= CFG_FORMAT_BIT
-    return bytes([word & 0xFF, word >> 8])
+            word |= (1 << n) | (LETTERS.index(letter) << (4 + 5 * n))
+    return bytes([word & 0xFF, (word >> 8) & 0xFF, word >> 16])
 
 
 def config_valid(word):
-    """True if a 16-bit CONFIG word passes the car's checks."""
-    if (word & 0xF000) != CFG_FORMAT_BIT:
-        return False
-    letters = [(word >> (4 + 2 * n)) & 3 for n in range(4) if (word >> n) & 1]
-    return len(letters) == len(set(letters))
+    """True if a 24-bit CONFIG word passes the car's checks."""
+    letters = [(word >> (4 + 5 * n)) & 31 for n in range(4) if (word >> n) & 1]
+    return all(c < len(LETTERS) for c in letters) and len(letters) == len(set(letters))
 
 
 def encode_cmd(name):

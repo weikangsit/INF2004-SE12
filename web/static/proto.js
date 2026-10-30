@@ -22,7 +22,7 @@
   // kind -> [name, fields after the 4-bit kind] - same as g_event_layout
   const EVENT_LAYOUT = {
     1: ["STATE", [["state", 4, 0]]],
-    2: ["BARCODE", [["symbol", 2, 0], ["valid", 1, 0], ["configured", 1, 0], ["action", 2, 0], ["edges", 6, 0]]],
+    2: ["BARCODE", [["slot", 2, 0], ["valid", 1, 0], ["read", 1, 0], ["edges", 6, 0]]],
     3: ["HUMP", [["height", 8, 0]]],
     4: ["OBSTACLE", [["bearing", 8, 0], ["range", 9, 0], ["width", 7, 0]]],
     5: ["FAULT", [["code", 4, 0], ["detail", 4, 0], ["state", 3, 0]]],
@@ -55,12 +55,10 @@
   const CMDS = { start: 0, stop: 1, estop: 2, finish: 3, reset: 4, motor_test: 5, deadband_test: 6 };
   const COUNTS_PER_UNIT = 4;   // motor-test counts are sent divided by 4
   const CMD_TAG = 0x40;
-  const LETTERS = "ABCD";
+  const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   // firmware built-in table (barcode_map.c, Week 6 FR2), used until one arrives over MQTT:
   // action code (index into ACTIONS) -> letter
   const DEFAULT_TABLE = { 0: "C", 1: "A", 2: "B", 3: "D" };
-  // bit 12 marks the action -> letter format; old letter -> action frames (bit 12 clear) are rejected
-  const CFG_FORMAT_BIT = 0x1000;
   const RANGE_NO_ECHO = 511;
   const ST_LATCHED = 1, ST_CFG_MQTT = 2, LINE_LEFT = 1, LINE_RIGHT = 2, BAR_VALID = 4;
 
@@ -85,7 +83,7 @@
 
   const bitsOf = (layout) => layout.reduce((n, f) => n + f[1], 0);
 
-  /** map: { 0: "A".."D" | null, ... 3 } (action code -> letter) -> 2-byte CONFIG frame */
+  /** map: { 0: "A".."Z" | null, ... 3 } (action code -> letter) -> 3-byte CONFIG frame */
   function encodeConfig(map) {
     let word = 0, used = 0;
     for (let n = 0; n < ACTIONS.length; n++) {
@@ -95,22 +93,20 @@
       if (code < 0 || letter.length !== 1) throw new RangeError("letter must be one of " + LETTERS);
       if ((used >> code) & 1) throw new RangeError("letter " + letter + " is given to two actions");
       used |= 1 << code;
-      word |= (1 << n) | (code << (4 + 2 * n));
+      word |= (1 << n) | (code << (4 + 5 * n));
     }
-    word |= CFG_FORMAT_BIT;
-    return Uint8Array.of(word & 0xFF, word >> 8);
+    return Uint8Array.of(word & 0xFF, (word >> 8) & 0xFF, (word >> 16) & 0xFF);
   }
 
   function decodeConfig(u8) {
-    if (u8.length !== 2) return null;
-    const word = u8[0] | (u8[1] << 8);
-    if ((word & 0xF000) !== CFG_FORMAT_BIT) return null;   // old format or reserved bits set
+    if (u8.length !== 3) return null;                  // old 2-byte layouts are rejected
+    const word = u8[0] | (u8[1] << 8) | (u8[2] << 16);
     const map = {};
     let used = 0;
     for (let n = 0; n < ACTIONS.length; n++) {
       if (!((word >> n) & 1)) { map[n] = null; continue; }
-      const code = (word >> (4 + 2 * n)) & 3;
-      if ((used >> code) & 1) return null;            // one letter, two actions: the car rejects it too
+      const code = (word >> (4 + 5 * n)) & 31;
+      if (code >= LETTERS.length || (used >> code) & 1) return null;   // the car rejects these too
       used |= 1 << code;
       map[n] = LETTERS[code];
     }
@@ -140,7 +136,8 @@
       irLBlack: !!(r.lineBits & LINE_LEFT), irRBlack: !!(r.lineBits & LINE_RIGHT),
       lineSeen: (r.lineBits & (LINE_LEFT | LINE_RIGHT)) !== 0,
       linePos: r.lineBits === LINE_LEFT ? -1 : r.lineBits === LINE_RIGHT ? 1 : 0,
-      barcode: r.barcode & BAR_VALID ? LETTERS[r.barcode & 3] : "",
+      // last barcode: 2-bit slot (= action) + valid; the letter comes from the table
+      barcodeSlot: r.barcode & BAR_VALID ? r.barcode & 3 : null,
       faultMask: r.faultMask, faults: faultNames(r.faultMask),
       tripped: (r.faultMask & ~WARNINGS) !== 0,
       safetyLatched: !!(r.status & ST_LATCHED), cfgFromMqtt: !!(r.status & ST_CFG_MQTT),
@@ -156,11 +153,13 @@
     };
   }
 
-  function eventText(kind, f) {
+  /** table: the car's action -> letter table, to name the letter of a slot. */
+  function eventText(kind, f, table) {
     switch (kind) {
       case 1: return "state -> " + (STATES[f.state] || f.state);
-      case 2: return !f.valid ? "barcode unreadable or not A-D (" + f.edges + " edges)"
-                : "barcode " + LETTERS[f.symbol] + " -> " + (f.configured ? ACTIONS[f.action] : "no action has this letter");
+      case 2: return f.valid ? "barcode " + ((table && table[f.slot]) || "?") + " -> " + ACTIONS[f.slot]
+                : f.read ? "barcode letter not in the table (the car's USB console shows which)"
+                : "barcode unreadable (" + f.edges + " edges)";
       case 3: return "hump height " + (f.height / 2).toFixed(1) + " mm";
       case 4: return "obstacle at " + f.bearing + "\u00b0, " +
                 (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
@@ -199,13 +198,13 @@
     }
   }
 
-  function decodeEvent(u8) {
+  function decodeEvent(u8, table) {
     if (u8.length < 1) return null;
     const kind = getBits(u8, 0, EVENT_KIND_BITS, 0);
     const entry = EVENT_LAYOUT[kind];
     if (!entry || u8.length !== Math.ceil((EVENT_KIND_BITS + bitsOf(entry[1])) / 8)) return null;
     const f = unpack(u8, EVENT_KIND_BITS, entry[1]);
-    return { kind: entry[0], fields: f, text: eventText(kind, f),
+    return { kind: entry[0], fields: f, text: eventText(kind, f, table),
              fault: kind === 5 ? !(WARNINGS & (1 << f.code)) : (kind === 8 || kind === 11) && f.result !== 0 };
   }
 

@@ -2,8 +2,8 @@
  *  @brief   Barcode table: the letter for each action (see barcode_map.h).
  *
  *  Written only by the MQTT link (comms.c) and read by the Navigation FSM
- *  and the telemetry task. The table is a single aligned 16-bit word, and
- *  a halfword load or store is a single access on the Cortex-M0+, so a
+ *  and the telemetry task. The table is a single aligned 32-bit word, and
+ *  a word load or store is a single access on the Cortex-M0+, so a
  *  reader can never see half of an old table and half of a new one.
  *  proto_unpack_config() rejects a table that gives one letter to two
  *  actions, so a letter selects at most one action.
@@ -11,8 +11,8 @@
 #include "barcode_map.h"
 #include "proto.h"
 
-/* Bit 12 marks a table that came over MQTT. */
-#define TABLE_FROM_MQTT      (1U << 12)
+/* Bit 24 marks a table that came over MQTT. */
+#define TABLE_FROM_MQTT      (1U << 24)
 
 /* Letter codes in the table: letter - 'A'. */
 #define LETTER_A             (0U)
@@ -34,7 +34,7 @@
                               ENTRY(PROTO_ACT_RIGHT, LETTER_B) |           \
                               ENTRY(PROTO_ACT_UTURN, LETTER_D))
 
-static volatile uint16_t g_table = TABLE_DEFAULT;
+static volatile uint32_t g_table = TABLE_DEFAULT;
 
 /*!
  * @brief  Restore the built-in default table.
@@ -49,7 +49,7 @@ barcode_map_init (void)
  * @brief  Look up which action a decoded letter triggers.
  * @param  letter  Decoded Code 39 character.
  * @return The action whose letter it is, or BA_NONE if no action has it
- *         (including letters outside A-D).
+ *         (including characters outside A-Z).
  */
 barcode_map_action_t
 barcode_map_get (char letter)
@@ -58,10 +58,10 @@ barcode_map_get (char letter)
     uint32_t const       table  = g_table;      /* one snapshot        */
     uint32_t             entry  = 0U;
 
-    /* The protocol carries PROTO_LETTER_COUNT letters: A..D. */
-    if ((letter >= 'A') && (letter <= 'D'))
+    /* The protocol carries PROTO_LETTER_COUNT letters: A..Z. */
+    if ((letter >= 'A') && (letter <= 'Z'))
     {
-        /* letter is 'A'..'D' here, so code is 0..3. */
+        /* letter is 'A'..'Z' here, so code is 0..25. */
         uint32_t const code = (uint32_t) (letter - 'A');
 
         for (entry = 0U; entry < PROTO_ACTION_COUNT; entry++)
@@ -85,29 +85,24 @@ barcode_map_get (char letter)
 
 /*!
  * @brief  Replace the table with one received over MQTT.
- * @param  table  12-bit table from proto_unpack_config().
+ * @param  table  24-bit table from proto_unpack_config().
  */
 void
-barcode_map_apply (uint16_t table)
+barcode_map_apply (uint32_t table)
 {
-    uint32_t const word = ((uint32_t) table & PROTO_CFG_TABLE_MASK) |
-                          TABLE_FROM_MQTT;
-
-    /* word keeps 13 bits, so it fits the single 16-bit store. */
-    g_table = (uint16_t) word;
+    g_table = (table & PROTO_CFG_TABLE_MASK) | TABLE_FROM_MQTT;
 }
 
 /*!
  * @brief  Current table.
- * @return The table in the PROTO_CFG_* layout (12 bits).
+ * @return The table in the PROTO_CFG_* layout (24 bits).
  */
-uint16_t
+uint32_t
 barcode_map_table (void)
 {
     uint32_t const table = g_table;               /* one snapshot          */
 
-    /* Masked to 12 bits, so it fits a uint16_t. */
-    return ((uint16_t) (table & PROTO_CFG_TABLE_MASK));
+    return (table & PROTO_CFG_TABLE_MASK);
 }
 
 /*!

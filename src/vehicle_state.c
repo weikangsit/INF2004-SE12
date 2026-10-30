@@ -52,7 +52,7 @@ static bitpack_field_t const g_layout[VS_FIELD_COUNT] =
     { 1U,  false },   /* magnetometer calibrated                         */
     { 16U, false },   /* IMU time stamp, ms modulo 65536                 */
     { 2U,  false },   /* raw line sensors                                */
-    { 3U,  false },   /* last barcode                                    */
+    { 3U,  false },   /* last barcode: slot 0..3 + valid                 */
     { 4U,  false }    /* nav state                                       */
 };
 

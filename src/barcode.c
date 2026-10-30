@@ -11,10 +11,12 @@
  */
 #include <string.h>
 #include <tk/tkernel.h>
+#include <tm/tmonitor.h>
 
 #include "port.h"
 
 #include "barcode.h"
+#include "barcode_map.h"
 #include "car_config.h"
 #include "code39.h"
 #include "hal.h"
@@ -26,7 +28,6 @@
 #define QUEUE_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + 1 byte, rounded */
 #define LETTER_FIRST         ('A')
-#define UNREADABLE           ('?')
 
 typedef enum
 {
@@ -34,7 +35,7 @@ typedef enum
     BAR_CAPTURE
 } bar_state_t;
 
-static ID          g_letter_q = 0;
+static ID          g_slot_q   = 0;
 static bar_state_t g_state    = BAR_WAIT;              /* task only        */
 static uint32_t    g_edges[BAR_EDGE_BUF_LEN];          /* task only        */
 static uint32_t    g_n_edges  = 0U;                    /* task only        */
@@ -55,7 +56,7 @@ barcode_init (void)
     create.mbfatr = TA_TFIFO;
     create.bufsz  = (SZ) (QUEUE_DEPTH * MBF_SLOT_BYTES);       /* 32 B    */
     create.maxmsz = (INT) sizeof(uint8_t);
-    g_letter_q    = tk_cre_mbf(&create);
+    g_slot_q      = tk_cre_mbf(&create);
 }
 
 /*!
@@ -80,14 +81,14 @@ barcode_poll (void)
 }
 
 /*!
- * @brief  Take one decoded letter, if any (Navigation FSM).
- * @param  p_letter  Output letter index, 0..3 for A..D.
- * @return True if a letter was taken.
+ * @brief  Take one barcode, if any (Navigation FSM).
+ * @param  p_slot  Output slot 0..3 (= action wire code, PROTO_ACT_*).
+ * @return True if a barcode was taken.
  */
 bool
-barcode_take (uint8_t * p_letter)
+barcode_take (uint8_t * p_slot)
 {
-    return (tk_rcv_mbf(g_letter_q, p_letter, TMO_POL) > 0);
+    return (tk_rcv_mbf(g_slot_q, p_slot, TMO_POL) > 0);
 }
 
 /*!
@@ -124,27 +125,45 @@ edges_collect (void)
 }
 
 /*!
- * @brief  Decode the captured symbol, queue the letter or report an
- *         unreadable barcode, and wait for the next one.
+ * @brief  Decode the captured symbol, look its letter up in the table,
+ *         queue the slot (or report a letter not in the table, or an
+ *         unreadable barcode), and wait for the next one.
  */
 static void
 capture_finish (void)
 {
     uint8_t const letter = code39_decode(g_edges, g_n_edges,
                                          BAR_MIN_WIDE_RATIO_X10);
+    /* n_edges <= BAR_EDGE_BUF_LEN (64), so it fits an int16_t. */
+    int16_t const edges  = (int16_t) g_n_edges;
 
     if (CODE39_NONE != letter)
     {
-        /* letter is 0..3, so the packed value fits 3 bits. */
-        (void) tk_snd_mbf(g_letter_q, &letter, (INT) sizeof(letter),
-                          TMO_POL);
-        vehicle_state_set_barcode((uint8_t) (VEHICLE_BAR_VALID | letter));
+        /* letter is 0..25, so 'A' + letter is a valid character. */
+        char const                 code   = (char) (LETTER_FIRST + letter);
+        barcode_map_action_t const action = barcode_map_get(code);
+
+        if (BA_NONE != action)
+        {
+            /* BA_STRAIGHT..BA_UTURN follow wire codes 0..3, so the slot
+             * fits the 2-bit symbol field. */
+            uint8_t const slot = (uint8_t) ((uint32_t) action -
+                                            (uint32_t) BA_STRAIGHT);
+
+            (void) tk_snd_mbf(g_slot_q, &slot, (INT) sizeof(slot), TMO_POL);
+            vehicle_state_set_barcode((uint8_t) (VEHICLE_BAR_VALID | slot));
+            telemetry_post_event(EV_BARCODE, slot, 0, edges);
+        }
+        else
+        {
+            /* Only the slot goes over MQTT; the letter is logged here. */
+            tm_printf((UB *) "barcode: %c is not in the table\n", (int) code);
+            telemetry_post_event(EV_BARCODE, PROTO_BAR_EV_UNKNOWN, 0, edges);
+        }
     }
     else
     {
-        /* n_edges <= BAR_EDGE_BUF_LEN (64), so it fits an int16_t. */
-        telemetry_post_event(EV_BARCODE, (uint8_t) UNREADABLE, -1,
-                             (int16_t) g_n_edges);
+        telemetry_post_event(EV_BARCODE, PROTO_BAR_EV_UNREADABLE, 0, edges);
     }
 
     g_state   = BAR_WAIT;

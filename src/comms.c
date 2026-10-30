@@ -721,7 +721,7 @@ rx_handle_cmd (void)
 static void
 rx_handle_config (void)
 {
-    uint16_t table = 0U;
+    uint32_t table = 0U;
 
     uint32_t const len = g_rx.len;
 

@@ -1,13 +1,13 @@
 /** @file    barcode_map.h
- *  @brief   Barcode table: the letter (A-D) that triggers each action.
+ *  @brief   Barcode table: the letter (A-Z) that triggers each action.
  *
  *  For each action (straight, left, right, U-turn) the table holds the
  *  Code 39 letter that triggers it, or none. The whole table is one
- *  16-bit word (see the PROTO_CFG_* layout in proto.h, plus a "received
- *  over MQTT" bit), so a reader always sees a complete table. Built-in
- *  defaults follow Week 6 FR2 (left A, right B, straight C, U-turn D), so
- *  the car can run without WiFi. A table received over MQTT replaces the
- *  defaults.
+ *  32-bit word (the 24-bit PROTO_CFG_* layout in proto.h, plus a
+ *  "received over MQTT" bit), so a reader always sees a complete table.
+ *  Built-in defaults follow Week 6 FR2 (left A, right B, straight C,
+ *  U-turn D), so the car can run without WiFi. A table received over
+ *  MQTT replaces the defaults.
  */
 #ifndef BARCODE_MAP_H
 #define BARCODE_MAP_H
@@ -26,8 +26,8 @@ typedef enum
 
 void                 barcode_map_init (void);
 barcode_map_action_t barcode_map_get (char letter);
-void                 barcode_map_apply (uint16_t table);
-uint16_t             barcode_map_table (void);
+void                 barcode_map_apply (uint32_t table);
+uint32_t             barcode_map_table (void);
 bool                 barcode_map_is_loaded (void);
 
 #endif /* BARCODE_MAP_H */

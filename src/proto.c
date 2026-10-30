@@ -17,14 +17,13 @@
 #define EVENT_KIND_BITS      (4U)
 #define TELEM_FIELD_COUNT    (18U)
 #define EVENT_FIELDS_MAX     (3U)   /* fields of any kind except BARCODE */
-#define BARCODE_FIELD_COUNT  (5U)
+#define BARCODE_FIELD_COUNT  (4U)
 #define EVENT_INPUT_COUNT    (3U)   /* code, value1, value2              */
 
 #define CMD_TAG              (0x40U)   /* bits 3..7 of a CMD byte       */
 #define CMD_TAG_MASK         (0xF8U)
 #define CMD_ID_MASK          (0x07U)
 
-#define CFG_RESERVED_MASK    (0xF000U)   /* format bit + reserved    */
 #define ACK_FROM_MQTT_SHIFT  (4U)
 
 /* Unit conversions of the generic event inputs. */
@@ -82,16 +81,16 @@ static event_layout_t const g_event_layout[EV_KIND_COUNT] =
     { 3U, { { 1U, false }, { 7U, false }, { 8U, false } } }     /* DEADBAND*/
 };
 
-/** BARCODE: symbol, valid, configured, action, edge count. */
+/** BARCODE: slot, valid, read (a letter was decoded), edge count. */
 static bitpack_field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
 {
-    { 2U, false }, { 1U, false }, { 1U, false }, { 2U, false }, { 6U, false }
+    { 2U, false }, { 1U, false }, { 1U, false }, { 6U, false }
 };
 
 static uint32_t event_values (proto_event_t kind, uint8_t code,
                               int16_t value1, int16_t value2,
                               int32_t * p_values);
-static bool     config_letters_unique (uint32_t word);
+static bool     config_letters_valid (uint32_t word);
 
 /*!
  * @brief  Pack one telemetry frame.
@@ -171,9 +170,9 @@ proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
  * @return The CFG_ACK byte.
  */
 uint8_t
-proto_pack_cfg_ack (uint16_t table, bool b_from_mqtt)
+proto_pack_cfg_ack (uint32_t table, bool b_from_mqtt)
 {
-    uint32_t ack = (uint32_t) table & PROTO_CFG_VALID_MASK;
+    uint32_t ack = table & PROTO_CFG_VALID_MASK;
 
     if (b_from_mqtt)
     {
@@ -214,29 +213,29 @@ proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
 }
 
 /*!
- * @brief  Validate and decode a CONFIG frame (letter A-D per action).
+ * @brief  Validate and decode a CONFIG frame (letter A-Z per action).
  * @param  p_frame  Received bytes.
  * @param  len      Number of received bytes.
- * @param  p_table  Output 12-bit table, written only on success.
- * @return True if the frame is valid (right length, format bit set,
- *         reserved bits zero, no letter given to two actions).
+ * @param  p_table  Output 24-bit table, written only on success.
+ * @return True if the frame is valid (right length, every configured
+ *         letter in A..Z, no letter given to two actions).
  */
 bool
 proto_unpack_config (uint8_t const * p_frame, uint32_t len,
-                     uint16_t * p_table)
+                     uint32_t * p_table)
 {
     bool b_ok = false;
 
     if (PROTO_CONFIG_LEN == len)
     {
-        uint32_t word = (uint32_t) p_frame[0] |
-                        ((uint32_t) p_frame[1] << BITS_PER_BYTE);
+        uint32_t const word = (uint32_t) p_frame[0] |
+                              ((uint32_t) p_frame[1] << BITS_PER_BYTE) |
+                              ((uint32_t) p_frame[2] <<
+                               (2U * BITS_PER_BYTE));
 
-        if ((PROTO_CFG_FORMAT_BIT == (word & CFG_RESERVED_MASK)) &&
-            config_letters_unique(word))
+        if (config_letters_valid(word))
         {
-            /* Masked to 12 bits, so it fits a uint16_t. */
-            *p_table = (uint16_t) (word & PROTO_CFG_TABLE_MASK);
+            *p_table = word & PROTO_CFG_TABLE_MASK;
             b_ok = true;
         }
     }
@@ -263,17 +262,13 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
     {
         case EV_BARCODE:
         {
-            /* Unsigned difference: a code below 'A' wraps to a large
-             * value, so one comparison checks both ends of A..D. */
-            uint32_t const index   = (uint32_t) code - (uint32_t) 'A';
-            bool const     b_valid = (index < PROTO_LETTER_COUNT);
+            bool const b_valid = ((uint32_t) code < PROTO_ACTION_COUNT);
 
-            /* index < 4 when valid, so it fits an int32_t. */
-            p_values[0] = b_valid ? (int32_t) index : 0;
+            /* code is 0..3 when valid, so it fits an int32_t. */
+            p_values[0] = b_valid ? (int32_t) code : 0;
             p_values[1] = b_valid ? 1 : 0;
-            p_values[2] = (value1 >= 0) ? 1 : 0;
-            p_values[3] = (value1 >= 0) ? value1 : 0;
-            p_values[4] = value2;
+            p_values[2] = (PROTO_BAR_EV_UNREADABLE != code) ? 1 : 0;
+            p_values[3] = value2;
             count = BARCODE_FIELD_COUNT;
         }
         break;
@@ -339,13 +334,13 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
 }
 
 /*!
- * @brief  Check that no letter is given to two actions, so a decoded
- *         letter always selects one action.
+ * @brief  Check every configured letter is A..Z and no letter is given
+ *         to two actions, so a decoded letter selects at most one action.
  * @param  word  CONFIG word (PROTO_CFG_* layout).
- * @return True if every configured action has its own letter.
+ * @return True if every configured action has its own valid letter.
  */
 static bool
-config_letters_unique (uint32_t word)
+config_letters_valid (uint32_t word)
 {
     uint32_t used   = 0U;                         /* bit n = letter 'A'+n  */
     uint32_t action = 0U;
@@ -360,12 +355,15 @@ config_letters_unique (uint32_t word)
                                                action))) &
                                     PROTO_CFG_LETTER_MASK;
 
-            if (0U != (used & (1U << letter)))
+            if ((letter >= PROTO_LETTER_COUNT) ||
+                (0U != (used & (1U << letter))))
             {
                 b_ok = false;
             }
-
-            used |= (1U << letter);
+            else
+            {
+                used |= (1U << letter);
+            }
         }
     }
 

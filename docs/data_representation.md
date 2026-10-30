@@ -40,7 +40,7 @@ Was 52 bytes of floats and bytes (`motion_state_t`); now 132 bits =
 | magnetometer calibrated | IMU | flag | 1 | (none) |
 | IMU time stamp | IMU | ms modulo 65536 | 16 | (none) |
 | raw line sensors | Line | 2 x black/white | 2 | int8 pos + 2 bools |
-| last barcode | Line | none / A..D | 3 | char |
+| last barcode | Line | none / slot 0..3 of the table | 3 | char |
 | nav state | Nav | 9 states | 4 | uint8 |
 
 The IMU time stamp lets consumers ignore IMU data older than 60 ms
@@ -52,7 +52,7 @@ the two raw bits, so they are no longer stored twice.
 | Queue / channel | From -> to | Was | Now | Bits used |
 |---|---|---|---|---|
 | line reading (was `line_pos_q`) | Line -> Motion | 8-byte message, queue of 4 | one 32-bit word, newest value | 2 sensor bits + 16-bit stamp |
-| `bar_cmd_q` | Line -> Nav | 1 byte `char` A..Z | 1 byte | 2 (letter A..D) |
+| `bar_cmd_q` | Line -> Nav | 1 byte `char` A..Z | 1 byte | 2 (slot 0..3 of the table) |
 | `motion_cmd_q` | Nav, Safety -> Motion | 20 bytes (enum, 3 floats, 2 bools) | 4 bytes | 32 (below) |
 | `motion_done_q` (new, Version C) | Motion -> Nav | (shared `motion_evt_q`, 8 bytes) | 1 byte | 5 (seq 3 + result 2) |
 | terrain events | IMU -> Nav | (shared `motion_evt_q`, 8 bytes) | 1 byte | 1 (hump start / end) |
@@ -123,8 +123,8 @@ flags and runs them in a Cortex-M0+ emulator:
 * `proto.c` + `bitpack.c`: 408 telemetry and 698 event vectors, all
   commands and configs, against the Python reference; 300 random fields of
   1-31 bits (clamping, neighbouring bits untouched).
-* `code39.c`: A-D in both directions at 15-45 cm/s with +/-10 % width
-  jitter; rejects unclear wide/narrow ratios, letters outside A-D and short
+* `code39.c`: A-Z in both directions at 15-45 cm/s with +/-10 % width
+  jitter; rejects unclear wide/narrow ratios, characters outside A-Z and short
   reads.
 * `obstacle_profile.c`: cosine within 3/1000 for 0-180 deg; 400 random
   sweeps with missing echoes, profile and route equal to the reference.

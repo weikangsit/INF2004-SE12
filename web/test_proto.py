@@ -189,8 +189,8 @@ def cdiv(a, b):
 def event_fields(kind, code, v1, v2):
     """Python mirror of event_values() in proto.c."""
     if kind == 2:
-        valid = 65 <= code < 69
-        return [code - 65 if valid else 0, int(valid), int(v1 >= 0), v1 if v1 >= 0 else 0, v2]
+        valid = code < 4
+        return [code if valid else 0, int(valid), int(code != 0xFF), v2]
     if kind == 3:
         return [cdiv(v1 + 2, 5)]
     if kind == 4:
@@ -240,7 +240,9 @@ def test_firmware(cpu):
     start = len(failures)
     for kind in ref.EVENT_LAYOUT:
         cases = [(0, 0, 0), (255, 32767, 32767), (255, -32768, -32768)]
-        cases += [(65 + i, i - 1, 7) for i in range(5)] if kind == 2 else []
+        # BARCODE: every slot, both special codes (not in table 0xFE,
+        # unreadable 0xFF) and the first non-slot code
+        cases += [(c, 0, e) for c in (0, 1, 2, 3, 4, 0xFE, 0xFF) for e in (0, 30, 63, 64)]             if kind == 2 else []
         cases += [(rng.randint(0, 255), rng.randint(-32768, 32767),
                    rng.randint(-32768, 32767)) for _ in range(60)]
         for code, v1, v2 in cases:
@@ -272,24 +274,31 @@ def test_firmware(cpu):
               f"cmd length {length} accepted")
     report(start, "proto_unpack_cmd: all 256 byte values and wrong lengths")
 
-    # Config: reserved bits, length and one-letter-per-action checked, 12-bit
-    # table returned. Every 12-bit word is tried.
+    # Config: length, letters A..Z and one-letter-per-action checked, 24-bit
+    # table returned. Random words plus every letter code in each slot.
     start = len(failures)
-    words = list(range(0x1000, 0x2000)) + list(range(0, 0x10000, 37)) + [0x0C9F, 0x8000, 0xFFFF]
+    rnd = random.Random(7)
+    words = [rnd.randrange(1 << 24) for _ in range(3000)]
+    words += [(1 << n) | (c << (4 + 5 * n)) for n in range(4) for c in range(32)]
+    words += [0, 0xFFFFFF]
     for word in words:
-        cpu.write(RAM, struct.pack("<H", word))
-        ok = cpu.call("proto_unpack_config", RAM, 2, RAM + 0x10) & 0xFF
-        check(bool(ok) == ref.config_valid(word), f"config {word:#06x}")
+        cpu.write(RAM, bytes([word & 0xFF, (word >> 8) & 0xFF, word >> 16]))
+        ok = cpu.call("proto_unpack_config", RAM, 3, RAM + 0x10) & 0xFF
+        check(bool(ok) == ref.config_valid(word), f"config {word:#08x}")
         if ref.config_valid(word):
-            check(struct.unpack("<H", cpu.read(RAM + 0x10, 2))[0] == (word & 0x0FFF),
-                  f"config table {word:#06x}")
-    check(not ref.config_valid(0x0C9F), "old-format default table (bit 12 clear) rejected")
-    check(cpu.call("proto_unpack_config", RAM, 3, RAM + 0x10) & 0xFF == 0, "config length 3")
+            check(struct.unpack("<I", cpu.read(RAM + 0x10, 4))[0] == word,
+                  f"config table {word:#08x}")
+    for length in (2, 4):                             # old 2-byte frames and padding
+        check(cpu.call("proto_unpack_config", RAM, length, RAM + 0x10) & 0xFF == 0,
+              f"config length {length}")
     frame = ref.encode_config({0: "C", 1: "A", 2: "B", 3: "D"})
-    check(frame == bytes.fromhex("2f1d"), "default table frame")
-    dup = 0x1003 | (1 << 4) | (1 << 6)                # straight and left both 'B'
+    check(frame == bytes.fromhex("2f4018"), "default table frame")
+    frame = ref.encode_config({0: "Z", 1: "K", 2: None, 3: "Q"})
+    check(ref.config_valid(frame[0] | (frame[1] << 8) | (frame[2] << 16)), "Z/K/Q table valid")
+    dup = 0x3 | (1 << 4) | (1 << 9)                   # straight and left both 'B'
     check(not ref.config_valid(dup), "duplicate letter rejected by the reference")
-    report(start, "proto_unpack_config: reserved bits, length and duplicate letters validated")
+    check(not ref.config_valid(0x1 | (26 << 4)), "letter code 26 rejected by the reference")
+    report(start, "proto_unpack_config: length, letters A-Z and duplicate letters validated")
 
     start = len(failures)
     for table in (0, 0x0C9F, 0x0FFF, 0x0005):
@@ -300,8 +309,19 @@ def test_firmware(cpu):
 
 
 # ---------------------------------------------------- 3. other pure modules
-C39 = {"*": "010010100", "A": "100001001", "B": "001001001", "C": "101001000",
-       "D": "000011001", "P": "001010010"}
+# Code 39 from the ANSI/AIM BC1 table (n = narrow, w = wide; bar, space, ...),
+# typed independently of the masks in code39.c so the two check each other.
+C39_NW = {
+    "*": "nwnnwnwnn", "0": "nnnwwnwnn",
+    "A": "wnnnnwnnw", "B": "nnwnnwnnw", "C": "wnwnnwnnn", "D": "nnnnwwnnw",
+    "E": "wnnnwwnnn", "F": "nnwnwwnnn", "G": "nnnnnwwnw", "H": "wnnnnwwnn",
+    "I": "nnwnnwwnn", "J": "nnnnwwwnn", "K": "wnnnnnnww", "L": "nnwnnnnww",
+    "M": "wnwnnnnwn", "N": "nnnnwnnww", "O": "wnnnwnnwn", "P": "nnwnwnnwn",
+    "Q": "nnnnnnwww", "R": "wnnnnnwwn", "S": "nnwnnnwwn", "T": "nnnnwnwwn",
+    "U": "wwnnnnnnw", "V": "nwwnnnnnw", "W": "wwwnnnnnn", "X": "nwnnwnnnw",
+    "Y": "wwnnwnnnn", "Z": "nwwnwnnnn",
+}
+C39 = {ch: p.replace("n", "0").replace("w", "1") for ch, p in C39_NW.items()}
 
 
 def c39_edges(text, narrow, wide, reverse=False, jitter=None):
@@ -327,7 +347,7 @@ def test_code39(cpu):
     start = len(failures)
     rng = random.Random(3)
     cases = 0
-    for idx, letter in enumerate("ABCD"):
+    for idx, letter in enumerate(ref.LETTERS):
         for rev in (False, True):
             for narrow in (3000, 10000, 20000):   # 15..45 cm/s over 3 mm
                 for ratio in (2.0, 2.5, 3.0):
@@ -337,14 +357,14 @@ def test_code39(cpu):
                     got = cpu.call("code39_decode", RAM, len(edges), 15) & 0xFF
                     check(got == idx, f"code39 {letter} rev={rev} n={narrow} r={ratio}: {got}")
                     cases += 1
-    bad = [("*A*", 3000, 3300), ("*P*", 3000, 7500), ("*A", 3000, 7500)]
-    for text, narrow, wide in bad:          # unclear ratio, non A-D, too short
+    bad = [("*A*", 3000, 3300), ("*0*", 3000, 7500), ("*A", 3000, 7500), ("A*A", 3000, 7500)]
+    for text, narrow, wide in bad:          # unclear ratio, digit, too short, no start
         edges = c39_edges(text, narrow, wide)
         cpu.write(RAM, struct.pack("<%dI" % len(edges), *edges))
         got = cpu.call("code39_decode", RAM, len(edges), 15) & 0xFF
         check(got == 0xFF, f"code39 must reject {text} {narrow}/{wide}: {got}")
         cases += 1
-    report(start, f"code39_decode: {cases} cases (A-D both directions, 15-45 cm/s, "
+    report(start, f"code39_decode: {cases} cases (A-Z both directions, 15-45 cm/s, "
                   "+/-10 % jitter, ratio/letter/length rejects)")
 
 
@@ -467,19 +487,20 @@ def test_barcode_map(cpu):
     names = {0: "none", 1: "straight", 2: "left", 3: "right", 4: "U-turn"}
     get = lambda letter: cpu.call("barcode_map_get", ord(letter)) & 0xFF
     cpu.call("barcode_map_init")
-    for letter, want in (("A", 2), ("B", 3), ("C", 1), ("D", 4), ("E", 0), ("@", 0), ("a", 0)):
+    for letter, want in (("A", 2), ("B", 3), ("C", 1), ("D", 4), ("E", 0), ("Z", 0), ("@", 0),
+                         ("[", 0), ("a", 0)):
         check(get(letter) == want, f"built-in {letter} -> {names[get(letter)]}, want {names[want]}")
     rnd = random.Random(12)
     for _ in range(200):
         letters = rnd.sample(ref.LETTERS, 4)
         table = {n: (letters[n] if rnd.random() < 0.7 else None) for n in range(4)}
         frame = ref.encode_config(table)
-        word = frame[0] | (frame[1] << 8)
-        cpu.call("barcode_map_apply", word & 0x0FFF)
+        word = frame[0] | (frame[1] << 8) | (frame[2] << 16)
+        cpu.call("barcode_map_apply", word & 0xFFFFFF)
         for letter in ref.LETTERS:
             want = next((n + 1 for n in range(4) if table[n] == letter), 0)
             check(get(letter) == want, f"table {table}: {letter} -> {names[get(letter)]}")
-    report(start, "barcode_map_get: built-in table and 200 random action -> letter tables")
+    report(start, "barcode_map_get: built-in table and 200 random A-Z action -> letter tables")
 
 
 def main():

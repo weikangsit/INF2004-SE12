@@ -23,9 +23,10 @@
 #define VEHICLE_IR_LEFT      (1U << 0)
 #define VEHICLE_IR_RIGHT     (1U << 1)
 
-/* last_barcode: bits 0..1 letter - 'A', bit 2 valid (same as telemetry). */
+/* last_barcode: bits 0..1 slot (= action wire code), bit 2 valid (same
+ * as telemetry).                                                        */
 #define VEHICLE_BAR_VALID    (1U << 2)
-#define VEHICLE_BAR_LETTER   (0x3U)
+#define VEHICLE_BAR_SLOT     (0x3U)
 
 /** Unpacked snapshot. The comment gives each field's stored width. */
 typedef struct

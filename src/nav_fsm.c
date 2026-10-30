@@ -51,7 +51,6 @@
 #define MM_PER_CM            (10)
 #define NO_SEQ               (0U)
 #define DETAIL_SCAN_UNSAFE   (1)         /* FC_NO_ROUTE detail           */
-#define LETTER_FIRST         ('A')
 
 /** Obstacle bypass steps. */
 typedef enum
@@ -81,8 +80,8 @@ typedef struct
     bool                b_start;          /* GP20 pressed                */
     bool                b_cal_short;      /* GP21 released before long   */
     bool                b_cal_long;       /* GP21 held BTN_LONG_PRESS_MS */
-    bool                b_have_letter;
-    uint8_t             letter;           /* 0..3 = A..D                 */
+    bool                b_have_bar;
+    uint8_t             bar_slot;         /* 0..3 = action wire code     */
     bool                b_have_done;
     motion_done_t       done;
     bool                b_have_terrain;
@@ -124,7 +123,7 @@ static void    state_step (nav_in_t const * p_in);
 static void    init_step (nav_in_t const * p_in);
 static void    ready_step (nav_in_t const * p_in);
 static void    follow_step (nav_in_t const * p_in);
-static void    barcode_act (uint8_t letter);
+static void    barcode_act (uint8_t slot);
 static void    obstacle_begin (void);
 static void    obstacle_step (nav_in_t const * p_in);
 static void    bypass_next (void);
@@ -223,7 +222,7 @@ inputs_read (nav_in_t * p_in)
     p_in->b_cal_short  = button_release_short(&g_nav.btn_cal,
                                               hal_btn_cal_raw(), p_in->now,
                                               &p_in->b_cal_long);
-    p_in->b_have_letter  = barcode_take(&p_in->letter);
+    p_in->b_have_bar     = barcode_take(&p_in->bar_slot);
     p_in->b_have_done    = motion_control_done_take(&p_in->done);
     p_in->b_have_terrain = imu_terrain_event_take(&p_in->terrain);
     p_in->b_have_us      = ultrasonic_scan_result_take(&p_in->us);
@@ -504,9 +503,9 @@ follow_step (nav_in_t const * p_in)
     {
         safety_report(SAFETY_EVT_LINE_LOST);      /* Safety trips         */
     }
-    else if ((NAV_LINE_FOLLOW == g_nav.state) && p_in->b_have_letter)
+    else if ((NAV_LINE_FOLLOW == g_nav.state) && p_in->b_have_bar)
     {
-        barcode_act(p_in->letter);
+        barcode_act(p_in->bar_slot);
     }
     else if ((NAV_LINE_FOLLOW == g_nav.state) && p_in->b_have_terrain &&
              (IMU_EVT_HUMP_START == p_in->terrain))
@@ -527,20 +526,18 @@ follow_step (nav_in_t const * p_in)
 }
 
 /*!
- * @brief  Act on a decoded barcode letter (table in barcode_map.c).
- * @param  letter  0..3 for A..D.
+ * @brief  Act on a barcode (the Line task already looked its letter up
+ *         and posted the BARCODE event).
+ * @param  slot  0..3 = action wire code (PROTO_ACT_*).
  */
 static void
-barcode_act (uint8_t letter)
+barcode_act (uint8_t slot)
 {
-    /* letter is 0..3, so 'A' + letter is a valid character. */
-    char const                 code   = (char) (LETTER_FIRST + letter);
-    barcode_map_action_t const action = barcode_map_get(code);
+    /* slot is 0..3 and BA_STRAIGHT..BA_UTURN follow wire codes 0..3. */
+    barcode_map_action_t const action =
+        (barcode_map_action_t) ((uint32_t) BA_STRAIGHT +
+                                ((uint32_t) slot & VEHICLE_BAR_SLOT));
     uint8_t                    seq    = NO_SEQ;
-
-    /* value1 = wire action code 0..3, -1 = letter not configured. */
-    telemetry_post_event(EV_BARCODE, (uint8_t) code,
-                         (int16_t) ((int32_t) action - 1), 0);
 
     switch (action)
     {
@@ -565,7 +562,7 @@ barcode_act (uint8_t letter)
 
         case BA_NONE:
         default:
-            /* Not configured: keep following. */
+            /* Cannot happen: the slot always names an action. */
         break;
     }
 

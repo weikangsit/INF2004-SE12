@@ -6,8 +6,9 @@
   const $ = (id) => document.getElementById(id);
   const mqtt = new MqttWs();
 
-  let config = {};            // action code 0..3 -> letter "A".."D" | null (what the UI shows)
+  let config = {};            // action code 0..3 -> letter "A".."Z" | null (what the UI shows)
   let lastHb = 0, lastTlm = 0, ackMask = null, sentMask = null;
+  let carTable = P.DEFAULT_TABLE;   // table the car is using: built-in until one came over MQTT
 
   // ------------------------------------------------------------------ config grid
   // shown in this order; the value is the action's wire code (index into P.ACTIONS)
@@ -82,8 +83,9 @@
       el.classList.toggle("black", black);
     }
     $("t-line").textContent = t.linePos === -1 ? "left black \u2192 steer left (slow)" : t.linePos === 1 ? "right black \u2192 steer right (slow)" : t.lineSeen ? "junction (both black)" : "centred \u2192 straight";
-    const table = t.cfgFromMqtt ? config : P.DEFAULT_TABLE;   // car's built-in table until one arrives
-    $("t-bc").textContent = t.barcode ? t.barcode + " \u2192 " + actionName(P.actionFor(table, t.barcode)) : "\u2013";
+    carTable = t.cfgFromMqtt ? config : P.DEFAULT_TABLE;
+    $("t-bc").textContent = t.barcodeSlot == null ? "\u2013"
+      : (carTable[t.barcodeSlot] || "?") + " \u2192 " + P.ACTIONS[t.barcodeSlot];
     $("t-hump").textContent = t.humpPeak.toFixed(1) + " mm";
     $("t-up").textContent = fmtTime(t.uptime);
     $("t-flags").textContent = [t.safetyLatched ? "SAFETY STOP" : "safe",
@@ -156,7 +158,7 @@
       const t = P.decodeTelem(u8);
       if (t) showTelem(t, u8); else badFrame(sub, u8, 18);
     } else if (sub === "event") {
-      const e = P.decodeEvent(u8);
+      const e = P.decodeEvent(u8, carTable);
       if (e) logEvent(e.text, e.fault); else badFrame(sub, u8, "1-4");
     } else if (sub === "heartbeat") {
       if (P.decodeHb(u8) !== null) lastHb = Date.now(); else badFrame(sub, u8, 1);

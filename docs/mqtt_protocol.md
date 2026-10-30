@@ -23,7 +23,7 @@ Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 | `telemetry` | car -> web | 18 | 0 / no | 10 Hz |
 | `event` | car -> web | 1-4 | 0 / no | on change |
 | `heartbeat` | car -> web | 1 | 0 / no | 1 Hz |
-| `config/barcode` | web -> car | 2 | car subscribes QoS 1; web publishes **retained** | on change |
+| `config/barcode` | web -> car | 3 | car subscribes QoS 1; web publishes **retained** | on change |
 | `config/get` | car -> web | 0 | 0 / no | every 5 s until a table arrives |
 | `config/ack` | car -> web | 1 | 0 / no | after each table |
 | `cmd` | web -> car | 1 | car subscribes QoS 1 | on demand |
@@ -35,7 +35,7 @@ Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 | 0-3 | state | 4 | no | nav state 0..8 (INIT, READY, LINE_FOLLOW, BARCODE_ACT, HUMP_REPORT, OBSTACLE_AVOID, LINE_REACQUIRE, MISSION_DONE, FAULT) |
 | 4-5 | motion class | 2 | no | 0 still, 1 moving, 2 turning, 3 hump |
 | 6-7 | line sensors | 2 | no | raw digital readings, bit 0 left black, bit 1 right black (`motion_state_t.ir_black`, updated every 5 ms in every line-task state) |
-| 8-10 | last barcode | 3 | no | bits 0-1 letter - 'A', bit 2 valid (0 = none) |
+| 8-10 | last barcode | 3 | no | bits 0-1 slot, bit 2 valid (0 = none yet). The slot is the table entry whose letter was read, which is also its action (00 straight, 01 left, 10 right, 11 U-turn); the web app names the letter from the table. |
 | 11-26 | fault mask | 16 | no | bit n = `fault_code_t` n (below) |
 | 27-28 | status | 2 | no | bit 0 safety latched, bit 1 barcode table came over MQTT |
 | 29-36 | speed left | 8 | yes | cm/s (+/-1.27 m/s) |
@@ -83,7 +83,7 @@ fixed per kind, and the decoder rejects any other length.
 | Kind | Name | Fields after the kind (width, s = signed) | Bytes |
 |---|---|---|---|
 | 1 | STATE | state 4 | 1 |
-| 2 | BARCODE | letter-'A' 2, valid 1, configured 1, action 2, edge count 6 | 2 |
+| 2 | BARCODE | slot 2, valid 1 (letter is in the table), read 1 (a letter was decoded; 0 = unreadable), edge count 6 | 2 |
 | 3 | HUMP | height 8 (0.5 mm) | 2 |
 | 4 | OBSTACLE | bearing 8 (deg), range 9 (cm, 511 = no echo), width 7 (cm) | 4 |
 | 5 | FAULT | fault code 4, detail 4, motion state 3. Detail: missing heartbeat task, or for a stall bit 0 left wheel silent, bit 1 right wheel silent, bit 2 time limit. Motion state (stall only): 1 straight, 2 reverse, 3 turn left, 4 turn right, 5 U-turn | 2 |
@@ -103,26 +103,35 @@ sets FC_ENCODER.
 8-bit sequence number, incremented every second and wrapping. The web app
 shows the car offline after 3 s without one.
 
-## config/barcode (2 bytes, retained)
+## config/barcode (3 bytes, retained)
 
 One entry per action n (0 straight, 1 left, 2 right, 3 U-turn), holding
-the barcode letter that triggers it.
+the barcode letter (A..Z) that triggers it.
 
 | Bits | Meaning |
 |---|---|
 | 0-3 | action has a letter (bit n = action n) |
-| 4-11 | 2-bit letter per action, action n in bits 4+2n..5+2n: letter - 'A' (00 A, 01 B, 10 C, 11 D) |
-| 12 | format, must be 1 (marks this action -> letter layout) |
-| 13-15 | reserved, must be 0 |
+| 4-23 | 5-bit letter per action, action n in bits 4+5n..8+5n: letter - 'A' (0 A .. 25 Z; 26-31 invalid) |
 
-The car rejects a frame with the wrong length, bit 12 clear, a reserved bit
-set, or one letter given to two actions. Bit 12 makes a table in the old
-letter -> action layout (still retained on a broker) fail instead of being
-read with the turns swapped. A decoded letter that no action has is logged
-and the car keeps following the line.
+The car rejects a frame that is not 3 bytes long, has a letter code above
+25, or gives one letter to two actions. The earlier 2-byte layouts (A..D
+only) fail the length check, so a table still retained on the broker from
+before is ignored rather than misread. A decoded letter that no action has
+is logged and the car keeps following the line.
+
+Barcode letters and Tribunal 1. The Tribunal specifies a barcode result
+as a 2-bit symbol plus a valid bit, for 4 letters (A..D). A track uses at
+most 4 letters, but they can be any of A..Z, so the 4 letters are chosen
+in this table instead of being fixed. The Code 39 decoder recognises all
+26 letters (digits and symbols are still rejected), then looks the letter
+up here: a letter in the table becomes its 2-bit slot, any other letter is
+dropped (the USB console prints it). From there on the 2-bit symbol +
+valid bit of the Tribunal is used unchanged: the shared state record, the
+`bar_cmd_q` message, telemetry bits 8-10 and the BARCODE event. Only this
+CONFIG frame carries letters, so it needs 5 bits per letter (3 bytes).
 
 The car starts with a built-in table (Week 6 FR2: left A, right B,
-straight C, U-turn D = frame `2f 1d`), so it can run without WiFi. A
+straight C, U-turn D = frame `2f 40 18`), so it can run without WiFi. A
 received table replaces it completely. The car asks for one on
 `config/get` (empty payload) every 5 s until a table arrives.
 

@@ -160,7 +160,7 @@ def main():
         sub(web, "robot/12/#")
         cfg = {0: "C", 1: "A", 2: "B", 3: "D"}
         frame = proto_ref.encode_config(cfg)
-        assert len(frame) == 2
+        assert len(frame) == 3
         pub(web, "robot/12/config/barcode", frame, retain=True)
         read_publish(web)                        # own echo
         car = Tcp()
@@ -168,7 +168,7 @@ def main():
         sub(car, "robot/12/config/barcode")
         t, p, r = read_publish(car)
         assert t == "robot/12/config/barcode" and p == frame and r
-        print("PASS car received retained 2-byte config:", p.hex())
+        print("PASS car received retained 3-byte config:", p.hex())
 
         # 5. car telemetry (18 bytes) reaches the browser untouched
         tel = proto_ref.encode_telem({"state": 2, "motionClass": 1, "lineBits": 1,

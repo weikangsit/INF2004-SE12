@@ -18,7 +18,7 @@ current representation until they make their own change.
 | Nav state | 9 states (0..8) | 4 | unsigned field, telemetry bits 0-3 |
 | Motion class | 0..3 | 2 | unsigned field |
 | Line sensors | 2 x black/white | 2 | one bit per digital sensor; also one 2-bit field (`ir_black`) in the shared state record instead of two `bool`s |
-| Last barcode | none, A..D | 3 | 2-bit letter + valid bit |
+| Last barcode | none, 4 slots | 3 | 2-bit slot + valid bit (Tribunal 1); the slot is the table entry, and its action |
 | Faults | 16 conditions | 16 | one bit each in a shared mask (`fault.h`) |
 | Stall reason | left / right wheel, time limit | 3 | bits of the FAULT event detail field |
 | Stalled motion state | 5 driving states | 3 | FAULT event field |
@@ -34,8 +34,8 @@ current representation until they make their own change.
 | Hump peak | 0..127.5 mm, 0.5 mm | 8 | unsigned field |
 | Uptime | 109 min, 100 ms | 16 | unsigned field (wraps) |
 | Event kind | 10 kinds | 4 | first field of every event |
-| Barcode letter per action | A..D | 2 | 2 bits per action in CONFIG |
-| Barcode table | 4 actions | 13 | 4 valid bits + 4 x 2-bit letter + 1 format bit |
+| Barcode letter per action | A..Z | 5 | 5 bits per action in CONFIG |
+| Barcode table | 4 actions | 24 | 4 valid bits + 4 x 5-bit letter |
 | Remote command | 6 commands | 3 | + 5-bit fixed tag for validation (one byte is the smallest MQTT payload unit) |
 | Heartbeat sequence | gap detection | 8 | wraps every 256 s |
 
@@ -125,7 +125,7 @@ header and the topic name, which did not change.
 | Check | Result |
 |---|---|
 | `python web/test_proto.py` | layouts in `proto.c`, `proto.js` and `proto_ref.py` match; the compiled `proto.c` runs in a Cortex-M0+ emulator (Unicorn) for 408 telemetry vectors (every field at its limits, past its limits, and random), 635 event vectors across all 10 kinds, all 256 command bytes, and the config and ack cases. All agree with the reference codec, including clamping. A deliberately wrong field width is caught. |
-| `python web/test_server.py` | the broker passes the 2-byte retained config, the 18-byte telemetry, the empty `config/get` and the 1-byte e-stop through unchanged, and keeps the retained table across a restart |
+| `python web/test_server.py` | the broker passes the 3-byte retained config, the 18-byte telemetry, the empty `config/get` and the 1-byte e-stop through unchanged, and keeps the retained table across a restart |
 | Dashboard in a browser | a fake car published packed frames and the page showed every value correctly (speed, pitch, heading, range / no echo, distance, hump, line bits, barcode, fault names) plus every event kind. Clicking EMERGENCY STOP delivered `0x42`. |
 | Build | no warnings from the project files with `-Wall -Wextra` |
 | Timing | instructions executed (emulator count): `proto_pack_telem` 3 116, `proto_pack_event` 302-891, `proto_unpack_cmd` 17. At 125 MHz that is about 50 us per 100 ms telemetry period (< 0.1 % CPU) in the lowest-priority task, and under 8 us for an event in the caller's task. |

@@ -12,7 +12,7 @@
  *  telemetry             car->web   18     proto_telem_t, 10 Hz
  *  event                 car->web   1..4   4-bit kind + per-kind fields
  *  heartbeat             car->web   1      8-bit sequence, 1 Hz
- *  config/barcode        web->car   2      letter A-D per action (retained)
+ *  config/barcode        web->car   3      letter A-Z per action (retained)
  *  config/get            car->web   0      request for the table
  *  config/ack            car->web   1      table now in use
  *  cmd                   web->car   1      5-bit tag + 3-bit command
@@ -26,7 +26,7 @@
 /* Payload lengths in bytes. */
 #define PROTO_TELEM_LEN       (18U)
 #define PROTO_EVENT_MAX_LEN   (4U)
-#define PROTO_CONFIG_LEN      (2U)
+#define PROTO_CONFIG_LEN      (3U)
 #define PROTO_CFG_ACK_LEN     (1U)
 #define PROTO_HB_LEN          (1U)
 #define PROTO_CMD_LEN         (1U)
@@ -38,22 +38,21 @@
 #define PROTO_ACT_RIGHT       (2U)
 #define PROTO_ACT_UTURN       (3U)
 
-/* Barcode letters carried by the protocol: A..D (Tribunal 1). */
-#define PROTO_LETTER_COUNT    (4U)
+/* Letters a CONFIG table can hold: A..Z. Only the 4 letters in the
+ * table are passed on inside the car, as a 2-bit slot (Tribunal 1
+ * layout), see docs/mqtt_protocol.md. */
+#define PROTO_LETTER_COUNT    (26U)
 #define PROTO_ACTION_COUNT    (4U)
 
-/* CONFIG word, one entry per action n = PROTO_ACT_*: bit n set when that
- * action has a letter, bits 4+2n..5+2n its letter - 'A' (0..3). No two
- * actions may share a letter. Bit 12 must be set: it marks this format,
- * so a table in the old letter -> action format (bit 12 clear) left
- * retained on the broker is rejected instead of being misread. Bits
- * 13..15 reserved and must be zero. */
-#define PROTO_CFG_VALID_MASK  (0x000FU)
+/* CONFIG word (24 bits, 3 bytes), one entry per action n = PROTO_ACT_*:
+ * bit n set when that action has a letter, bits 4+5n..8+5n its letter -
+ * 'A' (0..25; 26..31 are rejected). No two actions may share a letter.
+ * The old 2-byte layouts fail the length check. */
+#define PROTO_CFG_VALID_MASK  (0x00000FU)
 #define PROTO_CFG_LETTER_SHIFT (4U)
-#define PROTO_CFG_LETTER_BITS (2U)
-#define PROTO_CFG_LETTER_MASK (0x3U)
-#define PROTO_CFG_TABLE_MASK  (0x0FFFU)
-#define PROTO_CFG_FORMAT_BIT  (0x1000U)
+#define PROTO_CFG_LETTER_BITS (5U)
+#define PROTO_CFG_LETTER_MASK (0x1FU)
+#define PROTO_CFG_TABLE_MASK  (0xFFFFFFU)
 
 /* Telemetry status bits (2 bits). */
 #define PROTO_ST_LATCHED      (1U << 0)   /* safety latch engaged          */
@@ -63,8 +62,14 @@
 #define PROTO_LINE_LEFT       (1U << 0)
 #define PROTO_LINE_RIGHT      (1U << 1)
 
-/* Telemetry barcode field: bits 0..1 letter - 'A', bit 2 valid. */
+/* Telemetry barcode field (Tribunal 1: 2-bit symbol + valid bit): bits
+ * 0..1 slot of the last barcode, bit 2 valid. The slot is the table entry
+ * whose letter was read, which is also its action (PROTO_ACT_*). */
 #define PROTO_BAR_VALID       (1U << 2)
+
+/* EV_BARCODE codes besides slot 0..3. */
+#define PROTO_BAR_EV_UNKNOWN     (0xFEU)   /* letter read, not in the table */
+#define PROTO_BAR_EV_UNREADABLE  (0xFFU)   /* no valid Code 39 symbol       */
 
 /* Front range value meaning "no valid echo". */
 #define PROTO_RANGE_NO_ECHO   (511U)
@@ -87,8 +92,8 @@ typedef enum
 typedef enum
 {
     EV_STATE = 1,    /* code = new nav state                              */
-    EV_BARCODE,      /* code = letter ('?' unreadable),
-                        value1 = action (-1 unset), value2 = edge count   */
+    EV_BARCODE,      /* code = slot 0..3 (= action), PROTO_BAR_EV_UNKNOWN
+                        or PROTO_BAR_EV_UNREADABLE; value2 = edge count  */
     EV_HUMP,         /* value1 = height x0.1 mm                           */
     EV_OBSTACLE,     /* code = bearing deg, value1 = range x0.1 cm,
                         value2 = width x0.1 cm                            */
@@ -135,11 +140,11 @@ typedef struct
 uint32_t proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame);
 uint32_t proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
                            int16_t value2, uint8_t * p_frame);
-uint8_t  proto_pack_cfg_ack (uint16_t table, bool b_from_mqtt);
+uint8_t  proto_pack_cfg_ack (uint32_t table, bool b_from_mqtt);
 bool     proto_unpack_cmd (uint8_t const * p_frame, uint32_t len,
                            proto_cmd_t * p_cmd);
 bool     proto_unpack_config (uint8_t const * p_frame, uint32_t len,
-                              uint16_t * p_table);
+                              uint32_t * p_table);
 
 #endif /* PROTO_H */
 

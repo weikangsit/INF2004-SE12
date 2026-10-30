@@ -10,11 +10,11 @@ and no hardware headers (see `port.h`).
 |---|---|---|---|---|
 | `comms` | Buddy 1 | CYW43 hook (template task) | publish queue, link + radio liveness, remote commands, e-stop to Safety | telemetry frames |
 | `telemetry` | Buddy 1 | Telemetry, prio 8 | events (`telemetry_post_event`), 10 Hz frame | shared record, fault mask |
-| `proto`, `barcode_map` | Buddy 1 | library | packed MQTT payloads, letter (A-D) per action table | - |
+| `proto`, `barcode_map` | Buddy 1 | library | packed MQTT payloads, letter (A-Z) per action table | - |
 | `motion_control` | Buddy 2 | Motion, prio 3 | `motion_cmd_q`, `motion_done_q` (seq + result), speed/duty/distance | line reading, IMU heading, safety latch |
 | `motor_driver` | Buddy 2 | SDK side | motor PWM, encoders, Safety motor-inhibit latch | GPIO ISR |
 | `sensor_line` | Buddy 3 | Line / Barcode, prio 2 | newest 2-bit line reading (stamped), line events, black age | - |
-| `barcode`, `code39` | Buddy 3 | in the Line task / library | decoded letters A-D (`bar_cmd_q`) | barcode edges (GPIO ISR) |
+| `barcode`, `code39` | Buddy 3 | in the Line task / library | table slot (0..3) of the decoded A-Z letter (`bar_cmd_q`) | barcode edges (GPIO ISR) |
 | `imu_terrain` | Buddy 4 | IMU, prio 5 | attitude, heading, hump, class, valid / calibrated / stamp; hump events; collision / over-tilt to Safety | distance and speeds |
 | `ultrasonic_scan`, `obstacle_profile` | Buddy 5 | Ultrasonic, prio 6 / library | front range, NEAR, route suggestion (never drives) | scan requests |
 | `nav_fsm` | team | Nav, prio 4 | system state, all movement commands | every module above |

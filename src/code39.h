@@ -1,5 +1,5 @@
 /** @file    code39.h
- *  @brief   Code 39 decoder for one '*X*' symbol, X in A..D (Buddy 3).
+ *  @brief   Code 39 decoder for one '*X*' symbol, X in A..Z (Buddy 3).
  *
  *  Pure C with no kernel or SDK calls, so web/test_proto.py runs it in a
  *  Cortex-M0+ emulator with synthetic edge times.

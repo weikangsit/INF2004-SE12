@@ -36,10 +36,10 @@
 
   <section class="panel" aria-labelledby="h-cfg">
     <h2 id="h-cfg">Barcode actions</h2>
-    <p class="hint">Enter the barcode letter (A&ndash;D) that triggers each action. Each letter can trigger only
+    <p class="hint">Enter the barcode letter (A&ndash;Z) that triggers each action. Each letter can trigger only
       one action; picking a letter that is already used moves it. A barcode whose letter no action has is
       logged and the car keeps following the line. Until a table arrives the car uses its built-in one
-      (left A, right B, straight C, U-turn D). The table is sent as a 2-byte retained frame, so the car
+      (left A, right B, straight C, U-turn D). The table is sent as a 3-byte retained frame, so the car
       also receives it when it reconnects.</p>
     <div class="row">
       <button id="default-btn" type="button">Built-in letters</button>
