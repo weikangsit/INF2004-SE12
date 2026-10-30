@@ -16,6 +16,8 @@
  *  config/get            car->web   0      request for the table
  *  config/ack            car->web   1      table now in use
  *  cmd                   web->car   1      5-bit tag + 3-bit command
+ *  debug/barcode         car->web   3..16  one barcode capture, in frames
+ *                                          of up to 10 element widths
  */
 #ifndef PROTO_H
 #define PROTO_H
@@ -70,6 +72,13 @@
 /* EV_BARCODE codes besides slot 0..3. */
 #define PROTO_BAR_EV_UNKNOWN     (0xFEU)   /* letter read, not in the table */
 #define PROTO_BAR_EV_UNREADABLE  (0xFFU)   /* no valid Code 39 symbol       */
+
+/* debug/barcode frame: element widths of one capture in 100 us units,
+ * PROTO_BARDBG_WIDTHS per frame (one Code 39 character + its gap). */
+#define PROTO_BARDBG_WIDTHS   (10U)
+#define PROTO_BARDBG_MAX_LEN  (16U)    /* 17 header bits + 10 x 11 bits */
+#define PROTO_BARDBG_UNIT_US  (100U)
+#define PROTO_BARDBG_SEQ_MASK (0x7U)
 
 /* Front range value meaning "no valid echo". */
 #define PROTO_RANGE_NO_ECHO   (511U)
@@ -137,7 +146,21 @@ typedef struct
     uint16_t uptime_ticks;   /* 100 ms ticks,          16 bits            */
 } proto_telem_t;
 
+/** One debug/barcode frame, before packing (widths clamp to 11 bits). */
+typedef struct
+{
+    uint8_t  seq;            /* capture number, 3 bits, wraps             */
+    uint8_t  chunk;          /* frame of this capture, 0..6, 3 bits       */
+    bool     b_last;         /* last frame of the capture, 1 bit          */
+    bool     b_letter;       /* a letter was decoded, 1 bit               */
+    uint8_t  letter;         /* letter - 'A', 0..25, 5 bits               */
+    uint8_t  count;          /* widths in this frame, 0..10, 4 bits       */
+    uint16_t widths[PROTO_BARDBG_WIDTHS];  /* 100 us units, 11 bits each  */
+} proto_bar_debug_t;
+
 uint32_t proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame);
+uint32_t proto_pack_bar_debug (proto_bar_debug_t const * p_dbg,
+                               uint8_t * p_frame);
 uint32_t proto_pack_event (proto_event_t kind, uint8_t code, int16_t value1,
                            int16_t value2, uint8_t * p_frame);
 uint8_t  proto_pack_cfg_ack (uint32_t table, bool b_from_mqtt);

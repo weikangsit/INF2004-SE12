@@ -11,7 +11,6 @@
  */
 #include <string.h>
 #include <tk/tkernel.h>
-#include <tm/tmonitor.h>
 
 #include "port.h"
 
@@ -28,8 +27,6 @@
 #define QUEUE_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + 1 byte, rounded */
 #define LETTER_FIRST         ('A')
-#define CHAR_STRIDE          (10U)     /* 9 elements + inter-char gap     */
-#define NO_LETTER            ('-')
 
 typedef enum
 {
@@ -42,15 +39,11 @@ static bar_state_t g_state    = BAR_WAIT;              /* task only        */
 static uint32_t    g_edges[BAR_EDGE_BUF_LEN];          /* task only        */
 static uint32_t    g_n_edges  = 0U;                    /* task only        */
 
+static uint8_t     g_dbg_seq  = 0U;                    /* task only        */
+
 static void edges_collect (void);
 static void capture_finish (void);
-static void capture_log (void);
-
-/* Action names by wire code (PROTO_ACT_*), for the console log. */
-static char const * const g_action_names[PROTO_ACTION_COUNT] =
-{
-    "straight", "left", "right", "U-turn"
-};
+static void capture_send (uint8_t letter);
 
 /*!
  * @brief  Create the letter queue. Call from usermain() before the tasks
@@ -148,7 +141,7 @@ capture_finish (void)
 
     if (0 != BAR_LOG)
     {
-        capture_log();
+        capture_send(letter);
     }
 
     if (CODE39_NONE != letter)
@@ -167,22 +160,15 @@ capture_finish (void)
             (void) tk_snd_mbf(g_slot_q, &slot, (INT) sizeof(slot), TMO_POL);
             vehicle_state_set_barcode((uint8_t) (VEHICLE_BAR_VALID | slot));
             telemetry_post_event(EV_BARCODE, slot, 0, edges);
-            tm_printf((UB *) "barcode: read %c -> %s\n", (int) code,
-                      g_action_names[slot]);
         }
         else
         {
-            /* Only the slot goes over MQTT; the letter is logged here. */
-            tm_printf((UB *) "barcode: read %c, not in the table\n",
-                      (int) code);
-            barcode_log_table("in use");
+            /* The letter itself goes out on debug/barcode (BAR_LOG). */
             telemetry_post_event(EV_BARCODE, PROTO_BAR_EV_UNKNOWN, 0, edges);
         }
     }
     else
     {
-        tm_printf((UB *) "barcode: unreadable (%d edges; a full '*X*' "
-                  "symbol has %d)\n", (int) edges, (int) BAR_EDGES_FULL);
         telemetry_post_event(EV_BARCODE, PROTO_BAR_EV_UNREADABLE, 0, edges);
     }
 
@@ -191,64 +177,54 @@ capture_finish (void)
 }
 
 /*!
- * @brief  Print the barcode table on the USB console.
- * @param  p_why  Short note printed with it (e.g. "received").
- */
-void
-barcode_log_table (char const * p_why)
-{
-    uint32_t const table = barcode_map_table();
-    char           letters[PROTO_ACTION_COUNT];
-    uint32_t       action = 0U;
-
-    for (action = 0U; action < PROTO_ACTION_COUNT; action++)
-    {
-        uint32_t const code = (table >> (PROTO_CFG_LETTER_SHIFT +
-                                         (PROTO_CFG_LETTER_BITS * action))) &
-                              PROTO_CFG_LETTER_MASK;
-
-        /* A valid entry holds 0..25, so 'A' + code is a letter. */
-        letters[action] = (0U != (table & (1U << action))) ?
-                          (char) ((uint32_t) LETTER_FIRST + code) : NO_LETTER;
-    }
-
-    tm_printf((UB *) "barcode table %s (%s): straight %c, left %c, "
-              "right %c, U-turn %c\n", p_why,
-              barcode_map_is_loaded() ? "from web" : "built-in",
-              (int) letters[PROTO_ACT_STRAIGHT], (int) letters[PROTO_ACT_LEFT],
-              (int) letters[PROTO_ACT_RIGHT], (int) letters[PROTO_ACT_UTURN]);
-}
-
-/*!
- * @brief  Print the captured element widths on the USB console, one line
- *         per Code 39 character (9 elements, then the inter-character
- *         gap). In a clean read each line has 3 wide values, clearly
- *         (1.5x or more) above its 6 narrow ones.
+ * @brief  Send the captured element widths and the decoded letter to the
+ *         web app (BAR_LOG), PROTO_BARDBG_WIDTHS widths per frame: with a
+ *         full capture, one frame per Code 39 character (9 elements, then
+ *         the inter-character gap).
+ * @param  letter  Decoded letter 0..25, or CODE39_NONE.
  */
 static void
-capture_log (void)
+capture_send (uint8_t letter)
 {
-    uint32_t idx = 0U;
+    proto_bar_debug_t dbg;
+    uint8_t           frame[PROTO_BARDBG_MAX_LEN];
+    uint32_t const    n_widths = (g_n_edges > 0U) ? (g_n_edges - 1U) : 0U;
+    uint32_t          done     = 0U;
 
-    tm_printf((UB *) "barcode: %d edges, element widths (us):",
-              (int) g_n_edges);
+    (void) memset(&dbg, 0, sizeof(dbg));
+    dbg.seq      = g_dbg_seq;
+    dbg.b_letter = (CODE39_NONE != letter);
+    dbg.letter   = dbg.b_letter ? letter : 0U;
 
-    for (idx = 1U; idx < g_n_edges; idx++)
+    do
     {
-        uint32_t const width = (g_edges[idx] & ~LEVEL_BIT) -
-                               (g_edges[idx - 1U] & ~LEVEL_BIT);
+        uint32_t idx = 0U;
 
-        /* Element idx-1 starts a character every CHAR_STRIDE elements. */
-        if (1U == (idx % CHAR_STRIDE))
+        dbg.count = 0U;
+
+        for (idx = 0U; (idx < PROTO_BARDBG_WIDTHS) && (done < n_widths);
+             idx++)
         {
-            tm_printf((UB *) "\n ");
+            uint32_t const width_us = (g_edges[done + 1U] & ~LEVEL_BIT) -
+                                      (g_edges[done] & ~LEVEL_BIT);
+
+            /* An element is shorter than BAR_IDLE_TIMEOUT_US plus one
+             * period (~155 ms = 1550 units), so it fits a uint16_t. */
+            dbg.widths[idx] = (uint16_t) ((width_us +
+                                           (PROTO_BARDBG_UNIT_US / 2U)) /
+                                          PROTO_BARDBG_UNIT_US);
+            dbg.count++;
+            done++;
         }
 
-        /* Widths are below BAR_IDLE_TIMEOUT_US (150 ms), so they fit. */
-        tm_printf((UB *) " %d", (int) width);
-    }
+        dbg.b_last = (done >= n_widths);
+        telemetry_post_debug(frame, proto_pack_bar_debug(&dbg, frame));
+        dbg.chunk++;
+    } while (!dbg.b_last);
 
-    tm_printf((UB *) "\n");
+    /* Masked to 3 bits, so it fits a uint8_t. */
+    g_dbg_seq = (uint8_t) (((uint32_t) g_dbg_seq + 1U) &
+                           PROTO_BARDBG_SEQ_MASK);
 }
 
 /*** end of file ***/

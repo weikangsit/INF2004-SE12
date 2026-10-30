@@ -198,6 +198,37 @@
     }
   }
 
+  // debug/barcode: seq 3, chunk 3, last 1, letter valid 1, letter 5, count 4, then count x 11-bit widths
+  const BARDBG_HEADER = [["seq", 3, 0], ["chunk", 3, 0], ["last", 1, 0], ["hasLetter", 1, 0],
+                         ["letter", 5, 0], ["count", 4, 0]];
+  const BARDBG_UNIT_MS = 0.1;
+
+  /** One debug/barcode frame -> { seq, chunk, last, letter|null, widths (ms) }, or null. */
+  function decodeBarDebug(u8) {
+    if (u8.length < 3) return null;
+    const h = unpack(u8, 0, BARDBG_HEADER);
+    if (h.count > 10 || h.letter >= LETTERS.length || u8.length !== Math.ceil((17 + 11 * h.count) / 8)) return null;
+    const widths = [];
+    for (let n = 0; n < h.count; n++) widths.push(getBits(u8, 17 + 11 * n, 11, 0) * BARDBG_UNIT_MS);
+    return { seq: h.seq, chunk: h.chunk, last: !!h.last, letter: h.hasLetter ? LETTERS[h.letter] : null, widths };
+  }
+
+  /** Text rows for one capture: one per frame (Code 39 character), the 3 widest
+   *  elements in [brackets] and the ratio the decoder checks (narrowest wide /
+   *  widest narrow, must be >= 1.5). */
+  function barDebugRows(frames) {
+    return frames.map((f, n) => {
+      const el = f.widths.slice(0, 9);
+      const wide = el.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0]).slice(0, 3).map((p) => p[1]);
+      const wides = el.filter((_, i) => wide.includes(i)), narrows = el.filter((_, i) => !wide.includes(i));
+      const ratio = el.length === 9 ? Math.min(...wides) / Math.max(...narrows) : null;
+      const cells = el.map((w, i) => (wide.includes(i) ? "[" + w.toFixed(1) + "]" : w.toFixed(1)));
+      return "char " + (n + 1) + ": " + cells.join(" ") +
+        (f.widths.length > 9 ? "  gap " + f.widths[9].toFixed(1) : "") +
+        (ratio === null ? "  (incomplete)" : "  ratio " + ratio.toFixed(2));
+    });
+  }
+
   function decodeEvent(u8, table) {
     if (u8.length < 1) return null;
     const kind = getBits(u8, 0, EVENT_KIND_BITS, 0);
@@ -230,6 +261,7 @@
 
   const api = { TELEM_LAYOUT, EVENT_LAYOUT, ACTIONS, STATES, FAULTS, LETTERS, CMDS, DEFAULT_TABLE,
                 getBits, encodeConfig, decodeConfig, actionFor, configMask, decodeTelem, decodeEvent,
+                decodeBarDebug, barDebugRows,
                 decodeAck, decodeHb, encodeCmd, bits };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Proto = api;

@@ -13,7 +13,6 @@
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 
-#include "barcode.h"
 #include "barcode_map.h"
 #include "car_config.h"
 #include "comms.h"
@@ -77,7 +76,6 @@ usermain (void)
     /* No Comms task: MQTT runs inside the template's CYW43 task. */
 
     tm_printf((UB *) "car: all tasks started\n");
-    barcode_log_table("at boot");
 
     /* usermain may sleep for ever; the tasks run on. */
     (void) tk_slp_tsk(TMO_FEVR);

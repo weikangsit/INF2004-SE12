@@ -480,6 +480,26 @@ def test_bitpack(cpu):
                   "neighbouring bits untouched)")
 
 
+def test_bar_debug(cpu):
+    """proto_pack_bar_debug against the reference packer, including counts
+    above 10 and widths above 11 bits (clamped)."""
+    start = len(failures)
+    rnd = random.Random(21)
+    cases = [(0, 0, False, None, 0, [0] * 10), (7, 6, True, 25, 10, [2047] * 10),
+             (3, 2, True, 0, 0, [0] * 10), (5, 1, False, 12, 12, [3000] * 10)]
+    cases += [(rnd.randrange(8), rnd.randrange(7), rnd.random() < 0.5,
+               rnd.choice([None] + list(range(26))), rnd.randrange(11),
+               [rnd.randrange(2600) for _ in range(10)]) for _ in range(200)]
+    for seq, chunk, last, letter, count, widths in cases:
+        cpu.write(RAM, struct.pack("<BBBBBB10H", seq, chunk, int(last), int(letter is not None),
+                                   letter or 0, count, *widths))
+        n = cpu.call("proto_pack_bar_debug", RAM, RAM + 0x100)
+        got = cpu.read(RAM + 0x100, n)
+        want = ref.encode_bar_debug(seq, chunk, last, letter, widths[:min(count, 10)])
+        check(got == want, f"bar debug {seq}/{chunk}/{count}: {got.hex()} != {want.hex()}")
+    report(start, f"proto_pack_bar_debug: {len(cases)} frames (limits, clamping, random)")
+
+
 def test_barcode_map(cpu):
     """barcode_map_get: which action a letter triggers, for the built-in
     table and for tables built by the reference encoder."""
@@ -521,6 +541,7 @@ def main():
             test_code39(cpu)
             test_obstacle(cpu)
             test_barcode_map(cpu)
+            test_bar_debug(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

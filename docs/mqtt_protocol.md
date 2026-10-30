@@ -27,6 +27,7 @@ Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 | `config/get` | car -> web | 0 | 0 / no | every 5 s until a table arrives |
 | `config/ack` | car -> web | 1 | 0 / no | after each table |
 | `cmd` | web -> car | 1 | car subscribes QoS 1 | on demand |
+| `debug/barcode` | car -> web | 3-16 | 0 / no | each barcode capture while `BAR_LOG` is 1 |
 
 ## telemetry (18 bytes = 144 bits)
 
@@ -134,6 +135,29 @@ The car starts with a built-in table (Week 6 FR2: left A, right B,
 straight C, U-turn D = frame `2f 40 18`), so it can run without WiFi. A
 received table replaces it completely. The car asks for one on
 `config/get` (empty payload) every 5 s until a table arrives.
+
+## debug/barcode (3-16 bytes, while BAR_LOG = 1)
+
+One barcode capture, for checking the reader: its element widths and the
+decoded letter, which the 2-bit slot elsewhere does not carry. A capture
+of n edges has n - 1 widths, sent 10 per frame, so a full `*X*` symbol
+(30 edges) takes 3 frames, one per Code 39 character (9 elements, then
+the inter-character gap).
+
+| Bits | Field | Width | Meaning |
+|---|---|---|---|
+| 0-2 | seq | 3 | capture number (wraps); groups the frames |
+| 3-5 | chunk | 3 | frame number within the capture, 0..6 |
+| 6 | last | 1 | last frame of the capture |
+| 7 | letter valid | 1 | a letter was decoded |
+| 8-12 | letter | 5 | letter - 'A' (0..25) |
+| 13-16 | count | 4 | widths in this frame, 0..10 |
+| 17- | widths | 11 each | element width in 100 us units (max 204.7 ms) |
+
+Frame length is ceil((17 + 11 x count) / 8) bytes. The web app shows each
+capture as one log entry with a row per character, the 3 widest elements
+in brackets and the ratio the decoder needs (>= 1.5). Set `BAR_LOG` to 0 in
+`car_config.h` to stop sending them.
 
 ## config/ack (1 byte)
 

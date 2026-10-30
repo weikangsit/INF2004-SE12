@@ -52,6 +52,7 @@ canvas { width: 100%; height: 110px; display: block; }
        font-family: ui-monospace, Consolas, monospace; font-size: .85rem; }
 .log li { padding: 3px 0; border-bottom: 1px solid var(--line); }
 .log li.fault { color: var(--bad); font-weight: 600; }
+.log li.dbg { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
 .card b.bad { color: var(--bad); } .card b.warn { color: var(--warn); }
 .log time { color: var(--muted); margin-right: 8px; }
 

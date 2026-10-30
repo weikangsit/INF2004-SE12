@@ -121,9 +121,9 @@
   }
 
   // ------------------------------------------------------------------ events
-  function logEvent(text, fault = false) {
+  function logEvent(text, fault = false, cls = "") {
     const li = document.createElement("li");
-    if (fault) li.className = "fault";
+    if (fault) li.className = "fault"; else if (cls) li.className = cls;
     const tm = document.createElement("time");
     tm.textContent = new Date().toLocaleTimeString();
     li.append(tm, document.createTextNode(text));        // textContent only: no HTML injection
@@ -152,6 +152,25 @@
     if (!badFrames.has(sub)) { badFrames.add(sub); logEvent(msg, true); }
   }
 
+  // ------------------------------------------------------------------ barcode debug log
+  const barDbg = new Map();   // seq -> frames received so far
+  function barDebug(f) {
+    const frames = barDbg.get(f.seq) || [];
+    if (f.chunk === 0) frames.length = 0;              // a new capture with a reused seq
+    frames[f.chunk] = f;
+    barDbg.set(f.seq, frames);
+    if (!f.last) return;
+    barDbg.delete(f.seq);
+    const got = frames.filter(Boolean);
+    const edges = got.reduce((n, x) => n + x.widths.length, 0) + 1;
+    const slot = f.letter == null ? null : P.actionFor(carTable, f.letter);
+    const head = "barcode read: " + edges + " edges (a full *X* symbol has 30), " +
+      (f.letter == null ? "no letter decoded" :
+       "letter " + f.letter + (slot == null ? " (not in the table)" : " -> " + P.ACTIONS[slot])) +
+      (got.length !== frames.length ? ", some frames lost" : "");
+    logEvent([head, "element widths (ms):"].concat(P.barDebugRows(got)).join("\n"), false, "dbg");
+  }
+
   mqtt.onmessage = (topic, u8, retained) => {
     const sub = topic.slice(ROOT.length + 1);
     if (sub === "telemetry") {
@@ -160,6 +179,9 @@
     } else if (sub === "event") {
       const e = P.decodeEvent(u8, carTable);
       if (e) logEvent(e.text, e.fault); else badFrame(sub, u8, "1-4");
+    } else if (sub === "debug/barcode") {
+      const f = P.decodeBarDebug(u8);
+      if (f) barDebug(f); else badFrame(sub, u8, "3-16");
     } else if (sub === "heartbeat") {
       if (P.decodeHb(u8) !== null) lastHb = Date.now(); else badFrame(sub, u8, 1);
     } else if (sub === "config/barcode") {

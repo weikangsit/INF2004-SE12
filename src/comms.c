@@ -38,7 +38,6 @@
 
 #include "port.h"
 
-#include "barcode.h"
 #include "barcode_map.h"
 #include "car_config.h"
 #include "comms.h"
@@ -131,7 +130,8 @@ typedef struct
 static char const * const g_pub_topics[COMMS_TOPIC_COUNT] =
 {
     MQTT_TOPIC_ROOT "/telemetry",
-    MQTT_TOPIC_ROOT "/event"
+    MQTT_TOPIC_ROOT "/event",
+    MQTT_TOPIC_ROOT "/debug/barcode"
 };
 
 static ID                       g_pub_q         = 0;
@@ -222,7 +222,7 @@ comms_publish (comms_topic_t topic, uint8_t const * p_data, uint32_t len)
         /* len <= PROTO_MSG_MAX_LEN, so msg_len fits an INT. */
         INT const msg_len = (INT) (PUB_HEADER_LEN + len);
 
-        msg[0] = (uint8_t) topic;                 /* 0 or 1                */
+        msg[0] = (uint8_t) topic;                 /* 0..2                  */
         (void) memcpy(&msg[PUB_HEADER_LEN], p_data, len);
 
         if (E_OK == tk_snd_mbf(g_pub_q, msg, msg_len, TMO_POL))
@@ -594,7 +594,7 @@ queue_drain (void)
             uint32_t const data_len = (uint32_t) g_pending_len -
                                       PUB_HEADER_LEN;  /* widen, then >= 1 */
 
-            /* COMMS_TOPIC_COUNT is 2, so the cast keeps its value. */
+            /* COMMS_TOPIC_COUNT is 3, so the cast keeps its value. */
             if ((topic >= (uint32_t) COMMS_TOPIC_COUNT) ||
                 frame_publish(g_pub_topics[topic], &g_pending[PUB_HEADER_LEN],
                               data_len))
@@ -730,7 +730,8 @@ rx_handle_config (void)
     {
         barcode_map_apply(table);
         g_link.b_cfg_ack_due = true;
-        barcode_log_table("received");
+        tm_printf((UB *) "mqtt: barcode table received (0x%x)\n",
+                  (int) table);
     }
 }
 

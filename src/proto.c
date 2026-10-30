@@ -31,6 +31,7 @@
 #define TENTHS_PER_HALF      (5)       /* x0.1 mm -> 0.5 mm steps        */
 #define HHMM_SPLIT           (100)     /* HHMM -> hours, minutes         */
 #define COUNTS_PER_UNIT      (4)       /* motor-test counts sent / 4     */
+#define BARDBG_HEADER_COUNT  (6U)
 
 /** Fields of one EVENT kind (after the 4-bit kind). */
 typedef struct
@@ -87,6 +88,15 @@ static bitpack_field_t const g_barcode_layout[BARCODE_FIELD_COUNT] =
     { 2U, false }, { 1U, false }, { 1U, false }, { 6U, false }
 };
 
+/** debug/barcode header: seq, chunk, last, letter valid, letter, count;
+ *  then count widths of 11 bits each. */
+static bitpack_field_t const g_bardbg_header[BARDBG_HEADER_COUNT] =
+{
+    { 3U, false }, { 3U, false }, { 1U, false }, { 1U, false },
+    { 5U, false }, { 4U, false }
+};
+static bitpack_field_t const g_bardbg_width = { 11U, false };
+
 static uint32_t event_values (proto_event_t kind, uint8_t code,
                               int16_t value1, int16_t value2,
                               int32_t * p_values);
@@ -116,6 +126,40 @@ proto_pack_telem (proto_telem_t const * p_telem, uint8_t * p_frame)
                             TELEM_FIELD_COUNT);
 
     return (PROTO_TELEM_LEN);
+}
+
+/*!
+ * @brief  Pack one debug/barcode frame (see proto_bar_debug_t).
+ * @param  p_dbg    Frame contents; count above PROTO_BARDBG_WIDTHS is cut
+ *                  to it, and every value is clamped to its field width.
+ * @param  p_frame  Output, at least PROTO_BARDBG_MAX_LEN bytes.
+ * @return Number of bytes written (3..PROTO_BARDBG_MAX_LEN).
+ */
+uint32_t
+proto_pack_bar_debug (proto_bar_debug_t const * p_dbg, uint8_t * p_frame)
+{
+    uint32_t const count = (p_dbg->count < PROTO_BARDBG_WIDTHS) ?
+                           (uint32_t) p_dbg->count : PROTO_BARDBG_WIDTHS;
+    /* count <= 10, so it fits an int32_t. */
+    int32_t const  values[BARDBG_HEADER_COUNT] =
+    {
+        p_dbg->seq, p_dbg->chunk, p_dbg->b_last ? 1 : 0,
+        p_dbg->b_letter ? 1 : 0, p_dbg->letter, (int32_t) count
+    };
+    uint32_t       pos = 0U;
+    uint32_t       idx = 0U;
+
+    (void) memset(p_frame, 0, PROTO_BARDBG_MAX_LEN);
+    pos = bitpack_put_list(p_frame, 0U, values, g_bardbg_header,
+                           BARDBG_HEADER_COUNT);
+
+    for (idx = 0U; idx < count; idx++)
+    {
+        pos = bitpack_put(p_frame, pos, (int32_t) p_dbg->widths[idx],
+                          &g_bardbg_width);
+    }
+
+    return ((pos + BITS_PER_BYTE - 1U) / BITS_PER_BYTE);
 }
 
 /*!

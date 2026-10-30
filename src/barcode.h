@@ -18,7 +18,6 @@
 void barcode_init (void);
 void barcode_poll (void);
 bool barcode_take (uint8_t * p_slot);
-void barcode_log_table (char const * p_why);
 
 #endif /* BARCODE_H */
 

@@ -12,11 +12,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Topics other tasks may publish on (1 bit). */
+/** Topics other tasks may publish on (2 bits). */
 typedef enum
 {
     COMMS_TOPIC_TELEMETRY = 0,
     COMMS_TOPIC_EVENT,
+    COMMS_TOPIC_BAR_DEBUG,
     COMMS_TOPIC_COUNT
 } comms_topic_t;
 

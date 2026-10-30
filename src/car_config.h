@@ -185,9 +185,9 @@
 /* Narrowest wide element / widest narrow element, x10. Code 39 uses
  * 2:1 to 3:1; a ratio under 1.5 is not a clean read (Tribunal 1).      */
 #define BAR_MIN_WIDE_RATIO_X10 (15U)
-/* 1: print every barcode capture on the USB console (element widths in
- * us, 9 per character + the gap, and the result), for checking the
- * reader. 0 for normal runs: printing takes a few ms of the Line task.  */
+/* 1: send every barcode capture to the web app (topic debug/barcode:
+ * element widths and the decoded letter), for checking the reader.
+ * 0 for normal runs.                                                   */
 #define BAR_LOG              (1)
 #define CAL_WINDOW_MS        (5000U)
 /* Two straddling sensors cannot tell "centred" from "lost": the line

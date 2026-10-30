@@ -16,6 +16,7 @@ void telemetry_init (void);
 void telemetry_task (INT stacd, void * p_exinf);
 void telemetry_post_event (proto_event_t kind, uint8_t code, int16_t value1,
                            int16_t value2);
+void telemetry_post_debug (uint8_t const * p_frame, uint32_t len);
 
 #endif /* TELEMETRY_H */
 

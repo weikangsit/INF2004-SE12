@@ -129,5 +129,17 @@ def config_valid(word):
     return all(c < len(LETTERS) for c in letters) and len(letters) == len(set(letters))
 
 
+BARDBG_HEADER = [("seq", 3, 0), ("chunk", 3, 0), ("last", 1, 0), ("hasLetter", 1, 0),
+                 ("letter", 5, 0), ("count", 4, 0)]
+
+
+def encode_bar_debug(seq, chunk, last, letter, widths):
+    """One debug/barcode frame. letter: 0..25 or None; widths: 100 us units."""
+    count = min(len(widths), 10)
+    fields = BARDBG_HEADER + [("w", 11, 0)] * count
+    values = [seq, chunk, int(last), int(letter is not None), letter or 0, count] + list(widths[:count])
+    return bytes(pack(fields, values, (17 + 11 * count + 7) // 8))
+
+
 def encode_cmd(name):
     return bytes([CMD_TAG | CMDS[name]])

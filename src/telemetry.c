@@ -33,8 +33,11 @@
 #define FULL_CIRCLE_DEG      (360U)
 #define QUEUE_DEPTH          (16U)
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + up to 4 bytes  */
+#define DEBUG_DEPTH          (8U)      /* frames of ~2 barcode captures  */
+#define MBF_DEBUG_SLOT       (20U)     /* 4-byte header + up to 16 bytes */
 
 static ID g_telemetry_q = 0;
+static ID g_debug_q     = 0;
 
 static void    live_faults_refresh (uint16_t front_cm);
 static void    frame_fill (proto_telem_t * p_telem, uint16_t front_cm);
@@ -49,12 +52,19 @@ void
 telemetry_init (void)
 {
     T_CMBF create;
+    T_CMBF debug;
 
     (void) memset(&create, 0, sizeof(create));
     create.mbfatr  = TA_TFIFO;
     create.bufsz   = (SZ) (QUEUE_DEPTH * MBF_SLOT_BYTES);      /* 128 B   */
     create.maxmsz  = (INT) PROTO_EVENT_MAX_LEN;
     g_telemetry_q  = tk_cre_mbf(&create);
+
+    (void) memset(&debug, 0, sizeof(debug));
+    debug.mbfatr   = TA_TFIFO;
+    debug.bufsz    = (SZ) (DEBUG_DEPTH * MBF_DEBUG_SLOT);      /* 160 B   */
+    debug.maxmsz   = (INT) PROTO_BARDBG_MAX_LEN;
+    g_debug_q      = tk_cre_mbf(&debug);
 }
 
 /*!
@@ -98,6 +108,22 @@ telemetry_post_event (proto_event_t kind, uint8_t code, int16_t value1,
 }
 
 /*!
+ * @brief  Queue a debug/barcode frame. Safe to call from any task; a frame
+ *         that does not fit is dropped (debug data only).
+ * @param  p_frame  Packed frame (proto_pack_bar_debug()).
+ * @param  len      Frame length, 1..PROTO_BARDBG_MAX_LEN.
+ */
+void
+telemetry_post_debug (uint8_t const * p_frame, uint32_t len)
+{
+    if ((len > 0U) && (len <= PROTO_BARDBG_MAX_LEN))
+    {
+        /* len <= PROTO_BARDBG_MAX_LEN (16), so it fits an INT. */
+        (void) tk_snd_mbf(g_debug_q, p_frame, (INT) len, TMO_POL);
+    }
+}
+
+/*!
  * @brief  Telemetry Publisher task body (priority PRI_TELEM, 100 ms).
  * @param  stacd    Start code (unused).
  * @param  p_exinf  Extended information (unused).
@@ -113,6 +139,8 @@ telemetry_task (INT stacd, void * p_exinf)
     for (;;)
     {
         uint8_t        event[PROTO_EVENT_MAX_LEN];
+        uint8_t        debug[PROTO_BARDBG_MAX_LEN];
+        INT            debug_len = 0;
         uint8_t        frame[PROTO_TELEM_LEN];
         proto_telem_t  telem;
         uint16_t       front_cm  = US_RANGE_NO_ECHO;
@@ -129,6 +157,16 @@ telemetry_task (INT stacd, void * p_exinf)
             (void) comms_publish(COMMS_TOPIC_EVENT, event,
                                  (uint32_t) event_len);
             event_len = tk_rcv_mbf(g_telemetry_q, event, TMO_POL);
+        }
+
+        /* Step 1b: forward barcode debug frames (BAR_LOG). */
+        debug_len = tk_rcv_mbf(g_debug_q, debug, TMO_POL);
+        while (debug_len > 0)
+        {
+            /* debug_len is 1..PROTO_BARDBG_MAX_LEN here. */
+            (void) comms_publish(COMMS_TOPIC_BAR_DEBUG, debug,
+                                 (uint32_t) debug_len);
+            debug_len = tk_rcv_mbf(g_debug_q, debug, TMO_POL);
         }
 
         /* Step 2: refresh live faults, then publish one frame. */
