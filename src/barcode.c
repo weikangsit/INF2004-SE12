@@ -7,9 +7,10 @@
  *   1. Collect: raw edges pass through the glitch filter (bar_filter.c),
  *      which removes the chatter a slowly passing edge causes. A capture
  *      starts on a white-to-black edge.
- *   2. End: after BAR_EDGES_FULL clean edges once the level has been
- *      steady for BAR_GLITCH_US (so a trailing glitch cannot end it), or
- *      after BAR_IDLE_TIMEOUT_US without an edge.
+ *   2. End: once the barcode has fully passed the sensor -- the level
+ *      has been white and steady for BAR_QUIET_MS after at least
+ *      BAR_EDGES_MIN edges -- or after BAR_IDLE_TIMEOUT_US without an
+ *      edge (a partial read that never reached BAR_EDGES_MIN).
  *   3. Check: a read during which the ring overflowed lost edges and is
  *      rejected. Otherwise code39.c accepts only a complete '*X*' symbol
  *      with a clear wide / narrow ratio in every character. Bars are
@@ -194,8 +195,11 @@ edges_collect (void)
 
 /*!
  * @brief  Decide whether the capture is complete.
- * @return True after BAR_EDGES_FULL clean edges and BAR_GLITCH_US of
- *         steady level, or after BAR_IDLE_TIMEOUT_US without an edge.
+ * @return True once the sensor has been white (steady, no edge) for
+ *         BAR_QUIET_MS after at least BAR_EDGES_MIN edges -- the barcode
+ *         has fully passed the sensor. A lone stray capture that never
+ *         reaches BAR_EDGES_MIN still ends on the BAR_IDLE_TIMEOUT_US
+ *         backstop (and decodes as unreadable).
  */
 static bool
 capture_is_done (void)
@@ -204,12 +208,17 @@ capture_is_done (void)
 
     if (g_n_edges > 0U)
     {
+        uint32_t const last = g_edges[g_n_edges - 1U] & ~LEVEL_BIT;
         /* Edges were collected before this time was read, so the
          * difference is never negative. */
-        uint32_t const idle = port_time_us_32() -
-                              (g_edges[g_n_edges - 1U] & ~LEVEL_BIT);
+        uint32_t const idle = port_time_us_32() - last;
+        /* The quiet gap only counts once the sensor is back on WHITE:
+         * a long WIDE bar (level still black) must not end the read. */
+        bool const     b_white = (0U == (g_edges[g_n_edges - 1U] &
+                                         LEVEL_BIT));
 
-        b_done = ((g_n_edges >= BAR_EDGES_FULL) && (idle >= BAR_GLITCH_US)) ||
+        b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
+                  (idle >= (BAR_QUIET_MS * 1000U))) ||
                  (idle > BAR_IDLE_TIMEOUT_US);
     }
 

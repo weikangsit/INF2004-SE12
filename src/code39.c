@@ -71,6 +71,14 @@ static uint8_t char_decode (uint32_t const * p_widths, uint32_t ratio_x10);
 
 /*!
  * @brief  Decode one symbol from edge time stamps.
+ *
+ *  The capture may carry a stray leading or trailing edge (a chatter the
+ *  filter did not catch, or the barcode's own approach/exit), so the
+ *  '*X*' symbol is not guaranteed to start at edge 0. Every 30-edge
+ *  window is tried, forward then reversed, and the first that frames a
+ *  valid '*X*' wins. A window starting mid-symbol cannot pass the
+ *  start/stop '*' check, so a false positive is not possible.
+ *
  * @param  p_edges_us     Edge times in us; bit 0 holds the level and is
  *                        ignored for the widths.
  * @param  n_edges        Number of edges (at least CODE39_SYMBOL_EDGES).
@@ -81,24 +89,33 @@ uint8_t
 code39_decode (uint32_t const * p_edges_us, uint32_t n_edges,
                uint32_t min_ratio_x10)
 {
-    uint32_t widths[SYMBOL_ELEMENTS];
-    uint32_t reversed[SYMBOL_ELEMENTS];
-    uint32_t idx    = 0U;
     uint8_t  symbol = CODE39_NONE;
+    uint32_t start  = 0U;
 
     if (n_edges >= CODE39_SYMBOL_EDGES)
     {
-        for (idx = 0U; idx < SYMBOL_ELEMENTS; idx++)
-        {
-            widths[idx] = (p_edges_us[idx + 1U] & ~LEVEL_BIT) -
-                          (p_edges_us[idx] & ~LEVEL_BIT);
-            reversed[SYMBOL_ELEMENTS - 1U - idx] = widths[idx];
-        }
+        uint32_t const last_start = n_edges - CODE39_SYMBOL_EDGES;
 
-        symbol = symbol_decode(widths, min_ratio_x10);
-        if (CODE39_NONE == symbol)
+        for (start = 0U;
+             (start <= last_start) && (CODE39_NONE == symbol);
+             start++)
         {
-            symbol = symbol_decode(reversed, min_ratio_x10);
+            uint32_t widths[SYMBOL_ELEMENTS];
+            uint32_t reversed[SYMBOL_ELEMENTS];
+            uint32_t idx = 0U;
+
+            for (idx = 0U; idx < SYMBOL_ELEMENTS; idx++)
+            {
+                widths[idx] = (p_edges_us[start + idx + 1U] & ~LEVEL_BIT) -
+                              (p_edges_us[start + idx] & ~LEVEL_BIT);
+                reversed[SYMBOL_ELEMENTS - 1U - idx] = widths[idx];
+            }
+
+            symbol = symbol_decode(widths, min_ratio_x10);
+            if (CODE39_NONE == symbol)
+            {
+                symbol = symbol_decode(reversed, min_ratio_x10);
+            }
         }
     }
 

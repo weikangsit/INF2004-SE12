@@ -182,17 +182,34 @@
 /* Raw barcode edges are filtered in the task (bar_filter.c), not in the
  * interrupt: an element shorter than BAR_GLITCH_US is chatter from an
  * edge passing the sensor slowly (measured: reads failed unless the
- * barcode was swiped fast), and is removed. Must stay below the
- * narrowest bar at the fastest speed (45 cm/s stress test). TUNE.      */
-#define BAR_GLITCH_US        (1000U)
+ * barcode was swiped fast), and is removed. Must stay BELOW the narrowest
+ * genuine bar. Driving over the printed barcode at SPEED_STEER_CMS
+ * (8 cm/s = 80 mm/s), a ~2 mm narrow bar lasts ~25 ms, so 300 us is far
+ * below a real bar yet still kills LM393 chatter. Was 1000 us, which at
+ * this speed deleted genuine narrow bars whenever a line-following stutter
+ * briefly slowed the sensor, corrupting the width pattern (the dominant
+ * cause of intermittent reads). TUNE: raise toward the narrowest observed
+ * element width on debug/barcode if chatter still gets through.         */
+#define BAR_GLITCH_US        (300U)
 /* Interrupt ring for raw edges, sized for chatter bursts between two
  * 5 ms polls; a read that loses edges to a full ring is rejected.      */
 #define BAR_RING_LEN         (128U)
+/* Edges that must arrive before the quiet gap can end a read: a '*X*'
+ * symbol is 30 edges, so require most of them to reject a lone stray
+ * edge starting a bogus capture. The decoder still needs a full 30 to
+ * accept anything; this only gates WHEN the capture is cut off.        */
+#define BAR_EDGES_MIN        (24U)
 #define BAR_EDGES_FULL       (30U)     /* one '*X*' symbol = 30 edges   */
-/* A read ends after BAR_EDGES_FULL edges, or after this long without an
- * edge. Long enough for a wide bar at the 8 cm/s steering speed or a slow
- * hand swipe (was 150 ms, which cut such reads short). A full read still
- * ends at once on its 30th edge, so this does not delay a turn. TUNE.  */
+/* A read ends when the sensor has been white (steady, no new edge) for
+ * BAR_QUIET_MS after at least BAR_EDGES_MIN edges -- i.e. the barcode has
+ * fully passed the sensor. This replaces the old "exactly 30 clean edges"
+ * end condition, which failed whenever the glitch filter dropped or kept
+ * one edge (the capture then never ended cleanly and timed out or
+ * decoded a misaligned window). At 8 cm/s the widest bar/gap is well
+ * under 100 ms, so 300 ms of white reliably means the barcode is over.
+ * BAR_IDLE_TIMEOUT_US is the hard backstop if BAR_EDGES_MIN is never
+ * reached (a partial/garbage read). TUNE.                               */
+#define BAR_QUIET_MS         (300U)
 #define BAR_IDLE_TIMEOUT_US  (500000U)
 #define BAR_EDGE_BUF_LEN     (64U)     /* clean edges of one read       */
 /* Reads are decoded by the distance the sensor travelled (wheel encoders

@@ -50,6 +50,7 @@
 #define MBF_SLOT_BYTES       (8U)        /* 4-byte header + 1 byte       */
 #define MM_PER_CM            (10)
 #define NO_SEQ               (0U)
+#define NO_SLOT              (0xFFU)      /* pending_slot: no barcode held */
 #define DETAIL_SCAN_UNSAFE   (1)         /* FC_NO_ROUTE detail           */
 
 /** Obstacle bypass steps. */
@@ -100,6 +101,9 @@ typedef struct
     uint32_t        state_ms;
     bool            b_init_started;
     uint8_t         pending_seq;          /* awaited motion completion   */
+    uint8_t         pending_slot;         /* barcode action held for the
+                                             next junction (NO_SLOT = none,
+                                             latest barcode wins)         */
     bypass_step_t   bypass;
     bool            b_bypass_left;
     bool            b_reversed;           /* scan follows a reverse      */
@@ -145,7 +149,8 @@ nav_fsm_init (void)
     T_CMBF create;
 
     (void) memset(&g_nav, 0, sizeof(g_nav));
-    g_nav.state = NAV_INIT;
+    g_nav.state        = NAV_INIT;
+    g_nav.pending_slot = NO_SLOT;
 
     (void) memset(&create, 0, sizeof(create));
     create.mbfatr = TA_TFIFO;
@@ -487,12 +492,27 @@ ready_step (nav_in_t const * p_in)
 /*!
  * @brief  LINE_FOLLOW and HUMP_REPORT: obstacles, barcodes, humps, and
  *         the line-lost timeout.
+ *
+ *  A decoded barcode does not act at once: its action is held in
+ *  pending_slot and executed at the next junction (both line sensors
+ *  raw black). The barcode sensor reads the code somewhere along the
+ *  line; the car keeps following until it reaches the junction tied to
+ *  that letter, then turns. The latest barcode wins if two are read
+ *  before a junction.
+ *
  * @param  p_in  Inputs of this period.
  */
 static void
 follow_step (nav_in_t const * p_in)
 {
     uint32_t const in_state = p_in->now - g_nav.state_ms;
+
+    /* A barcode read this period updates the pending action first, so a
+     * junction in the same period acts on the freshest letter. */
+    if (p_in->b_have_bar)
+    {
+        g_nav.pending_slot = p_in->bar_slot;      /* latest wins          */
+    }
 
     if (p_in->b_have_us && (US_RESULT_NEAR == p_in->us))
     {
@@ -503,11 +523,16 @@ follow_step (nav_in_t const * p_in)
     {
         safety_report(SAFETY_EVT_LINE_LOST);      /* Safety trips         */
     }
-    else if (p_in->b_have_bar)
+    else if ((NO_SLOT != g_nav.pending_slot) &&
+             (0U != (p_in->line_events & SENSOR_LINE_EVT_JUNCTION)))
     {
-        /* Both following states act on a barcode: a hump (or a false
+        /* Both line sensors saw raw black: execute the held barcode
+         * action. Both following states act on it: a hump (or a false
          * hump detection) must not make the car drive past its turn. */
-        barcode_act(p_in->bar_slot);
+        uint8_t const slot = g_nav.pending_slot;
+
+        g_nav.pending_slot = NO_SLOT;
+        barcode_act(slot);
     }
     else if ((NAV_LINE_FOLLOW == g_nav.state) && p_in->b_have_terrain &&
              (IMU_EVT_HUMP_START == p_in->terrain))
@@ -757,6 +782,7 @@ reset_step (nav_in_t const * p_in)
         motion_control_stop();
         ultrasonic_scan_abort();
         g_nav.pending_seq    = NO_SEQ;
+        g_nav.pending_slot   = NO_SLOT;
         g_nav.bypass         = BYPASS_NONE;
         g_nav.b_reverse_wait = false;
         g_nav.b_mag_cal      = false;
@@ -794,6 +820,7 @@ static void
 follow_begin (void)
 {
     g_nav.straight_start_mm = dist_now_mm();
+    g_nav.pending_slot      = NO_SLOT;    /* drop any stale barcode       */
     (void) motion_control_forward(SPEED_CRUISE_CMS, 0U, true);
 }
 
@@ -844,8 +871,9 @@ static void
 nav_fault (fault_code_t code, bool b_report, int16_t detail)
 {
     motion_control_stop();
-    g_nav.pending_seq = NO_SEQ;
-    g_nav.bypass      = BYPASS_NONE;
+    g_nav.pending_seq  = NO_SEQ;
+    g_nav.pending_slot = NO_SLOT;
+    g_nav.bypass       = BYPASS_NONE;
     enter(NAV_FAULT);
 
     if (b_report)
