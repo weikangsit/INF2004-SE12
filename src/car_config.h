@@ -116,10 +116,10 @@
 #define PID_KP               (1.00f)
 #define PID_KI               (1.50f)
 #define PID_KD               (0.00f)
-#define PID_KFF_L            (0.70f)   /* duty per m/s above dead band  */
-#define PID_KFF_R            (0.70f)
-#define MOTOR_DEADBAND_L     (0.15f)   /* duty below which it won't turn */
-#define MOTOR_DEADBAND_R     (0.15f)
+#define PID_KFF_L            (0.55f)   /* duty per m/s above dead band  */
+#define PID_KFF_R            (0.55f)
+#define MOTOR_DEADBAND_L     (0.07f)   /* duty below which it won't turn */
+#define MOTOR_DEADBAND_R     (0.08f)
 #define PID_I_LIMIT          (0.35f)   /* integral limit, m (x KI = 0.5) */
 #define FF_MIN_SPEED_MPS     (0.005f)  /* below this the target is "stop" */
 /* Encoder speed is averaged over this many control periods (40 ms):
