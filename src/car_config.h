@@ -199,7 +199,6 @@
  * edge starting a bogus capture. The decoder still needs a full 30 to
  * accept anything; this only gates WHEN the capture is cut off.        */
 #define BAR_EDGES_MIN        (24U)
-#define BAR_EDGES_FULL       (30U)     /* one '*X*' symbol = 30 edges   */
 /* A read ends when the sensor has been white (steady, no new edge) for
  * BAR_QUIET_MS after at least BAR_EDGES_MIN edges -- i.e. the barcode has
  * fully passed the sensor. This replaces the old "exactly 30 clean edges"

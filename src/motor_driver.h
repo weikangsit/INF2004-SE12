@@ -19,7 +19,6 @@ void     motor_driver_init (void);
 void     motor_driver_set (int32_t duty_l_pm, int32_t duty_r_pm);
 void     motor_driver_brake (void);
 void     motor_driver_inhibit (bool b_inhibit);
-bool     motor_driver_is_inhibited (void);
 
 int32_t  motor_driver_count_left (void);
 int32_t  motor_driver_count_right (void);

@@ -697,6 +697,48 @@ def test_bar_distance(cpu):
                   f"{by_time}/{total} by time)")
 
 
+def config_value(name):
+    """A number #defined in src/car_config.h, e.g. (40.0f) or (300U)."""
+    text = (SRC / "car_config.h").read_text()
+    m = re.search(r"#define\s+%s\s+\(([0-9.]+)[fU]?\)" % name, text)
+    assert m, name
+    return float(m.group(1))
+
+
+def test_bar_end(cpu):
+    """bar_filter_is_done: when barcode.c ends a read (limits from car_config.h)."""
+    start = len(failures)
+    sub_per_mm = config_value("ENC_COUNTS_PER_REV") * 16 / (
+        3.14159265 * config_value("WHEEL_DIAMETER_M") * 1000)
+    limits = (int(config_value("BAR_MIN_TRAVEL_COUNTS")) * 16,
+              int(config_value("BAR_QUIET_MM") * sub_per_mm),
+              int(config_value("BAR_STALL_TIMEOUT_US")),
+              int(config_value("BAR_EDGES_MIN")),
+              int(config_value("BAR_QUIET_MS")) * 1000,
+              int(config_value("BAR_IDLE_TIMEOUT_US")))
+    mm = lambda d: int(d * sub_per_mm)
+    driving = mm(150)
+    cases = [  # (edges, white, idle ms, moved, quiet, done, what)
+        (28, True, 400, driving, mm(4), False, "slow car in the last narrow space"),
+        (30, True, 600, driving, mm(41), True, "barcode passed"),
+        (2, True, 300, driving, mm(41), True, "stray read ends (not left open)"),
+        (10, False, 900, driving, mm(50), False, "long black: a wide bar, not the end"),
+        (12, True, 4000, driving, mm(5), False, "car paused on the barcode"),
+        (12, True, 6000, driving, mm(5), True, "car stopped for good"),
+        (24, True, 300, 0, 0, True, "hand swipe passed"),
+        (22, True, 400, 0, 0, False, "hand swipe, too few edges yet"),
+        (22, True, 600, 0, 0, True, "hand swipe, idle timeout"),
+        (30, False, 400, 0, 0, False, "hand swipe, still on black"),
+    ]
+    cpu.write(RAM + 0x40, struct.pack("<6I", *limits))
+    for edges, white, idle_ms, moved, quiet, want, what in cases:
+        cpu.write(RAM, struct.pack("<4I?3x", edges, idle_ms * 1000, moved, quiet, white))
+        got = bool(cpu.call("bar_filter_is_done", RAM, RAM + 0x40) & 0xFF)
+        check(got == want, f"bar_filter_is_done {what}: {got}")
+    report(start, f"bar_filter_is_done: {len(cases)} end-of-read cases (driving by "
+                  f"distance, stray reads, stalls, hand swipes by time)")
+
+
 def test_bar_debug(cpu):
     """proto_pack_bar_debug against the reference packer, including counts
     above 10 and widths above 11 bits (clamped)."""
@@ -761,6 +803,7 @@ def main():
             test_bar_debug(cpu)
             test_bar_filter(cpu)
             test_bar_distance(cpu)
+            test_bar_end(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

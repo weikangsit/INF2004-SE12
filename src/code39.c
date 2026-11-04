@@ -31,7 +31,6 @@
 #define CHAR_ELEMENTS        (9U)
 #define CHAR_STRIDE          (10U)     /* 9 elements + inter-char gap    */
 #define SYMBOL_ELEMENTS      (29U)
-#define SYMBOL_CHARS         (3U)
 #define BAR_FIRST            (0U)      /* bars: elements 0, 2, 4, 6, 8   */
 #define SPACE_FIRST          (1U)      /* spaces: elements 1, 3, 5, 7    */
 #define CLASS_STEP           (2U)

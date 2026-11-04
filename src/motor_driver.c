@@ -148,16 +148,6 @@ motor_driver_inhibit (bool b_inhibit)
 }
 
 /*!
- * @brief  Report the motor-inhibit latch.
- * @return True while Safety blocks motor drive.
- */
-bool
-motor_driver_is_inhibited (void)
-{
-    return (g_b_inhibit);
-}
-
-/*!
  * @brief  Left encoder x4 counts since boot (raw direction).
  * @return Signed count.
  */

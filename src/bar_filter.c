@@ -120,6 +120,43 @@ bar_filter_positions (uint32_t const * p_edges, int32_t const * p_cl,
 }
 
 /*!
+ * @brief  Decide whether a capture is complete.
+ *
+ *  Driving (the sensor moved at least moved_min since the first edge):
+ *  by distance, so a slow or briefly stopped car cannot end the read in
+ *  the middle of an element -- white for quiet_end of travel, with any
+ *  edge count, so a stray or partial read ends too instead of staying
+ *  open and swallowing the next barcode; or no edge for stall_us.
+ *  Otherwise (hand swipe, open loop): white for quiet_us after at least
+ *  edges_min edges, or no edge for idle_us.
+ *
+ * @param  p_state   The capture now.
+ * @param  p_limits  End-of-read limits.
+ * @return True if the read is over.
+ */
+bool
+bar_filter_is_done (bar_end_state_t const * p_state,
+                    bar_end_limits_t const * p_limits)
+{
+    bool b_done = false;
+
+    if (p_state->moved >= p_limits->moved_min)
+    {
+        b_done = (p_state->b_white && (p_state->quiet >= p_limits->quiet_end))
+                 || (p_state->idle_us > p_limits->stall_us);
+    }
+    else
+    {
+        b_done = (p_state->b_white &&
+                  (p_state->n_edges >= p_limits->edges_min) &&
+                  (p_state->idle_us >= p_limits->quiet_us)) ||
+                 (p_state->idle_us > p_limits->idle_us);
+    }
+
+    return (b_done);
+}
+
+/*!
  * @brief  Sensor travel from the first edge of a capture to edge idx.
  * @param  p_cl     Left encoder counts (raw direction).
  * @param  p_cr     Right encoder counts (raw direction).

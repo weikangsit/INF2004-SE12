@@ -157,8 +157,10 @@ the inter-character gap).
 | 18- | widths | 11 each | element width: 0.1 mm of travel (distance = 1) or 250 us (max 511.75 ms) |
 
 Frame length is ceil((18 + 11 x count) / 8) bytes. The web app shows each
-capture as one log entry with a row per character, the 3 widest elements
-in brackets and the ratio the decoder needs (>= 1.5). Set `BAR_LOG` to 0 in
+capture as one log entry with a row per character, the wide elements in
+brackets (the 2 widest bars and the widest space, which the decoder picks
+separately) and the ratio the decoder needs (>= 1.5, the lower of the bar
+and space ratios). Set `BAR_LOG` to 0 in
 `car_config.h` to stop sending them.
 
 ## config/ack (1 byte)

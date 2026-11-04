@@ -237,63 +237,48 @@ edges_collect (void)
 }
 
 /*!
- * @brief  Decide whether the capture is complete.
- * @return True once the sensor has been white (steady, no edge) for
- *         BAR_QUIET_MM of travel (car driving: it moved
- *         BAR_MIN_TRAVEL_COUNTS since the first edge; any edge count, so
- *         a stray or partial read ends too), or for BAR_QUIET_MS after at
- *         least BAR_EDGES_MIN edges (hand swipe, open loop) -- the barcode
- *         has fully passed the sensor. Backstops: BAR_STALL_TIMEOUT_US
- *         without an edge while driving, BAR_IDLE_TIMEOUT_US otherwise (a
- *         lone stray capture, which then decodes as unreadable).
+ * @brief  Decide whether the capture is complete (rules:
+ *         bar_filter_is_done(), tested in web/test_proto.py).
+ * @return True once the barcode has fully passed the sensor.
  */
 static bool
 capture_is_done (void)
 {
+    /* Constant expressions; the travel limits are a few thousand 1/16
+     * counts, so the casts keep them. */
+    static bar_end_limits_t const limits =
+    {
+        (uint32_t) BAR_MIN_TRAVEL_COUNTS * (uint32_t) SUB_PER_COUNT,
+        (uint32_t) (BAR_QUIET_MM * SUB_PER_MM),
+        BAR_STALL_TIMEOUT_US,
+        BAR_EDGES_MIN,
+        BAR_QUIET_MS * US_PER_MS,
+        BAR_IDLE_TIMEOUT_US
+    };
     bool b_done = false;
 
     if (g_n_edges > 0U)
     {
-        uint32_t const last = g_edges[g_n_edges - 1U] & ~LEVEL_BIT;
+        uint32_t const  last = g_edges[g_n_edges - 1U];
+        bar_end_state_t state;
+        int32_t         setup[SETUP_LEN];
+
+        state.n_edges = g_n_edges;
         /* Edges were collected before this time was read, so the
          * difference is never negative. */
-        uint32_t const idle = port_time_us_32() - last;
-        /* The quiet gap only counts once the sensor is back on WHITE:
-         * a long WIDE bar (level still black) must not end the read. */
-        bool const     b_white = (0U == (g_edges[g_n_edges - 1U] &
-                                         LEVEL_BIT));
-        int32_t        setup[SETUP_LEN];
-        uint32_t       moved   = 0U;              /* since the first edge */
-        uint32_t       quiet   = 0U;              /* since the last edge  */
+        state.idle_us = port_time_us_32() - (last & ~LEVEL_BIT);
+        state.moved   = 0U;
+        state.quiet   = 0U;
+        /* A long WIDE bar (level still black) must not end the read. */
+        state.b_white = (0U == (last & LEVEL_BIT));
 
         if (travel_setup(setup))
         {
-            moved = travel_since(0U, setup);
-            quiet = travel_since(g_n_edges - 1U, setup);
+            state.moved = travel_since(0U, setup);
+            state.quiet = travel_since(g_n_edges - 1U, setup);
         }
 
-        if (moved >= ((uint32_t) BAR_MIN_TRAVEL_COUNTS *
-                      (uint32_t) SUB_PER_COUNT))
-        {
-            /* Driving: by distance, so a slow or briefly stopped car
-             * cannot end the read in the middle of an element. Any edge
-             * count: BAR_QUIET_MM of white is past the widest element, so
-             * a partial or stray read ends too (it would otherwise stay
-             * open while stray edges keep arriving, swallow the next
-             * barcode and never be logged). Constant expression, a few
-             * hundred: fits a uint32_t. */
-            uint32_t const quiet_end = (uint32_t) (BAR_QUIET_MM * SUB_PER_MM);
-
-            b_done = (b_white && (quiet >= quiet_end)) ||
-                     (idle > BAR_STALL_TIMEOUT_US);
-        }
-        else
-        {
-            /* Hand swipe or open loop: by time. */
-            b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
-                      (idle >= (BAR_QUIET_MS * US_PER_MS))) ||
-                     (idle > BAR_IDLE_TIMEOUT_US);
-        }
+        b_done = bar_filter_is_done(&state, &limits);
     }
 
     return (b_done);
@@ -392,11 +377,10 @@ capture_finish (void)
 
 /*!
  * @brief  Decode the capture: by the sensor's travel when the car moved
- *         at least BAR_MIN_TRAVEL_COUNTS with working encoders, else (or
- *         if that fails) by time. A read that lost edges to a full ring
+ *         at least BAR_MIN_TRAVEL_COUNTS with working encoders, else by
+ *         time (hand swipe, open loop). A read that lost edges to a full ring
  *         is rejected (Tribunal 1: decide what happens on overflow).
- * @param  p_b_distance  Output: true if the travel was used (decoded, or
- *                       the car moved far enough to try).
+ * @param  p_b_distance  Output: true if the travel was used.
  * @return Letter 0..25, or CODE39_NONE.
  */
 static uint8_t
@@ -422,16 +406,13 @@ capture_decode (bool * p_b_distance)
             }
         }
 
-        if (CODE39_NONE == letter)
+        /* By time only without distance: while the car drives the speed
+         * is never steady (0 of 156 wobbly emulator reads decode by
+         * time), so a retry by time could only add a wrong letter. */
+        if (!*p_b_distance)
         {
-            uint8_t const by_time = code39_decode(g_edges, g_n_edges,
-                                                  BAR_MIN_WIDE_RATIO_X10);
-
-            if (CODE39_NONE != by_time)
-            {
-                letter        = by_time;
-                *p_b_distance = false;
-            }
+            letter = code39_decode(g_edges, g_n_edges,
+                                   BAR_MIN_WIDE_RATIO_X10);
         }
     }
 

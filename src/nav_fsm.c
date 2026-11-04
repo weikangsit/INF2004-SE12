@@ -498,7 +498,9 @@ ready_step (nav_in_t const * p_in)
  *  raw black). The barcode sensor reads the code somewhere along the
  *  line; the car keeps following until it reaches the junction tied to
  *  that letter, then turns. The latest barcode wins if two are read
- *  before a junction.
+ *  before a junction. The line-lost timeout waits while a barcode is
+ *  read: the hold drives straight without steering, and both line
+ *  sensors can stay white for all of it (bounded by BAR_STALL_TIMEOUT_US).
  *
  * @param  p_in  Inputs of this period.
  */
@@ -519,7 +521,7 @@ follow_step (nav_in_t const * p_in)
         obstacle_begin();
     }
     else if ((sensor_line_black_age_ms() > LINE_LOST_MS) &&
-             (in_state > LINE_LOST_MS))
+             (in_state > LINE_LOST_MS) && !barcode_is_reading())
     {
         safety_report(SAFETY_EVT_LINE_LOST);      /* Safety trips         */
     }

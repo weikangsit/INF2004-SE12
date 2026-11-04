@@ -38,11 +38,6 @@ typedef enum
 /** Width of the fault mask in bits. */
 #define FAULT_MASK_BITS      (16U)
 
-/** Faults that only describe the live state of a sensor or link. They are
- *  refreshed every telemetry period instead of being latched. */
-#define FAULT_LIVE_MASK      ((1U << FC_IMU) | (1U << FC_NO_ECHO) | \
-                              (1U << FC_WIFI_LOSS))
-
 void     fault_init (void);
 void     fault_set (fault_code_t code);
 void     fault_clear (fault_code_t code);

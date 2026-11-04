@@ -60,14 +60,10 @@
 #define PROTO_ST_LATCHED      (1U << 0)   /* safety latch engaged          */
 #define PROTO_ST_CFG_MQTT     (1U << 1)   /* barcode table came over MQTT  */
 
-/* Telemetry line bits (one per digital line sensor, 1 = black). */
-#define PROTO_LINE_LEFT       (1U << 0)
-#define PROTO_LINE_RIGHT      (1U << 1)
-
-/* Telemetry barcode field (Tribunal 1: 2-bit symbol + valid bit): bits
- * 0..1 slot of the last barcode, bit 2 valid. The slot is the table entry
- * whose letter was read, which is also its action (PROTO_ACT_*). */
-#define PROTO_BAR_VALID       (1U << 2)
+/* Telemetry line bits (bit 0 left, bit 1 right, 1 = black) and barcode
+ * field (Tribunal 1: 2-bit symbol + valid bit: bits 0..1 slot of the last
+ * barcode = its action PROTO_ACT_*, bit 2 valid) are sent as
+ * vehicle_state.h keeps them (VEHICLE_IR_*, VEHICLE_BAR_*). */
 
 /* EV_BARCODE codes besides slot 0..3. */
 #define PROTO_BAR_EV_UNKNOWN     (0xFEU)   /* letter read, not in the table */
