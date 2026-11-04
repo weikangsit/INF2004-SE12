@@ -4,7 +4,9 @@
  *  STANDBY pings straight ahead every 100 ms and reports an obstacle
  *  nearer than US_OBSTACLE_CM. On request it sweeps SCAN_MIN_DEG to
  *  SCAN_MAX_DEG (coarse, then fine around the closest hit), builds the
- *  obstacle profile and suggests a route (obstacle_profile.h). The scan
+ *  obstacle profile and suggests a route (obstacle_profile.h). During a
+ *  bypass, PEEK pings SCAN_MIN_DEG, centre and SCAN_MAX_DEG and answers
+ *  whether the obstacle is still within BYPASS_PEEK_CM. The scan
  *  never drives the motors; the Navigation FSM acts on the suggestion
  *  (Tribunal 1 interface rule). A missing echo is invalid, never clear.
  */
@@ -17,8 +19,9 @@
 #include <stddef.h>          /* size_t first (PROHIBIT_DEF_SIZE_T) */
 #include <tk/tkernel.h>
 
-/** Messages for the Navigation FSM (1 byte, 3 bits). Values 0..5 match
- *  obstacle_route_t; NEAR is the standby detection. */
+/** Messages for the Navigation FSM (1 byte, 4 bits). Values 0..5 match
+ *  obstacle_route_t; NEAR is the standby detection; PEEK_* answer
+ *  ultrasonic_scan_peek(). */
 typedef enum
 {
     US_RESULT_CONTINUE = 0,
@@ -27,7 +30,9 @@ typedef enum
     US_RESULT_REVERSE,
     US_RESULT_NO_ROUTE,
     US_RESULT_UNSAFE,
-    US_RESULT_NEAR
+    US_RESULT_NEAR,
+    US_RESULT_PEEK_CLEAR,
+    US_RESULT_PEEK_BLOCKED
 } us_result_t;
 
 #define US_RANGE_NO_ECHO     (0xFFFFU)
@@ -38,6 +43,7 @@ void     ultrasonic_scan_request (void);
 void     ultrasonic_scan_abort (void);
 bool     ultrasonic_scan_result_take (us_result_t * p_result);
 uint16_t ultrasonic_scan_front_cm (void);
+void     ultrasonic_scan_peek (void);
 bool     ultrasonic_scan_is_ok (void);
 
 #endif /* ULTRASONIC_SCAN_H */

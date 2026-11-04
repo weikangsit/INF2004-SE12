@@ -674,7 +674,7 @@ command_start (uint32_t word, motion_in_t const * p_in)
     else if ((MS_TURN_L == g_ctx.mode) || (MS_TURN_R == g_ctx.mode) ||
              (MS_UTURN == g_ctx.mode))
     {
-        arc = (g_ctx.angle_deg / DEG_PER_RAD) * (TRACK_WIDTH_M * HALF);
+        arc = (g_ctx.angle_deg / DEG_PER_RAD) * (TURN_TRACK_WIDTH_M * HALF);
         g_ctx.limit_ms = (uint32_t) ((LIMIT_FACTOR * arc) /
                          fmaxf(g_ctx.speed_mps, MIN_LIMIT_SPEED_MPS)) +
                          LIMIT_EXTRA_MS;
@@ -741,6 +741,7 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
     float32_t       speed  = 0.0f;
     float32_t       steer  = 0.0f;
     float32_t       target = g_ctx.speed_mps;
+    bool            b_hold = false;           /* heading / distance hold */
 
     if (g_ctx.dist_m > 0.0f)
     {
@@ -773,7 +774,8 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
         /* Wheel speed differential turns the car the same way in both
          * directions, so the correction does not change sign: the
          * wheel that has travelled further is slowed either way. */
-        steer = -((K_DIST_EQ * d_err) + (K_HEADING * h_err));
+        steer  = -((K_DIST_EQ * d_err) + (K_HEADING * h_err));
+        b_hold = true;
     }
 
     /* Through a curve: slow to steering speed at once (the wheel slew
@@ -787,6 +789,17 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 
     ramp_base(target);
     speed = g_ctx.v_base;
+
+    if (b_hold)
+    {
+        /* The hold only trims the run: uncapped, a compass error or a
+         * few cm of wheel mismatch out-steered the speed, one wheel
+         * stopped and the car spun in place (measured, bypass return
+         * leg). Both wheels keep driving the same way. */
+        float32_t const cap = HOLD_STEER_MAX_FRAC * speed;
+
+        steer = fmaxf(-cap, fminf(cap, steer));
+    }
 
     g_ctx.tgt_l = (sign * speed) + steer;
     g_ctx.tgt_r = (sign * speed) - steer;
@@ -881,7 +894,7 @@ static bool
 turn_targets (motion_in_t const * p_in)
 {
     float32_t const arc    = (g_ctx.angle_deg / DEG_PER_RAD) *
-                             (TRACK_WIDTH_M * HALF);
+                             (TURN_TRACK_WIDTH_M * HALF);
     /* Rotation only: forward motion while the wheels slew from a
      * straight run into the spin cancels out of the difference. */
     float32_t const travel = fabsf((g_ctx.dist_r - g_ctx.dist_r0) -

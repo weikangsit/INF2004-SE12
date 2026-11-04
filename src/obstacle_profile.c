@@ -104,12 +104,15 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
  *  trusted: UNSAFE. A blocked path takes the side whose edge ray shows at
  *  least min_side_clear_cm (the larger one; left on a tie). A side whose
  *  edge ray had no echo is unknown and never chosen. If neither side is
- *  known the scan is UNSAFE; if both are known but blocked the car backs
- *  off once (REVERSE), then gives up (NO_ROUTE).
+ *  known the scan is UNSAFE. If both are known but neither clears
+ *  min_side_clear_cm (the car stops close, so the edge rays often hit the
+ *  obstacle itself), the car still goes around on the side with more
+ *  room: the bypass watches ahead and stops if that side is blocked.
+ *  The car never reverses (REVERSE / NO_ROUTE are no longer planned).
  *
  * @param  p_prof        Profile of the sweep.
  * @param  p_limits      Planning limits.
- * @param  b_retry_done  True if the car already backed off once.
+ * @param  b_retry_done  Unused (kept for the interface and the tests).
  * @return Route.
  */
 obstacle_route_t
@@ -151,11 +154,17 @@ obstacle_profile_plan (obstacle_profile_t const * p_prof,
     {
         route = OBSTACLE_ROUTE_UNSAFE;
     }
+    else if (left_known && right_known)
+    {
+        route = (p_prof->clear_left_cm >= p_prof->clear_right_cm) ?
+                OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
+    }
     else
     {
-        route = b_retry_done ? OBSTACLE_ROUTE_NO_ROUTE :
-                               OBSTACLE_ROUTE_REVERSE;
+        route = left_known ? OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
     }
+
+    (void) b_retry_done;
 
     return (route);
 }

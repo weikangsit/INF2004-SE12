@@ -39,7 +39,7 @@ and no hardware headers (see `port.h`).
 | Every motion command has a time limit; completion with sequence number and result | `motion_control.c` (`motion_done_q`) |
 | Encoders + PID kept; open-loop fallback if an encoder fails the self-test | `motion_control.c` |
 | Missing echo is invalid, never a clear path; too few valid echoes stop with "scan cannot proceed safely" | `obstacle_profile.c`, `nav_fsm.c` |
-| Reverse ~40 cm before scanning only along the car's own straight track; sweep range configurable (interim 60-120 deg, requirement 15-165 deg) | `nav_fsm.c`, `car_config.h` |
+| Reverse before scanning: now disabled (`REVERSE_BEFORE_SCAN_CM` 0), the car scans where it stops and goes around on the side with more room; sweep range configurable (interim 60-120 deg, requirement 15-165 deg) | `nav_fsm.c`, `obstacle_profile.c`, `car_config.h` |
 | Scan reports progress (heartbeat per ping) | `ultrasonic_scan.c` |
 | Per-task heartbeat deadlines; Telemetry warning only; WiFi loss never brakes; stalled radio task brakes | `safety.c`, `comms.c` |
 | Safety woken by fault events (50 ms timeout instead of polling); remote e-stop goes straight to Safety | `safety.c`, `comms.c` |
@@ -58,6 +58,16 @@ and no hardware headers (see `port.h`).
   tilt / hump / impact; NFR3's 100 ms now counts from the confirmed tilt).
 * Magnetometer calibration: hold GP21 for 2 s in READY (car spins once).
 * `line_pos_q` became a single stamped word (newest value only).
+* No reverse at an obstacle (replaces Version C): the scan never plans
+  REVERSE / NO_ROUTE; a blocked bypass leg stops with FC_NO_ROUTE
+  detail 2.
+* Step-and-check bypass (any obstacle size, team flow): 90 deg spot
+  turns. Width: turn out, step BYPASS_STEP_CM, face forward and check
+  (pings at SCAN_MIN_DEG, centre, SCAN_MAX_DEG, hit under
+  BYPASS_PEEK_CM); blocked -> step again. Length: drive along, turn
+  toward the line and check; blocked -> turn back and step along again.
+  The return leg is the measured sideways steps plus a margin. More
+  than BYPASS_MAX_STEPS either way stops with FC_NO_ROUTE detail 3.
 
 ## Not yet verified on the car
 
