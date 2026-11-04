@@ -221,8 +221,10 @@
 #define BAR_MIN_TRAVEL_COUNTS (100)    /* ~14 mm                        */
 /* Barcode sensor offset to the LEFT of the car's centreline, mm (right
  * is negative). Corrects the sensor's travel for the car's turning while
- * it follows the line. TUNE: measure on the car.                       */
-#define BAR_SENSOR_Y_MM      (0.0f)
+ * it follows the line. The barcode lies 20 mm left of an 18 mm line, so
+ * a sensor over it is at least 9 + 20 = 29 mm left of the centreline.
+ * TUNE: measure the sensor on the car.                                 */
+#define BAR_SENSOR_Y_MM      (29.0f)
 /* Narrowest wide element / widest narrow element, x10. Code 39 uses
  * 2:1 to 3:1; a ratio under 1.5 is not a clean read (Tribunal 1).      */
 #define BAR_MIN_WIDE_RATIO_X10 (15U)
