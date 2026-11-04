@@ -35,7 +35,8 @@
 typedef enum
 {
     SCAN_REQ_PROFILE = 0,
-    SCAN_REQ_ABORT
+    SCAN_REQ_ABORT,
+    SCAN_REQ_PEEK               /* bypass check: is the obstacle ahead?   */
 } scan_req_t;
 
 static ID                g_req_q      = 0;
@@ -45,6 +46,7 @@ static volatile bool     g_b_ever_ok  = false;
 
 static uint16_t         ping_cm (void);
 static uint16_t         ping_at (uint32_t angle_deg);
+static bool             peek_ahead (void);
 static obstacle_route_t scan_and_plan (bool b_retry_done);
 static uint32_t         sweep_coarse (obstacle_ray_t * p_rays);
 static uint32_t         sweep_fine (obstacle_ray_t * p_rays, uint32_t count,
@@ -102,6 +104,12 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
                 result_post((us_result_t) route);
                 next_us = time_us_64();
             }
+            else if (SCAN_REQ_PEEK == req)
+            {
+                result_post(peek_ahead() ? US_RESULT_PEEK_BLOCKED :
+                                           US_RESULT_PEEK_CLEAR);
+                next_us = time_us_64();
+            }
             else
             {
                 b_retry_done = false;
@@ -139,6 +147,19 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
 }
 
 /*!
+ * @brief  Ask whether the obstacle is still ahead (Navigation FSM, car
+ *         stopped after a bypass turn). Answers US_RESULT_PEEK_CLEAR or
+ *         US_RESULT_PEEK_BLOCKED.
+ */
+void
+ultrasonic_scan_peek (void)
+{
+    uint8_t const req = (uint8_t) SCAN_REQ_PEEK;
+
+    (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
+}
+
+/*!
  * @brief  Ask for a profile scan (Navigation FSM, car stopped).
  */
 void
@@ -173,7 +194,7 @@ ultrasonic_scan_result_take (us_result_t * p_result)
 
     if (b_got)
     {
-        /* Only us_result_t values (0..6) are queued. */
+        /* Only us_result_t values (0..8) are queued. */
         *p_result = (us_result_t) msg;
     }
 
@@ -243,6 +264,39 @@ ping_at (uint32_t angle_deg)
     safety_heartbeat(SAFETY_HB_US);
 
     return (range);
+}
+
+/*!
+ * @brief  Bypass check: ping at SCAN_MIN_DEG, centre and SCAN_MAX_DEG
+ *         (the car's width, not just the centre beam), then centre.
+ * @return True if any echo is nearer than BYPASS_PEEK_CM. A missing
+ *         echo counts as no obstacle on that ray.
+ */
+static bool
+peek_ahead (void)
+{
+    static uint32_t const angles[] =
+    {
+        SCAN_MIN_DEG, SERVO_CENTRE_DEG, SCAN_MAX_DEG
+    };
+    bool     b_blocked = false;
+    uint32_t idx       = 0U;
+
+    for (idx = 0U; idx < (sizeof(angles) / sizeof(angles[0])); idx++)
+    {
+        uint16_t const range = ping_at(angles[idx]);
+
+        if ((US_RANGE_NO_ECHO != range) && (range < BYPASS_PEEK_CM))
+        {
+            b_blocked = true;
+        }
+    }
+
+    hal_servo_set_deg(SERVO_CENTRE_DEG);
+    (void) tk_dly_tsk((RELTIM) SERVO_SETTLE_MS);
+    safety_heartbeat(SAFETY_HB_US);
+
+    return (b_blocked);
 }
 
 /*!
@@ -339,7 +393,7 @@ sweep_fine (obstacle_ray_t * p_rays, uint32_t count, uint32_t centre_deg)
 static void
 result_post (us_result_t result)
 {
-    /* us_result_t values are 0..6. */
+    /* us_result_t values are 0..8. */
     uint8_t const msg = (uint8_t) result;
 
     (void) tk_snd_mbf(g_result_q, &msg, (INT) sizeof(msg), TMO_POL);

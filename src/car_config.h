@@ -75,6 +75,12 @@
 #define ENC_COUNTS_PER_REV   (1440.0f) /* x4 counts per wheel rev       */
 #define WHEEL_DIAMETER_M     (0.065f)
 #define TRACK_WIDTH_M        (0.125f)  /* wheel centre-to-centre        */
+/* Effective track width for spot turns only. The tyres scrub and slip
+ * while spinning, so with TRACK_WIDTH_M the encoders reached 90 deg
+ * while the car turned less and the bypass hit the obstacle (measured).
+ * A wider value asks for more wheel travel per degree. TUNE: command a
+ * 90 deg turn on the floor and scale by 90 / actual angle turned.     */
+#define TURN_TRACK_WIDTH_M   (0.165f)
 /* Initial guesses; the power-on self-test measures the real count
  * direction of each encoder and overrides them.                        */
 #define ENC_SIGN_LEFT        (-1)
@@ -169,6 +175,10 @@
 #define LINE_SLOW_HOLD_MS    (400U)
 #define K_DIST_EQ            (2.00f)   /* m/s per m of wheel mismatch   */
 #define K_HEADING            (0.004f)  /* m/s per degree heading error  */
+/* Straight runs without line following: the heading / distance hold
+ * may change each wheel by at most this fraction of the speed, so
+ * neither wheel stops or reverses (0.5: each keeps >= half). TUNE.     */
+#define HOLD_STEER_MAX_FRAC  (0.50f)
 #define TURN_EARLY_FRACTION  (0.60f)   /* new branch accepted after 60 % */
 #define TURN_XCHECK_DEG      (20.0f)   /* encoder vs IMU disagreement   */
 
@@ -306,7 +316,7 @@
 /* ------------------------------------------------------------------ */
 /* Ultrasonic, servo and obstacle handling (Week 6 Section 6.3)         */
 /* ------------------------------------------------------------------ */
-#define US_OBSTACLE_CM       (12U)
+#define US_OBSTACLE_CM       (15U)
 #define US_SCAN_RANGE_CM     (40U)     /* hits beyond this are clear    */
 #define US_ECHO_TIMEOUT_US   (30000U)
 #define US_MIN_GAP_MS        (60U)
@@ -325,14 +335,54 @@
 #define MIN_SIDE_CLEAR_CM    (30U)
 /* Reverse before scanning, only along the car's own straight track
  * (Tribunal 1 Version C): needs this distance + margin driven straight
- * on the line since the last turn. 0 disables the reverse.             */
-#define REVERSE_BEFORE_SCAN_CM (40U)
+ * on the line since the last turn. 0 disables the reverse.
+ * 0: the car scans where it stopped and goes around (team decision,
+ * replaces Version C). With 40 cm the car backed off until the obstacle
+ * was beyond US_SCAN_RANGE_CM, the scan saw a clear path, the car drove
+ * up to it again and reversed again (dist_mm is net, so the straight
+ * run never got shorter).                                              */
+#define REVERSE_BEFORE_SCAN_CM (0U)
 #define REVERSE_MARGIN_CM    (4U)      /* +/-4 cm reverse tolerance     */
 #define REVERSE_RETRY_CM     (10U)
-#define BYPASS_TURN_DEG      (45U)
-#define BYPASS_OFFSET_CM     (25U)
-#define BYPASS_LENGTH_CM     (35U)
-#define REACQUIRE_TIMEOUT_MS (3000U)
+/* Rectangular bypass with spot turns: 90 deg out, sideways, 90 deg back
+ * to parallel, along the obstacle, 90 deg in, back to the line. The car
+ * stops ~12 cm from the obstacle, so the old 45 deg out-leg met the
+ * obstacle's face after ~12 cm and drove into it diagonally (measured).
+ * A 90 deg out-leg runs parallel to the face instead.                  */
+#define BYPASS_TURN_DEG      (90U)
+/* Step-and-check bypass (any obstacle size, team flow):
+ *  width:  turn out, drive BYPASS_STEP_CM, turn back to the original
+ *          heading and check; obstacle still ahead -> repeat.
+ *  length: drive along (BYPASS_ALONG_FIRST_CM, then BYPASS_STEP_CM),
+ *          turn toward the line and check; obstacle still there ->
+ *          turn back to parallel and repeat.
+ * A check pings at SCAN_MIN_DEG, centre and SCAN_MAX_DEG, so it covers
+ * the car's width, not just the narrow centre beam; any echo nearer
+ * than BYPASS_PEEK_CM means the obstacle is still in the way. TUNE.   */
+#define BYPASS_STEP_CM       (30U)
+#define BYPASS_ALONG_FIRST_CM (30U)    /* stop gap 12 cm + sensor-axle  */
+/* Once the width check reads clear, one more sideways step this long
+ * (no check). The 60 / 120 deg rays only cover ~7 cm either side at
+ * the obstacle, so "clear" can leave the car's side next to the edge,
+ * and a 90 deg spot turn swings the corners ~5 cm wider than the body:
+ * the turn toward the line hit the obstacle (measured). 0 = off. TUNE. */
+#define BYPASS_WIDTH_MARGIN_CM (15U)
+#define BYPASS_PEEK_CM       (20U)
+/* Steps per side (width or length) before giving up with FC_NO_ROUTE
+ * detail 3 ("obstacle too large"): 8 x 15 = 120 cm.                    */
+#define BYPASS_MAX_STEPS     (8U)
+/* Return leg toward the line: the measured sideways steps plus this
+ * much extra before the car gives up (FC_REACQUIRE).                   */
+#define BYPASS_RETURN_EXTRA_CM (15U)
+/* Line sensors to wheel axle. After the sensors cross the line the car
+ * drives this far so the axle is on the line, then spot-turns onto it;
+ * otherwise the turn leaves the car parallel to, but beside, the line.
+ * TUNE: measure on the car. 0 turns as soon as the line is seen.       */
+#define LINE_SENSOR_AHEAD_CM (8U)
+/* Backstop over the longest return leg (BYPASS_MAX_STEPS x
+ * BYPASS_STEP_CM + extra at SPEED_SEARCH_CMS ~15 s), the axle step and
+ * the turn. TUNE.                                                      */
+#define REACQUIRE_TIMEOUT_MS (25000U)
 
 /* ------------------------------------------------------------------ */
 /* Navigation                                                           */

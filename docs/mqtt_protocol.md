@@ -67,7 +67,7 @@ Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 | 8 | FC_ESTOP | emergency stop | latched |
 | 9 | FC_HEARTBEAT | a supervised task missed its deadline (detail = task: 0 line, 1 motion, 2 IMU, 3 ultrasonic, 4 nav, 5 comms radio) | latched |
 | 10 | FC_SENSOR | line sensor calibration failed | latched |
-| 11 | FC_NO_ROUTE | no way around an obstacle; EVENT detail 1 = scan cannot proceed safely (too few valid echoes) | latched |
+| 11 | FC_NO_ROUTE | no way around an obstacle; EVENT detail 1 = scan cannot proceed safely (too few valid echoes), 2 = bypass path blocked (echo under US_OBSTACLE_CM on a bypass or return leg), 3 = obstacle too large (still detected after BYPASS_MAX_STEPS bypass steps) | latched |
 | 12 | FC_REACQUIRE | line not found after a bypass | latched |
 | 13 | FC_SELFTEST | power-on self-test timed out | latched |
 | 14 | FC_TELEM_LATE | telemetry task missed its deadline | warning, sent once |

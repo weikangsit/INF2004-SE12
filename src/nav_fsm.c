@@ -17,7 +17,20 @@
  *  with line following only if the car drove at least that far plus the
  *  margin straight along the line since its last turn; then scan. A scan
  *  without enough valid echoes stops with FC_NO_ROUTE detail 1 ("scan
- *  cannot proceed safely").
+ *  cannot proceed safely"). The bypass then drives around the obstacle
+ *  with BYPASS_TURN_DEG (90 deg) spot turns, step and check: turn out,
+ *  step sideways, face forward and check (servo pings at SCAN_MIN_DEG,
+ *  centre, SCAN_MAX_DEG); still blocked -> another sideways step. Then
+ *  drive along, turn toward the line and check; still blocked -> turn
+ *  back and step further along. After BYPASS_MAX_STEPS either way it
+ *  stops with FC_NO_ROUTE detail 3 ("obstacle too large"). The return
+ *  leg is the measured sideways steps plus a margin. On the forward legs the
+ *  centred ultrasonic sensor keeps watching ahead: something closer than
+ *  US_OBSTACLE_CM stops the car with FC_NO_ROUTE detail 2 ("bypass path
+ *  blocked") instead of driving into it. Reacquire: when a sensor sees
+ *  the line the car drives LINE_SENSOR_AHEAD_CM more so its axle is on
+ *  the line, turns back to its original heading and follows again; it
+ *  faults (FC_REACQUIRE) if the return drive ends without the line.
  *
  *  Faults already reported by Safety or Motion Control are not reported
  *  again here; the FSM just enters FAULT.
@@ -52,17 +65,21 @@
 #define NO_SEQ               (0U)
 #define NO_SLOT              (0xFFU)      /* pending_slot: no barcode held */
 #define DETAIL_SCAN_UNSAFE   (1)         /* FC_NO_ROUTE detail           */
+#define DETAIL_BYPASS_BLOCKED (2)        /* FC_NO_ROUTE detail           */
+#define DETAIL_BYPASS_TOO_BIG (3)        /* FC_NO_ROUTE detail           */
 
-/** Obstacle bypass steps. */
+/** Obstacle bypass steps (step-and-check, see bypass_go()). */
 typedef enum
 {
     BYPASS_NONE = 0,
-    BYPASS_TURN_OUT,
-    BYPASS_OFFSET,
-    BYPASS_TURN_BACK,
-    BYPASS_ALONG,
-    BYPASS_TURN_IN,
-    BYPASS_RETURN
+    BYPASS_TURN_OUT,        /* 90 deg away from the obstacle             */
+    BYPASS_STEP_OUT,        /* sideways BYPASS_STEP_CM                   */
+    BYPASS_FACE_FWD,        /* 90 deg back to the original heading       */
+    BYPASS_PEEK_WIDTH,      /* obstacle still ahead? -> TURN_OUT again   */
+    BYPASS_ALONG,           /* along the obstacle                        */
+    BYPASS_TURN_IN,         /* 90 deg toward the line                    */
+    BYPASS_PEEK_LENGTH,     /* obstacle still there? -> TURN_PARALLEL    */
+    BYPASS_TURN_PARALLEL    /* 90 deg back to the original heading       */
 } bypass_step_t;
 
 /** One debounced button. */
@@ -108,6 +125,13 @@ typedef struct
     bool            b_bypass_left;
     bool            b_reversed;           /* scan follows a reverse      */
     bool            b_reverse_wait;
+    bool            b_on_line_step;       /* reacquire: line seen, axle
+                                             being driven onto it        */
+    int32_t         leg_start_mm;         /* start of a sideways step    */
+    int32_t         offset_mm;            /* sideways steps, measured    */
+    uint32_t        width_steps;          /* sideways steps driven       */
+    uint32_t        length_steps;         /* extra along steps driven    */
+    bool            b_width_margin;       /* width clear: margin step    */
     bool            b_mag_cal;
     bool            b_led_online;
     int32_t         straight_start_mm;    /* start of the straight run   */
@@ -130,8 +154,12 @@ static void    follow_step (nav_in_t const * p_in);
 static void    barcode_act (uint8_t slot);
 static void    obstacle_begin (void);
 static void    obstacle_step (nav_in_t const * p_in);
-static void    bypass_next (void);
+static void    bypass_go (bypass_step_t step);
+static void    bypass_step_done (void);
+static void    bypass_peek_result (bool b_blocked);
+static void    bypass_return (void);
 static void    reacquire_step (nav_in_t const * p_in);
+static bool    path_is_blocked (void);
 static void    reset_step (nav_in_t const * p_in);
 static bool    done_awaited (nav_in_t const * p_in, motion_result_t * p_res);
 static void    follow_begin (void);
@@ -666,8 +694,14 @@ obstacle_step (nav_in_t const * p_in)
 
             case US_RESULT_LEFT:
             case US_RESULT_RIGHT:
-                g_nav.b_bypass_left = (US_RESULT_LEFT == p_in->us);
-                bypass_next();
+                /* Team rule: always go around on the left. The scan
+                 * still decides whether a bypass is needed and safe. */
+                g_nav.b_bypass_left = true;
+                g_nav.offset_mm     = 0;
+                g_nav.width_steps   = 0U;
+                g_nav.length_steps  = 0U;
+                g_nav.b_width_margin = false;
+                bypass_go(BYPASS_TURN_OUT);
             break;
 
             case US_RESULT_UNSAFE:
@@ -680,9 +714,27 @@ obstacle_step (nav_in_t const * p_in)
             break;
         }
     }
+    else if ((BYPASS_PEEK_WIDTH == g_nav.bypass) ||
+             (BYPASS_PEEK_LENGTH == g_nav.bypass))
+    {
+        /* Car stopped; only the check's answer moves it on (a standby
+         * NEAR while facing the obstacle is ignored). */
+        if (p_in->b_have_us && ((US_RESULT_PEEK_CLEAR == p_in->us) ||
+                                (US_RESULT_PEEK_BLOCKED == p_in->us)))
+        {
+            bypass_peek_result(US_RESULT_PEEK_BLOCKED == p_in->us);
+        }
+    }
+    else if (((BYPASS_STEP_OUT == g_nav.bypass) ||
+              (BYPASS_ALONG == g_nav.bypass)) && (!b_idle) &&
+             path_is_blocked())
+    {
+        /* Driving a step into something, e.g. a second obstacle. */
+        nav_fault(FC_NO_ROUTE, true, DETAIL_BYPASS_BLOCKED);
+    }
     else if ((BYPASS_NONE != g_nav.bypass) && b_idle)
     {
-        bypass_next();
+        bypass_step_done();
     }
     else
     {
@@ -691,58 +743,172 @@ obstacle_step (nav_in_t const * p_in)
 }
 
 /*!
- * @brief  Next bypass step: out 45 deg, offset, back 45, along the
- *         obstacle (longer if the car reversed first), in 45, then drive
- *         back toward the line (LINE_REACQUIRE).
+ * @brief  Start a bypass step. Going left: away = left turn, back to
+ *         the original heading and toward the line = right turns.
+ * @param  step  Step to start.
  */
 static void
-bypass_next (void)
+bypass_go (bypass_step_t step)
 {
-    bool const     b_out = g_nav.b_bypass_left;
-    uint32_t const along = BYPASS_LENGTH_CM +
-                           (g_nav.b_reversed ? REVERSE_BEFORE_SCAN_CM : 0U);
+    bool const b_out = g_nav.b_bypass_left;
 
-    /* bypass_step_t values follow each other, so +1 is the next step. */
-    g_nav.bypass = (bypass_step_t) ((uint32_t) g_nav.bypass + 1U);
+    g_nav.bypass = step;
 
-    switch (g_nav.bypass)
+    switch (step)
     {
         case BYPASS_TURN_OUT:
+        case BYPASS_TURN_PARALLEL:
             g_nav.pending_seq = motion_control_turn(b_out, SPEED_TURN_CMS,
                                                     BYPASS_TURN_DEG, false);
         break;
 
-        case BYPASS_OFFSET:
-            g_nav.pending_seq = motion_control_forward(SPEED_SEARCH_CMS,
-                                                       BYPASS_OFFSET_CM,
-                                                       false);
-        break;
-
-        case BYPASS_TURN_BACK:
+        case BYPASS_FACE_FWD:
         case BYPASS_TURN_IN:
             g_nav.pending_seq = motion_control_turn(!b_out, SPEED_TURN_CMS,
                                                     BYPASS_TURN_DEG, false);
         break;
 
-        case BYPASS_ALONG:
-            g_nav.pending_seq = motion_control_forward(SPEED_SEARCH_CMS,
-                                                       along, false);
+        case BYPASS_STEP_OUT:
+            g_nav.leg_start_mm = dist_now_mm();
+            g_nav.pending_seq  = motion_control_forward(
+                SPEED_SEARCH_CMS,
+                g_nav.b_width_margin ? BYPASS_WIDTH_MARGIN_CM :
+                                       BYPASS_STEP_CM,
+                false);
         break;
 
-        case BYPASS_RETURN:
+        case BYPASS_ALONG:
+            g_nav.pending_seq = motion_control_forward(
+                SPEED_SEARCH_CMS,
+                (0U == g_nav.length_steps) ? BYPASS_ALONG_FIRST_CM :
+                                             BYPASS_STEP_CM,
+                false);
+        break;
+
+        case BYPASS_PEEK_WIDTH:
+        case BYPASS_PEEK_LENGTH:
+            ultrasonic_scan_peek();               /* car is stopped       */
+        break;
+
+        case BYPASS_NONE:
         default:
-            g_nav.pending_seq = motion_control_forward(SPEED_SEARCH_CMS,
-                                                       BYPASS_OFFSET_CM * 2U,
-                                                       false);
-            g_nav.bypass      = BYPASS_NONE;
-            enter(NAV_LINE_REACQUIRE);
+            /* Nothing to start. */
         break;
     }
 }
 
 /*!
+ * @brief  The awaited motion of a bypass step finished: start the next.
+ */
+static void
+bypass_step_done (void)
+{
+    switch (g_nav.bypass)
+    {
+        case BYPASS_TURN_OUT:      bypass_go(BYPASS_STEP_OUT);    break;
+        case BYPASS_STEP_OUT:
+            g_nav.offset_mm += dist_now_mm() - g_nav.leg_start_mm;
+            bypass_go(BYPASS_FACE_FWD);
+        break;
+        case BYPASS_FACE_FWD:
+            if (g_nav.b_width_margin)
+            {
+                g_nav.b_width_margin = false;     /* margin done: along   */
+                bypass_go(BYPASS_ALONG);
+            }
+            else
+            {
+                bypass_go(BYPASS_PEEK_WIDTH);
+            }
+        break;
+        case BYPASS_ALONG:         bypass_go(BYPASS_TURN_IN);     break;
+        case BYPASS_TURN_IN:       bypass_go(BYPASS_PEEK_LENGTH); break;
+        case BYPASS_TURN_PARALLEL: bypass_go(BYPASS_ALONG);       break;
+        default:
+            /* The checks finish on their answer, not on a motion. */
+        break;
+    }
+}
+
+/*!
+ * @brief  Act on a bypass check. Width: still ahead -> one more step
+ *         sideways, else drive along. Length: still beside the car's
+ *         path to the line -> back to parallel for one more step along,
+ *         else drive back to the line. Gives up after BYPASS_MAX_STEPS.
+ * @param  b_blocked  True if the obstacle is still within BYPASS_PEEK_CM.
+ */
+static void
+bypass_peek_result (bool b_blocked)
+{
+    if (BYPASS_PEEK_WIDTH == g_nav.bypass)
+    {
+        g_nav.width_steps++;
+
+        if (!b_blocked && (0U != BYPASS_WIDTH_MARGIN_CM))
+        {
+            /* The check reads clear with the car's side still close to
+             * the edge; one more step out leaves room for the spot
+             * turns beside the obstacle. */
+            g_nav.b_width_margin = true;
+            bypass_go(BYPASS_TURN_OUT);
+        }
+        else if (!b_blocked)
+        {
+            bypass_go(BYPASS_ALONG);
+        }
+        else if (g_nav.width_steps >= BYPASS_MAX_STEPS)
+        {
+            nav_fault(FC_NO_ROUTE, true, DETAIL_BYPASS_TOO_BIG);
+        }
+        else
+        {
+            bypass_go(BYPASS_TURN_OUT);
+        }
+    }
+    else
+    {
+        if (!b_blocked)
+        {
+            bypass_return();
+        }
+        else if (g_nav.length_steps >= BYPASS_MAX_STEPS)
+        {
+            nav_fault(FC_NO_ROUTE, true, DETAIL_BYPASS_TOO_BIG);
+        }
+        else
+        {
+            g_nav.length_steps++;
+            bypass_go(BYPASS_TURN_PARALLEL);
+        }
+    }
+}
+
+/*!
+ * @brief  Past the obstacle and facing the line: drive back for the
+ *         measured sideways distance plus BYPASS_RETURN_EXTRA_CM
+ *         (LINE_REACQUIRE).
+ */
+static void
+bypass_return (void)
+{
+    int32_t const back_cm = (g_nav.offset_mm / MM_PER_CM) +
+                            (int32_t) BYPASS_RETURN_EXTRA_CM;
+
+    /* offset_mm is at most BYPASS_MAX_STEPS x BYPASS_STEP_CM plus
+     * overrun; motion_control_forward() clamps to its 511 cm field. */
+    g_nav.pending_seq    = motion_control_forward(
+        SPEED_SEARCH_CMS, (uint32_t) ((back_cm > 0) ? back_cm : 0), false);
+    g_nav.bypass         = BYPASS_NONE;
+    g_nav.b_on_line_step = false;
+    enter(NAV_LINE_REACQUIRE);
+}
+
+/*!
  * @brief  LINE_REACQUIRE: drive back toward the line until a sensor sees
- *         it, then turn onto it and resume.
+ *         it, drive the axle onto it (LINE_SENSOR_AHEAD_CM), then turn
+ *         onto it toward the original heading and resume. Stops if the
+ *         path ahead is blocked, and faults if the return drive ends (or
+ *         the backstop REACQUIRE_TIMEOUT_MS expires) without the line.
  * @param  p_in  Inputs of this period.
  */
 static void
@@ -750,23 +916,78 @@ reacquire_step (nav_in_t const * p_in)
 {
     uint8_t    bits    = 0U;
     bool const b_fresh = sensor_line_read(&bits);
+    bool const b_timed = ((p_in->now - g_nav.state_ms) >
+                          REACQUIRE_TIMEOUT_MS);
 
-    if ((0U != (p_in->line_events & SENSOR_LINE_EVT_REGAINED)) ||
-        (b_fresh && (0U != bits)))
+    if (g_nav.b_on_line_step)
     {
-        g_nav.pending_seq = motion_control_turn(g_nav.b_bypass_left,
-                                                SPEED_TURN_CMS,
-                                                BYPASS_TURN_DEG, true);
-        enter(NAV_BARCODE_ACT);                   /* wait, then follow    */
+        if (NO_SEQ == g_nav.pending_seq)
+        {
+            /* Axle on the line: the spot turn puts the sensors on it. */
+            g_nav.b_on_line_step = false;
+            g_nav.pending_seq    = motion_control_turn(g_nav.b_bypass_left,
+                                                       SPEED_TURN_CMS,
+                                                       BYPASS_TURN_DEG,
+                                                       true);
+            enter(NAV_BARCODE_ACT);               /* wait, then follow    */
+        }
+        else if (b_timed)
+        {
+            nav_fault(FC_REACQUIRE, true, 0);
+        }
+        else
+        {
+            /* Driving the axle onto the line. */
+        }
     }
-    else if ((p_in->now - g_nav.state_ms) > REACQUIRE_TIMEOUT_MS)
+    else if ((0U != (p_in->line_events & SENSOR_LINE_EVT_REGAINED)) ||
+             (b_fresh && (0U != bits)))
     {
+        /* Latest command wins, so this replaces the return drive. */
+        if (0U != LINE_SENSOR_AHEAD_CM)
+        {
+            g_nav.b_on_line_step = true;
+            g_nav.pending_seq    = motion_control_forward(
+                SPEED_SEARCH_CMS, LINE_SENSOR_AHEAD_CM, false);
+        }
+        else
+        {
+            g_nav.pending_seq = motion_control_turn(g_nav.b_bypass_left,
+                                                    SPEED_TURN_CMS,
+                                                    BYPASS_TURN_DEG, true);
+            enter(NAV_BARCODE_ACT);               /* wait, then follow    */
+        }
+    }
+    else if (path_is_blocked())
+    {
+        nav_fault(FC_NO_ROUTE, true, DETAIL_BYPASS_BLOCKED);
+    }
+    else if ((NO_SEQ == g_nav.pending_seq) || b_timed)
+    {
+        /* The return drive finished (state_step took its completion)
+         * and no sensor saw the line, or the backstop expired. */
         nav_fault(FC_REACQUIRE, true, 0);
     }
     else
     {
         /* Searching. */
     }
+}
+
+/*!
+ * @brief  Check the standby range straight ahead (servo centred after the
+ *         scan) while the car drives a bypass or return leg. Every forward
+ *         leg follows a 90 deg spot turn of ~0.8 s, so by then the 100 ms
+ *         standby ping already reads the new heading, not the obstacle
+ *         the scan stopped for.
+ * @return True if an echo closer than US_OBSTACLE_CM is ahead.
+ */
+static bool
+path_is_blocked (void)
+{
+    uint16_t const range = ultrasonic_scan_front_cm();
+
+    return ((US_RANGE_NO_ECHO != range) && (range < US_OBSTACLE_CM));
 }
 
 /*!
@@ -787,6 +1008,7 @@ reset_step (nav_in_t const * p_in)
         g_nav.pending_slot   = NO_SLOT;
         g_nav.bypass         = BYPASS_NONE;
         g_nav.b_reverse_wait = false;
+        g_nav.b_on_line_step = false;
         g_nav.b_mag_cal      = false;
         enter(NAV_READY);
     }
@@ -873,6 +1095,7 @@ static void
 nav_fault (fault_code_t code, bool b_report, int16_t detail)
 {
     motion_control_stop();
+    ultrasonic_scan_abort();                      /* end side tracking    */
     g_nav.pending_seq  = NO_SEQ;
     g_nav.pending_slot = NO_SLOT;
     g_nav.bypass       = BYPASS_NONE;

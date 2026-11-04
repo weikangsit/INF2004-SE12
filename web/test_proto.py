@@ -476,7 +476,9 @@ def ref_plan(p, lim, retry):
         return 1 if lok else 2
     if not lk and not rk:
         return 5
-    return 4 if retry else 3
+    if lk and rk:
+        return 1 if p["left"] >= p["right"] else 2
+    return 1 if lk else 2
 
 
 def test_obstacle(cpu):
