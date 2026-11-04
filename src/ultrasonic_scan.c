@@ -44,7 +44,7 @@ static volatile uint16_t g_front_cm   = US_RANGE_NO_ECHO;
 static volatile bool     g_b_ever_ok  = false;
 
 static uint16_t         ping_cm (void);
-static uint16_t         ping_at (uint32_t angle_deg);
+static uint16_t         ping_at (uint32_t angle_deg, uint32_t settle_ms);
 static obstacle_route_t scan_and_plan (bool b_retry_done);
 static uint32_t         sweep_coarse (obstacle_ray_t * p_rays);
 static uint32_t         sweep_fine (obstacle_ray_t * p_rays, uint32_t count,
@@ -232,14 +232,13 @@ ping_cm (void)
  * @return Range in cm, or US_RANGE_NO_ECHO.
  */
 static uint16_t
-ping_at (uint32_t angle_deg)
+ping_at (uint32_t angle_deg, uint32_t settle_ms)
 {
     uint16_t range = US_RANGE_NO_ECHO;
 
     hal_servo_set_deg(angle_deg);
-    (void) tk_dly_tsk((RELTIM) SERVO_SETTLE_MS);
+    (void) tk_dly_tsk((RELTIM) settle_ms);
     range = ping_cm();
-    (void) tk_dly_tsk((RELTIM) US_MIN_GAP_MS);
     safety_heartbeat(SAFETY_HB_US);
 
     return (range);
@@ -268,6 +267,7 @@ scan_and_plan (bool b_retry_done)
     obstacle_profile_build(rays, count, &limits, &coarse);
     count = sweep_fine(rays, count, coarse.closest_deg);
     hal_servo_set_deg(SERVO_CENTRE_DEG);
+    (void) tk_dly_tsk((RELTIM) US_MIN_GAP_MS);   /* gap before standby ping */
 
     obstacle_profile_build(rays, count, &limits, &profile);
     profile_report(&profile);
@@ -294,7 +294,7 @@ sweep_coarse (obstacle_ray_t * p_rays)
 
         /* Angles are 0..180, so they fit a uint16_t. */
         p_rays[idx].angle_deg = (uint16_t) angle;
-        p_rays[idx].range_cm  = ping_at(angle);
+        p_rays[idx].range_cm  = ping_at(angle, SERVO_SETTLE_MS);
     }
 
     return (SCAN_COARSE_RAYS);
@@ -325,7 +325,7 @@ sweep_fine (obstacle_ray_t * p_rays, uint32_t count, uint32_t centre_deg)
     {
         /* Angles are 0..180, so they fit a uint16_t. */
         p_rays[total].angle_deg = (uint16_t) angle;
-        p_rays[total].range_cm  = ping_at(angle);
+        p_rays[total].range_cm  = ping_at(angle, SERVO_FINE_SETTLE_MS);
         total++;
     }
 

@@ -312,6 +312,7 @@
 #define US_ECHO_TIMEOUT_US   (30000U)
 #define US_MIN_GAP_MS        (60U)
 #define SERVO_SETTLE_MS      (120U)
+#define SERVO_FINE_SETTLE_MS (60U)
 #define SERVO_CENTRE_DEG     (90U)
 /* Sweep limits. Requirement: 15..165 deg. Interim (Tribunal 1, servo
  * travel limited until the mount is raised): 60..120 deg after a
