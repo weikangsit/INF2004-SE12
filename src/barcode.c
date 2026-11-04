@@ -83,6 +83,8 @@ static int32_t     g_cl[BAR_EDGE_BUF_LEN];   /* encoder counts per edge    */
 static int32_t     g_cr[BAR_EDGE_BUF_LEN];
 static uint32_t    g_pos[BAR_EDGE_BUF_LEN];  /* travel, decoder format     */
 static uint32_t    g_n_edges   = 0U;                   /* 0 = waiting      */
+/* A read is in progress (set by the task, read by Motion Control). */
+static volatile bool g_b_reading = false;
 static uint32_t    g_dropped0  = 0U;   /* ring drops when the read began   */
 static uint8_t     g_dbg_seq   = 0U;                   /* task only        */
 static bar_stats_t g_stats;                            /* task only        */
@@ -126,6 +128,8 @@ barcode_poll (void)
         capture_finish();
     }
 
+    g_b_reading = (g_n_edges > 0U);
+
     if ((0 != BAR_LOG) &&
         ((systime_now_ms() - g_stats.sent_ms) >= BAR_STATUS_MS))
     {
@@ -143,6 +147,17 @@ bool
 barcode_take (uint8_t * p_slot)
 {
     return (tk_rcv_mbf(g_slot_q, p_slot, TMO_POL) > 0);
+}
+
+/*!
+ * @brief  Report whether a barcode read is in progress: from its first
+ *         edge until it is decoded or rejected. Safe from any task.
+ * @return True while a read is in progress.
+ */
+bool
+barcode_is_reading (void)
+{
+    return (g_b_reading);
 }
 
 /*!

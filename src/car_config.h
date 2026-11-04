@@ -240,6 +240,14 @@
  * counts as lost when neither sensor has seen black for this long
  * while line following (Week 6: 3 s). TUNE on long straights.          */
 #define LINE_LOST_MS         (3000U)
+/* While a barcode read is in progress the car stops steering on the line
+ * and holds its speed, so the barcode sensor moves straight and steadily
+ * over the bars (measured: reads work when the car is pushed by hand but
+ * fail while the line steering pivots it). The hold ends after this long
+ * even if the read has not, so a stray edge cannot leave the car unsteered;
+ * 141 mm of barcode takes ~1.8 s at SPEED_STEER. Keep below LINE_LOST_MS.
+ * TUNE.                                                                 */
+#define BAR_HOLD_MAX_MS      (2000U)
 /* A sensor that saw black keeps reporting black for this long, so a
  * reading that flickers white at the line edge (measured: missed black
  * on curves, car ran straight off) still steers. Junctions and

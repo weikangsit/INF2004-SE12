@@ -18,6 +18,7 @@
 void barcode_init (void);
 void barcode_poll (void);
 bool barcode_take (uint8_t * p_slot);
+bool barcode_is_reading (void);
 
 #endif /* BARCODE_H */
 

@@ -26,6 +26,7 @@
 
 #include "port.h"
 
+#include "barcode.h"
 #include "car_config.h"
 #include "fault.h"
 #include "motion_control.h"
@@ -154,6 +155,8 @@ typedef struct
     bool          b_steered;     /* line steering seen in this command    */
     uint32_t      steer_ms;      /* time of the last steering correction  */
     int32_t       line_last;     /* side that last saw black: -1, 0, +1   */
+    bool          b_bar_hold;    /* holding straight for a barcode read   */
+    uint32_t      bar_hold_ms;   /* time that hold began                  */
     bool          b_end_on_line;
     float32_t     speed_mps;
     float32_t     dist_m;
@@ -236,6 +239,7 @@ static void      sweep_wheel_done (motion_in_t const * p_in, int32_t db_pct,
 static void      sweep_drive (int32_t duty_pm);
 static float32_t end_speed_cap (float32_t remaining_m);
 static float32_t line_steer (motion_in_t const * p_in);
+static bool      bar_hold (motion_in_t const * p_in);
 static void      wheels_slew (void);
 static void      self_test_step (motion_in_t const * p_in);
 static void      closed_loop_drive (motion_in_t const * p_in);
@@ -630,6 +634,7 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.test_phase    = 0U;
     g_ctx.b_steered     = false;
     g_ctx.line_last     = 0;
+    g_ctx.b_bar_hold    = false;
     g_ctx.sweep_stage   = SWEEP_SETTLE;
     g_ctx.stage_ms      = p_in->now_ms;
     pid_reset(&g_ctx.pid_l);
@@ -742,7 +747,14 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
         target = fminf(target, end_speed_cap(g_ctx.dist_m - (sign * travel)));
     }
 
-    if (g_ctx.b_follow && p_in->b_line_fresh)
+    if (bar_hold(p_in))
+    {
+        /* Barcode read: straight at the speed it began with (no steering,
+         * no speeding up), like the hand push that reads reliably. */
+        steer  = 0.0f;
+        target = fminf(target, g_ctx.v_base);
+    }
+    else if (g_ctx.b_follow && p_in->b_line_fresh)
     {
         steer = line_steer(p_in);
     }
@@ -776,6 +788,35 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
     g_ctx.tgt_r = (sign * speed) - steer;
 
     return ((g_ctx.dist_m > 0.0f) && ((sign * travel) >= g_ctx.dist_m));
+}
+
+/*!
+ * @brief  Hold straight while a barcode read is in progress, for at most
+ *         BAR_HOLD_MAX_MS from its start.
+ * @param  p_in  Inputs of this period.
+ * @return True to drive straight this period.
+ */
+static bool
+bar_hold (motion_in_t const * p_in)
+{
+    bool b_hold = false;
+
+    if (g_ctx.b_follow && barcode_is_reading())
+    {
+        if (!g_ctx.b_bar_hold)
+        {
+            g_ctx.b_bar_hold  = true;
+            g_ctx.bar_hold_ms = p_in->now_ms;
+        }
+
+        b_hold = ((p_in->now_ms - g_ctx.bar_hold_ms) < BAR_HOLD_MAX_MS);
+    }
+    else
+    {
+        g_ctx.b_bar_hold = false;
+    }
+
+    return (b_hold);
 }
 
 /*!
