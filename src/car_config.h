@@ -216,8 +216,10 @@
  * over 300 ms to cross the last narrow space, and the read ended two
  * edges short of the stop '*' (measured: 28 of 30 edges, '*W' decoded).
  * Must exceed the widest element (measured up to 21 mm by the encoders;
- * the encoders read the whole symbol as ~245 mm). BAR_STALL_TIMEOUT_US
- * ends a read if the car stops on the barcode. TUNE.                    */
+ * the encoders read the whole symbol as ~245 mm). It ends any read, also
+ * one with fewer than BAR_EDGES_MIN edges: a stray read must not stay
+ * open and swallow the next barcode. BAR_STALL_TIMEOUT_US ends a read if
+ * the car stops on the barcode. TUNE.                                   */
 #define BAR_QUIET_MM         (40.0f)
 #define BAR_STALL_TIMEOUT_US (5000000U)
 #define BAR_EDGE_BUF_LEN     (64U)     /* clean edges of one read       */

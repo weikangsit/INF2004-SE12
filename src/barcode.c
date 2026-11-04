@@ -7,12 +7,11 @@
  *   1. Collect: raw edges pass through the glitch filter (bar_filter.c),
  *      which removes the chatter a slowly passing edge causes. A capture
  *      starts on a white-to-black edge.
- *   2. End: once the barcode has fully passed the sensor: white after at
- *      least BAR_EDGES_MIN edges for BAR_QUIET_MM of travel while the car
- *      drives (so a slow car cannot cut a read short; BAR_STALL_TIMEOUT_US
- *      if it stops for good), or for BAR_QUIET_MS on a hand swipe or open
- *      loop; or after BAR_IDLE_TIMEOUT_US without an edge (a partial read
- *      that never reached BAR_EDGES_MIN).
+ *   2. End: once the barcode has fully passed the sensor. While the car
+ *      drives: white for BAR_QUIET_MM of travel (so a slow car cannot cut
+ *      a read short; BAR_STALL_TIMEOUT_US if it stops for good). On a
+ *      hand swipe or open loop: white for BAR_QUIET_MS after at least
+ *      BAR_EDGES_MIN edges, or BAR_IDLE_TIMEOUT_US without an edge.
  *   3. Check: a read during which the ring overflowed lost edges and is
  *      rejected. Otherwise code39.c accepts only a complete '*X*' symbol
  *      with a clear wide / narrow ratio in every character. Bars are
@@ -239,13 +238,14 @@ edges_collect (void)
 
 /*!
  * @brief  Decide whether the capture is complete.
- * @return True once the sensor has been white (steady, no edge) after at
- *         least BAR_EDGES_MIN edges for BAR_QUIET_MM of travel (car
- *         driving: it moved BAR_MIN_TRAVEL_COUNTS since the first edge)
- *         or BAR_QUIET_MS (hand swipe, open loop) -- the barcode has fully
- *         passed the sensor. Backstops: BAR_STALL_TIMEOUT_US without an
- *         edge while driving, BAR_IDLE_TIMEOUT_US otherwise (a lone stray
- *         capture, which then decodes as unreadable).
+ * @return True once the sensor has been white (steady, no edge) for
+ *         BAR_QUIET_MM of travel (car driving: it moved
+ *         BAR_MIN_TRAVEL_COUNTS since the first edge; any edge count, so
+ *         a stray or partial read ends too), or for BAR_QUIET_MS after at
+ *         least BAR_EDGES_MIN edges (hand swipe, open loop) -- the barcode
+ *         has fully passed the sensor. Backstops: BAR_STALL_TIMEOUT_US
+ *         without an edge while driving, BAR_IDLE_TIMEOUT_US otherwise (a
+ *         lone stray capture, which then decodes as unreadable).
  */
 static bool
 capture_is_done (void)
@@ -276,12 +276,15 @@ capture_is_done (void)
                       (uint32_t) SUB_PER_COUNT))
         {
             /* Driving: by distance, so a slow or briefly stopped car
-             * cannot end the read in the middle of an element. Constant
-             * expression, a few hundred: fits a uint32_t. */
+             * cannot end the read in the middle of an element. Any edge
+             * count: BAR_QUIET_MM of white is past the widest element, so
+             * a partial or stray read ends too (it would otherwise stay
+             * open while stray edges keep arriving, swallow the next
+             * barcode and never be logged). Constant expression, a few
+             * hundred: fits a uint32_t. */
             uint32_t const quiet_end = (uint32_t) (BAR_QUIET_MM * SUB_PER_MM);
 
-            b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
-                      (quiet >= quiet_end)) ||
+            b_done = (b_white && (quiet >= quiet_end)) ||
                      (idle > BAR_STALL_TIMEOUT_US);
         }
         else
