@@ -248,6 +248,14 @@
  * 141 mm of barcode takes ~1.8 s at SPEED_STEER. Keep below LINE_LOST_MS.
  * TUNE.                                                                 */
 #define BAR_HOLD_MAX_MS      (2000U)
+/* The hold starts only once the read has this many edges. A single black
+ * edge is not a barcode: on a curve the line itself (or a mark) passes
+ * under the barcode sensor (29 mm left of centre) and gives 1-2 edges,
+ * and holding straight then drove the car off the curve (measured:
+ * turns stopped working with the hold). '*' alone is 10 edges, so the
+ * hold starts ~20 mm into a real barcode; the decoder measures by
+ * distance, so the steering before that does not spoil the read. TUNE. */
+#define BAR_HOLD_EDGES       (6U)
 /* A sensor that saw black keeps reporting black for this long, so a
  * reading that flickers white at the line edge (measured: missed black
  * on curves, car ran straight off) still steers. Junctions and

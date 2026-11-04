@@ -26,9 +26,9 @@
 
 #include "port.h"
 
-#include "barcode.h"
 #include "car_config.h"
 #include "fault.h"
+#include "barcode.h"
 #include "motion_control.h"
 #include "motor_driver.h"
 #include "safety.h"
@@ -791,8 +791,9 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 }
 
 /*!
- * @brief  Hold straight while a barcode read is in progress, for at most
- *         BAR_HOLD_MAX_MS from its start.
+ * @brief  Hold straight while a barcode is being read (the read has at
+ *         least BAR_HOLD_EDGES edges, see barcode_is_reading()), for at
+ *         most BAR_HOLD_MAX_MS from its start.
  * @param  p_in  Inputs of this period.
  * @return True to drive straight this period.
  */
@@ -823,9 +824,9 @@ bar_hold (motion_in_t const * p_in)
  * @brief  Steering differential from the line sensors, which straddle
  *         the line: one sensor on black turns toward it; both white keeps
  *         turning gently (LINE_LAST_GAIN) toward the side that last saw
- *         black (both white cannot
- *         tell centred from a line that slipped out past the inner sensor
- *         on a curve); both black (junction) drives straight.
+ *         black (both white cannot tell centred from a line that slipped
+ *         out past the inner sensor on a curve); both black (junction)
+ *         drives straight.
  * @param  p_in  Inputs of this period (fresh line reading).
  * @return Steering differential, m/s (+ turns right).
  */
