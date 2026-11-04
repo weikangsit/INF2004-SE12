@@ -2,7 +2,7 @@
 """Group 12 robot car - MQTT 3.1.1 broker + web app server (stdlib only).
 
 One process, two listeners:
-  * MQTT over TCP        (default 127.0.0.1:1883) - for the Pico W car
+  * MQTT over TCP        (default 0.0.0.0:1883) - for the Pico W car
   * HTTP + MQTT over WebSocket (default 127.0.0.1:8080) - web app at /,
     broker at ws://<host>:8080/mqtt (binary frames, subprotocol "mqtt")
 
@@ -11,12 +11,18 @@ Both listeners feed the same broker: QoS 0/1 publish (delivered at QoS 0),
 its barcode table even when no browser is open), keep-alive, optional
 password. Every payload is passed through untouched as bytes.
 
-    python server.py                                  # local test only
-    python server.py --mqtt-host 0.0.0.0 --password s3cret   # car on LAN
+Discovery: once a second the server broadcasts a 1-byte beacon (0x12) to
+UDP port 1884 on every local network. The car connects to whichever address
+sent it, on its compiled-in MQTT_BROKER_PORT (1883), so the laptop's IP does
+not have to be compiled into the firmware (MQTT_BROKER_IP is the fallback).
 
-SECURITY: the MQTT port must be reachable by the car, so for real runs it
-is bound to the LAN. Use --password (the car and web app must send it).
-The web port stays on localhost unless you pass --web-host.
+    python server.py                         # car on the same WiFi/hotspot
+    python server.py --password s3cret       # same, password required
+    python server.py --mqtt-host 127.0.0.1   # local test only, no beacon
+
+SECURITY: the MQTT port is reachable from the local network so the car can
+connect. Use --password on a shared network (the car and web app must send
+it). The web port stays on localhost unless you pass --web-host.
 """
 from __future__ import annotations   # allows `str | None` hints on Python 3.7-3.9
 
@@ -27,6 +33,7 @@ import hashlib
 import hmac
 import mimetypes
 import os
+import socket
 import struct
 import sys
 import time
@@ -36,6 +43,9 @@ STATIC = Path(__file__).resolve().parent / "static"
 RETAIN_FILE = Path(__file__).resolve().parent / "retained.bin"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_PACKET = 64 * 1024
+BEACON_PORT = 1884                  # must match BEACON_PORT in src/comms.c
+BEACON_TAG = 0x12                   # must match BEACON_TAG in src/comms.c
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 CONNECT, CONNACK, PUBLISH, PUBACK = 1, 2, 3, 4
 SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK = 8, 9, 10, 11
@@ -422,10 +432,55 @@ async def handle_http(broker: Broker, reader, writer):
     writer.close()
 
 
+# --------------------------------------------------------------------------
+# Discovery beacon: lets the car find this laptop without a compiled-in IP
+# --------------------------------------------------------------------------
+def beacon_frame() -> bytes:
+    """The sender's address is all the car needs: one tag byte."""
+    return bytes([BEACON_TAG])
+
+
+def local_ipv4s() -> list:
+    """This machine's LAN IPv4 addresses (no loopback / link-local)."""
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    try:   # the interface of the default route; connect() on UDP sends nothing
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as k:
+            k.connect(("10.255.255.255", 1))
+            ips.add(k.getsockname()[0])
+    except OSError:
+        pass
+    return sorted(ip for ip in ips if not ip.startswith(("127.", "169.254.", "0.")))
+
+
+async def beacon(mqtt_host: str, dest: str = "255.255.255.255"):
+    """Broadcast the beacon once a second from every local address (on
+    Windows a limited broadcast leaves only through the bound interface)."""
+    frame, ips, n = beacon_frame(), [], 0
+    while True:
+        if n % 10 == 0:                       # pick up network changes
+            ips = local_ipv4s() if mqtt_host in ("0.0.0.0", "") else [mqtt_host]
+        n += 1
+        for ip in ips:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as k:
+                    k.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    k.bind((ip, 0))
+                    k.sendto(frame, (dest, BEACON_PORT))
+            except OSError:
+                pass                          # interface went away; retry later
+        await asyncio.sleep(1)
+
+
 async def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--mqtt-host", default="127.0.0.1",
-                    help="MQTT/TCP bind address; 0.0.0.0 so the car can reach it")
+    ap.add_argument("--mqtt-host", default="0.0.0.0",
+                    help="MQTT/TCP bind address (default all interfaces, so the car "
+                         "can reach it; 127.0.0.1 = local test, no beacon)")
     ap.add_argument("--mqtt-port", type=int, default=1883)
     ap.add_argument("--web-host", default="127.0.0.1")
     ap.add_argument("--web-port", type=int, default=8080)
@@ -441,11 +496,21 @@ async def main():
                                      a.web_host, a.web_port)
     log(f"MQTT broker on {a.mqtt_host}:{a.mqtt_port}")
     log(f"web app on http://{a.web_host}:{a.web_port}/  (WebSocket /mqtt)")
-    if a.mqtt_host not in ("127.0.0.1", "localhost", "::1") and not a.password:
-        log("WARNING: broker is reachable from the network with NO password; "
-            "anyone on the LAN can drive the car. Use --password.")
+    tasks = [tcp.serve_forever(), web.serve_forever()]
+    if a.mqtt_host in LOOPBACK:
+        log("local test only: the car cannot reach this broker")
+    else:
+        ips = local_ipv4s()
+        log("this laptop: " + (", ".join(ips) or "no network yet") +
+            f" - the car finds it automatically (beacon on UDP {BEACON_PORT})")
+        tasks.append(beacon(a.mqtt_host))
+        if a.mqtt_port != 1883:
+            log(f"note: the car connects to the port compiled into it (MQTT_BROKER_PORT), "
+                f"not {a.mqtt_port}")
+        if not a.password:
+            log("note: no --password, so anyone on this network can command the car")
     async with tcp, web:
-        await asyncio.gather(tcp.serve_forever(), web.serve_forever())
+        await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

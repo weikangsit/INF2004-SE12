@@ -63,7 +63,6 @@
 #define FULL_TURN_DEG        (360.0f)
 #define HALF_TURN_DEG        (180.0f)
 #define HALVES               (2.0f)       /* deg / mm -> 0.5 steps        */
-#define MM_PER_M             (1000.0f)
 #define HUMP_END_FRACTION    (0.2f)
 #define TURNING_DPS          (30.0f)
 #define MOVING_MMS           (20)         /* sum of wheel speeds          */

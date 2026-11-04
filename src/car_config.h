@@ -265,19 +265,30 @@
  * straight and steadily over the bars (measured: reads work when the car
  * is pushed by hand but fail while the line steering pivots it). Not the
  * speed the read began with: just after a start the car is still ramping
- * up and crawled over the barcode. The hold ends after this long even if the
- * read has not, so a stray edge cannot leave the car unsteered; ~245 mm
- * (encoder) of barcode takes ~3 s at SPEED_STEER. Keep below LINE_LOST_MS:
- * both line sensors can stay white for the whole hold. TUNE.           */
-#define BAR_HOLD_MAX_MS      (2800U)
-/* The hold starts only once the read has this many edges. A single black
- * edge is not a barcode: on a curve the line itself (or a mark) passes
- * under the barcode sensor (29 mm left of centre) and gives 1-2 edges,
- * and holding straight then drove the car off the curve (measured:
- * turns stopped working with the hold). '*' alone is 10 edges, so the
- * hold starts ~20 mm into a real barcode; the decoder measures by
- * distance, so the steering before that does not spoil the read. TUNE. */
-#define BAR_HOLD_EDGES       (6U)
+ * up and crawled over the barcode. The hold starts on the read's first
+ * edge (barcodes lie on straights; it starts only when the car is not in
+ * a bend, see BAR_BEND_MAX_DEG, so a stray read where the barcode sensor
+ * sweeps over the line in a corner cannot keep the car straight) and
+ * covers the whole barcode, so no bar
+ * is measured while the car steers (the sensor sits far out and in front,
+ * where steering distorts its travel most). It ends with the read, or
+ * after BAR_HOLD_MAX_MM so a read kept open by stray edges cannot leave
+ * the car unsteered: the encoders read the barcode as ~245 mm, plus the
+ * BAR_QUIET_MM that ends the read. BAR_HOLD_MAX_MS is only a backstop
+ * (300 mm at SPEED_STEER is ~3.8 s); the line-lost timeout already waits
+ * while a barcode is read. TUNE.                                         */
+#define BAR_HOLD_MAX_MM      (300.0f)
+#define BAR_HOLD_MAX_MS      (5000U)
+/* Bend detector for the hold: the car is in a bend when the wheel
+ * encoders show it turned more than BAR_BEND_MAX_DEG over the last
+ * BAR_BEND_WINDOW_MM of travel. Not the line sensors: on a straight the
+ * car may run off centre with one sensor on black, and inside a corner
+ * both read white for moments. A corner of radius R turns the car by
+ * 100 mm / R rad within the window (R 300 mm: 19 deg), while line
+ * following on a straight only wiggles. TUNE: drive a straight and read
+ * the yaw swing on the web app; set this above it, below a corner's.   */
+#define BAR_BEND_MAX_DEG     (15.0f)
+#define BAR_BEND_WINDOW_MM   (100.0f)
 /* A sensor that saw black keeps reporting black for this long, so a
  * reading that flickers white at the line edge (measured: missed black
  * on curves, car ran straight off) still steers. Junctions and
@@ -343,7 +354,6 @@
  * run never got shorter).                                              */
 #define REVERSE_BEFORE_SCAN_CM (0U)
 #define REVERSE_MARGIN_CM    (4U)      /* +/-4 cm reverse tolerance     */
-#define REVERSE_RETRY_CM     (10U)
 /* Rectangular bypass with spot turns: 90 deg out, sideways, 90 deg back
  * to parallel, along the obstacle, 90 deg in, back to the line. The car
  * stops ~12 cm from the obstacle, so the old 45 deg out-leg met the
@@ -419,7 +429,7 @@
 # define WIFI_PASSWORD       "change-me"
 #endif
 #ifndef MQTT_BROKER_IP
-# define MQTT_BROKER_IP      "172.20.10.6"   /* laptop on hotspot Kuro   */
+# define MQTT_BROKER_IP      "172.20.10.6"   /* fallback: beacon wins    */
 #endif
 #ifndef MQTT_BROKER_PORT
 # define MQTT_BROKER_PORT    (1883U)
@@ -433,7 +443,6 @@
 #ifndef MQTT_USER
 # define MQTT_USER           "car"
 #endif
-#define MQTT_BACKOFF_MAX_MS  (4000U)
 #define MQTT_OFFLINE_BUF     (10U)     /* 1 s of telemetry at 100 ms    */
 
 #endif /* CAR_CONFIG_H */

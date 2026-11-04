@@ -16,6 +16,26 @@ the compiled `proto.c` in a Cortex-M0+ emulator against the reference.
 Broker: `web/server.py` (MQTT 3.1.1, TCP 1883 for the car, WebSocket
 `/mqtt` on 8080 for the browser). Client id `robocar-g12`, keep-alive 10 s.
 
+## Broker discovery (UDP beacon)
+
+The car does not need the laptop's IP. While the MQTT port is open to the
+network (the default), `server.py` broadcasts a **1-byte** beacon, `0x12`,
+once a second from each local IPv4 address to `255.255.255.255`, UDP port
+1884. The beacon has no fields: the only information the car needs is the
+sender's address, which the IP header already carries. The byte only tells
+a beacon apart from stray traffic on the port (8 bits; the earlier 6-byte
+layout with a 4-byte tag and the MQTT port was cut down to this).
+
+`comms.c` listens on UDP 1884 and connects to the sender of the latest
+beacon, on its compiled-in `MQTT_BROKER_PORT` (1883). Any other length or
+value is ignored. On the
+first attempt after boot it waits up to 3 s for a beacon. If none is heard
+it uses the compiled-in `MQTT_BROKER_IP` (CMake `-DMQTT_BROKER_IP=`). A
+beacon from a new address aborts a connect attempt still waiting for its
+CONNACK. An established session is kept; the new address is used on the
+next reconnect. `--mqtt-host 127.0.0.1` keeps the broker local and sends no
+beacon.
+
 ## Topics
 
 | Topic (`robot/12/...`) | Direction | Bytes | QoS / retain | Rate |

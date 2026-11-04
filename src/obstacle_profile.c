@@ -108,16 +108,15 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
  *  min_side_clear_cm (the car stops close, so the edge rays often hit the
  *  obstacle itself), the car still goes around on the side with more
  *  room: the bypass watches ahead and stops if that side is blocked.
- *  The car never reverses (REVERSE / NO_ROUTE are no longer planned).
+ *  The car never reverses.
  *
  * @param  p_prof        Profile of the sweep.
  * @param  p_limits      Planning limits.
- * @param  b_retry_done  Unused (kept for the interface and the tests).
  * @return Route.
  */
 obstacle_route_t
 obstacle_profile_plan (obstacle_profile_t const * p_prof,
-                       obstacle_limits_t const * p_limits, bool b_retry_done)
+                       obstacle_limits_t const * p_limits)
 {
     bool const left_known  = (OBSTACLE_NO_ECHO != p_prof->clear_left_cm);
     bool const right_known = (OBSTACLE_NO_ECHO != p_prof->clear_right_cm);
@@ -163,8 +162,6 @@ obstacle_profile_plan (obstacle_profile_t const * p_prof,
     {
         route = left_known ? OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
     }
-
-    (void) b_retry_done;
 
     return (route);
 }

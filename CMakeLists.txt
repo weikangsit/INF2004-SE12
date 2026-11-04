@@ -1,3 +1,19 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.3.1)
+set(toolchainVersion 15_2_Rel1)
+set(picotoolVersion 2.3.1)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
+set(PICO_BOARD pico CACHE STRING "Board type")
+
 # Group 12 robot car - CMake build for the Raspberry Pi Pico W.
 #
 # Builds the car firmware (src/) on top of the INF2004 micro T-Kernel 3.0
@@ -74,7 +90,7 @@ set(WIFI_SSID "Kuro" CACHE STRING "WiFi network the car joins (personal hotspot)
 set(WIFI_PASSWORD "change-me" CACHE STRING "WiFi password (pass on the command line, never commit)")
 set(WIFI_SECURITY "WPA3_WPA2" CACHE STRING "Hotspot security: WPA2, WPA3_WPA2 or WPA3")
 set_property(CACHE WIFI_SECURITY PROPERTY STRINGS WPA2 WPA3_WPA2 WPA3)
-set(MQTT_BROKER_IP "172.20.10.6" CACHE STRING "IP of the laptop running web/server.py (hotspot Kuro)")
+set(MQTT_BROKER_IP "172.20.10.6" CACHE STRING "Fallback broker IP, used only if no web/server.py beacon is heard (UDP 1884)")
 set(MQTT_BROKER_PORT "1883" CACHE STRING "MQTT broker TCP port")
 set(MQTT_PASSWORD "" CACHE STRING "Broker --password (empty = open broker)")
 option(ROBOCAR_SMP "Run micro T-Kernel on both RP2040 cores" ON)

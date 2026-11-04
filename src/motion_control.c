@@ -44,6 +44,10 @@
 #define DEG_PER_RAD          (180.0f / PI_F)
 #define HALF_DEG             (2.0f)        /* heading is in 0.5 deg       */
 #define MM_PER_M             (1000.0f)
+/* Bend detector for the barcode hold: encoder yaw sampled every
+ * BEND_SAMPLE_MM, so the window spans BEND_SAMPLES x BEND_SAMPLE_MM. */
+#define BEND_SAMPLES         (8U)
+#define BEND_SAMPLE_MM       (BAR_BEND_WINDOW_MM / (float32_t) BEND_SAMPLES)
 #define PCT_PER_UNIT         (100.0f)
 #define PM_PER_UNIT          (1000.0f)
 #define CM_PER_M             (100.0f)
@@ -156,14 +160,20 @@ typedef struct
     uint32_t      steer_ms;      /* time of the last steering correction  */
     int32_t       line_last;     /* side that last saw black: -1, 0, +1   */
     bool          b_bar_hold;    /* holding straight for a barcode read   */
+    float32_t     bend_yaw[BEND_SAMPLES]; /* encoder yaw, rad, one sample
+                                           * per BEND_SAMPLE_MM of travel  */
+    float32_t     bend_next_m;   /* travel at which the next sample is due */
+    uint8_t       bend_idx : 3;  /* next slot 0..7 (= oldest once full)   */
+    uint8_t       bend_n   : 4;  /* samples held, 0..BEND_SAMPLES (8)     */
     uint32_t      bar_hold_ms;   /* time that hold began                  */
+    float32_t     bar_hold_m;    /* mean wheel travel when it began, m    */
     bool          b_end_on_line;
     float32_t     speed_mps;
     float32_t     dist_m;
     float32_t     angle_deg;
-    float32_t     dist_l;            /* wheel travel since boot, m            */
+    float32_t     dist_l;        /* wheel travel since boot, m            */
     float32_t     dist_r;
-    float32_t     dist_l0;           /* at command start                      */
+    float32_t     dist_l0;       /* at command start                      */
     float32_t     dist_r0;
     float32_t     speed_l;       /* measured (or estimated), m/s          */
     float32_t     speed_r;
@@ -240,6 +250,7 @@ static void      sweep_drive (int32_t duty_pm);
 static float32_t end_speed_cap (float32_t remaining_m);
 static float32_t line_steer (motion_in_t const * p_in);
 static bool      bar_hold (motion_in_t const * p_in);
+static bool      bend_update (float32_t travel);
 static void      wheels_slew (void);
 static void      self_test_step (motion_in_t const * p_in);
 static void      closed_loop_drive (motion_in_t const * p_in);
@@ -635,6 +646,8 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.b_steered     = false;
     g_ctx.line_last     = 0;
     g_ctx.b_bar_hold    = false;
+    g_ctx.bend_n        = 0U;
+    g_ctx.bend_idx      = 0U;
     g_ctx.sweep_stage   = SWEEP_SETTLE;
     g_ctx.stage_ms      = p_in->now_ms;
     pid_reset(&g_ctx.pid_l);
@@ -754,8 +767,8 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
          * speed it began with, which right after a start is a crawl),
          * like the hand push that reads reliably. Line steering during a
          * read pivots the sensor over the bars and spoils it (measured),
-         * so the hold wins; it starts only after BAR_HOLD_EDGES edges and
-         * lasts at most BAR_HOLD_MAX_MS. */
+         * so the hold wins; it starts on the first edge while centred and
+         * lasts at most BAR_HOLD_MAX_MM (BAR_HOLD_MAX_MS as a backstop). */
         steer  = 0.0f;
         target = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
     }
@@ -808,26 +821,43 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 }
 
 /*!
- * @brief  Hold straight while a barcode is being read (the read has at
- *         least BAR_HOLD_EDGES edges, see barcode_is_reading()), for at
- *         most BAR_HOLD_MAX_MS from its start.
+ * @brief  Hold straight while a barcode is being read (from its first
+ *         edge, see barcode_is_reading()), for at most BAR_HOLD_MAX_MM of
+ *         travel (BAR_HOLD_MAX_MS as a backstop). A hold starts only on
+ *         a straight: the car turned less than BAR_BEND_MAX_DEG over the
+ *         last BAR_BEND_WINDOW_MM (wheel encoders).
+ *
+ *  NOTE: In a corner the barcode sensor (out to the left) sweeps across
+ *  the line and starts a stray read; holding straight there drove the car
+ *  off the curve (measured). The line sensors cannot tell that apart from
+ *  a barcode: on a straight the car may be off centre with one sensor on
+ *  black, and inside a corner both read white for moments. Turning tells
+ *  them apart: barcodes lie on straights, where the heading stays steady
+ *  however far off centre the car runs, while a corner turns it by tens
+ *  of degrees within a few cm. Once a hold starts the car is not turning,
+ *  so it is not re-checked; the hold lasts until the read ends.
  * @param  p_in  Inputs of this period.
  * @return True to drive straight this period.
  */
 static bool
 bar_hold (motion_in_t const * p_in)
 {
-    bool b_hold = false;
+    float32_t const travel = (g_ctx.dist_l + g_ctx.dist_r) * HALF;
+    bool const      b_bend = bend_update(travel);
+    bool            b_hold = false;
 
     if (g_ctx.b_follow && barcode_is_reading())
     {
-        if (!g_ctx.b_bar_hold)
+        if ((!g_ctx.b_bar_hold) && (!b_bend))
         {
             g_ctx.b_bar_hold  = true;
             g_ctx.bar_hold_ms = p_in->now_ms;
+            g_ctx.bar_hold_m  = travel;
         }
 
-        b_hold = ((p_in->now_ms - g_ctx.bar_hold_ms) < BAR_HOLD_MAX_MS);
+        b_hold = g_ctx.b_bar_hold &&
+                 ((p_in->now_ms - g_ctx.bar_hold_ms) < BAR_HOLD_MAX_MS) &&
+                 (((travel - g_ctx.bar_hold_m) * MM_PER_M) < BAR_HOLD_MAX_MM);
     }
     else
     {
@@ -835,6 +865,49 @@ bar_hold (motion_in_t const * p_in)
     }
 
     return (b_hold);
+}
+
+/*!
+ * @brief  Record the encoder yaw every BEND_SAMPLE_MM of travel and report
+ *         whether the car turned more than BAR_BEND_MAX_DEG across the
+ *         window (oldest sample to now).
+ * @param  travel  Mean wheel travel, m.
+ * @return True in a bend. False until the first sample is taken.
+ */
+static bool
+bend_update (float32_t travel)
+{
+    /* Wheel travel difference over the turning track = yaw, rad. */
+    float32_t const yaw    = (g_ctx.dist_r - g_ctx.dist_l) /
+                             TURN_TRACK_WIDTH_M;
+    bool            b_bend = false;
+
+    /* Bit-fields read as int: copy into unsigned locals (Barr-C 5.3c). */
+    uint32_t const  n      = g_ctx.bend_n;
+    uint32_t const  idx    = g_ctx.bend_idx;
+
+    if (n > 0U)
+    {
+        /* Oldest sample: slot 0 until the ring is full, then the next
+         * slot to be overwritten. */
+        uint32_t const  oldest = (n < BEND_SAMPLES) ? 0U : idx;
+        float32_t const turned = fabsf(yaw - g_ctx.bend_yaw[oldest]) *
+                                 DEG_PER_RAD;
+
+        b_bend = (turned > BAR_BEND_MAX_DEG);
+    }
+
+    if ((0U == n) || (travel >= g_ctx.bend_next_m))
+    {
+        g_ctx.bend_yaw[idx] = yaw;
+        /* Wraps below BEND_SAMPLES (8), so it fits a uint8_t. */
+        g_ctx.bend_idx      = (uint8_t) ((idx + 1U) % BEND_SAMPLES);
+        g_ctx.bend_n        = (uint8_t) ((n < BEND_SAMPLES) ? (n + 1U) :
+                                                          BEND_SAMPLES);
+        g_ctx.bend_next_m   = travel + (BEND_SAMPLE_MM / MM_PER_M);
+    }
+
+    return (b_bend);
 }
 
 /*!

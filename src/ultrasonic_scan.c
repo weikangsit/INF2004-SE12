@@ -47,7 +47,7 @@ static volatile bool     g_b_ever_ok  = false;
 static uint16_t         ping_cm (void);
 static uint16_t         ping_at (uint32_t angle_deg);
 static bool             peek_ahead (void);
-static obstacle_route_t scan_and_plan (bool b_retry_done);
+static obstacle_route_t scan_and_plan (void);
 static uint32_t         sweep_coarse (obstacle_ray_t * p_rays);
 static uint32_t         sweep_fine (obstacle_ray_t * p_rays, uint32_t count,
                                     uint32_t centre_deg);
@@ -81,7 +81,6 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
 {
     uint64_t next_us        = time_us_64();
     bool     b_near_sent    = false;
-    bool     b_retry_done   = false;
 
     (void) stacd;
     (void) p_exinf;
@@ -97,11 +96,9 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
         {
             if (SCAN_REQ_PROFILE == req)
             {
-                obstacle_route_t const route = scan_and_plan(b_retry_done);
-
-                b_retry_done = (OBSTACLE_ROUTE_REVERSE == route);
-                /* Route values 0..5 are the same as us_result_t 0..5. */
-                result_post((us_result_t) route);
+                /* us_result_t takes its route values from
+                 * obstacle_route_t, so the cast keeps the value. */
+                result_post((us_result_t) scan_and_plan());
                 next_us = time_us_64();
             }
             else if (SCAN_REQ_PEEK == req)
@@ -112,7 +109,6 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
             }
             else
             {
-                b_retry_done = false;
                 hal_servo_set_deg(SERVO_CENTRE_DEG);
             }
 
@@ -136,8 +132,7 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
         else if ((US_RANGE_NO_ECHO != range) &&
                  (range > (US_OBSTACLE_CM + NEAR_HYSTERESIS_CM)))
         {
-            b_near_sent  = false;                 /* hysteresis           */
-            b_retry_done = false;
+            b_near_sent = false;                  /* hysteresis           */
         }
         else
         {
@@ -171,7 +166,7 @@ ultrasonic_scan_request (void)
 }
 
 /*!
- * @brief  Cancel the retry state and centre the servo (Navigation FSM).
+ * @brief  Centre the servo (Navigation FSM).
  */
 void
 ultrasonic_scan_abort (void)
@@ -301,11 +296,10 @@ peek_ahead (void)
 
 /*!
  * @brief  Full coarse + fine sweep, profile and plan.
- * @param  b_retry_done  True if the car already backed off once.
  * @return Suggested route.
  */
 static obstacle_route_t
-scan_and_plan (bool b_retry_done)
+scan_and_plan (void)
 {
     static obstacle_limits_t const limits =
     {
@@ -326,7 +320,7 @@ scan_and_plan (bool b_retry_done)
     obstacle_profile_build(rays, count, &limits, &profile);
     profile_report(&profile);
 
-    return (obstacle_profile_plan(&profile, &limits, b_retry_done));
+    return (obstacle_profile_plan(&profile, &limits));
 }
 
 /*!
@@ -407,9 +401,9 @@ result_post (us_result_t result)
 static void
 profile_report (obstacle_profile_t const * p_prof)
 {
-    int32_t const range_x10 = (OBSTACLE_NO_ECHO == p_prof->closest_cm) ?
-                              TENTHS_NO_ECHO :
-                              ((int32_t) p_prof->closest_cm * (int32_t) TENTHS);
+    int32_t const range_x10 =
+        (OBSTACLE_NO_ECHO == p_prof->closest_cm) ? TENTHS_NO_ECHO :
+        ((int32_t) p_prof->closest_cm * (int32_t) TENTHS);
 
     /* Angle <= 180 fits a byte; range and width are under 3277 cm. */
     telemetry_post_event(EV_OBSTACLE, (uint8_t) p_prof->closest_deg,

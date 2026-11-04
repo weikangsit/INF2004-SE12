@@ -8,7 +8,7 @@ and no hardware headers (see `port.h`).
 
 | Module | Owner | Task / side | Provides | Consumes |
 |---|---|---|---|---|
-| `comms` | Buddy 1 | CYW43 hook (template task) | publish queue, link + radio liveness, remote commands, e-stop to Safety | telemetry frames |
+| `comms` | Buddy 1 | CYW43 hook (template task) | publish queue, broker discovery (UDP beacon), link + radio liveness, remote commands, e-stop to Safety | telemetry frames |
 | `telemetry` | Buddy 1 | Telemetry, prio 8 | events (`telemetry_post_event`), 10 Hz frame | shared record, fault mask |
 | `proto`, `barcode_map` | Buddy 1 | library | packed MQTT payloads, letter (A-Z) per action table | - |
 | `motion_control` | Buddy 2 | Motion, prio 3 | `motion_cmd_q`, `motion_done_q` (seq + result), speed/duty/distance | line reading, IMU heading, safety latch |
@@ -58,8 +58,8 @@ and no hardware headers (see `port.h`).
   tilt / hump / impact; NFR3's 100 ms now counts from the confirmed tilt).
 * Magnetometer calibration: hold GP21 for 2 s in READY (car spins once).
 * `line_pos_q` became a single stamped word (newest value only).
-* No reverse at an obstacle (replaces Version C): the scan never plans
-  REVERSE / NO_ROUTE; a blocked bypass leg stops with FC_NO_ROUTE
+* No reverse at an obstacle (replaces Version C): the scan plans
+  CONTINUE, LEFT, RIGHT or UNSAFE; a blocked bypass leg stops with FC_NO_ROUTE
   detail 2.
 * Step-and-check bypass (any obstacle size, team flow): 90 deg spot
   turns. Width: turn out, step BYPASS_STEP_CM, face forward and check

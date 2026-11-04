@@ -100,7 +100,6 @@
     push(hist.speed, v); push(hist.pitch, t.pitch); push(hist.obst, t.obstacle == null ? NaN : t.obstacle);
   }
   const compass = (d) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(d / 45) % 8];
-  const actionName = (c) => (c == null ? "no action" : P.ACTIONS[c]);
   const fmtTime = (s) => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
 
   function chart(id, data, color) {
@@ -136,11 +135,30 @@
   }
 
   // ------------------------------------------------------------------ MQTT
+  // Reconnect on its own when the broker goes away (server restarted,
+  // laptop asleep): 1 s, 2 s, 4 s ... 10 s apart. Not after the broker
+  // refused us (wrong password): retrying cannot fix that, so the page
+  // waits for Connect.
+  const RETRY_MIN_MS = 1000, RETRY_MAX_MS = 10000;
+  let retryTimer = null, retryMs = RETRY_MIN_MS, refused = false;
+
   mqtt.onstatus = (state, why) => {
+    if (state !== "online" && refused) return;          // keep "wrong password" shown
     const p = $("broker-pill");
     p.className = "pill " + (state === "online" ? "on" : "off");
     p.textContent = "broker " + why;
-    if (state === "online") mqtt.subscribe(ROOT + "/#");   // retained table arrives first
+    if (state === "online") {
+      retryMs = RETRY_MIN_MS;
+      mqtt.subscribe(ROOT + "/#");                        // retained table arrives first
+    } else if (why === "wrong password" || why.startsWith("refused")) {
+      refused = true;
+    } else {
+      if (!retryTimer) {                                  // error + close: one retry
+        retryTimer = setTimeout(() => { retryTimer = null; connect(true); }, retryMs);
+        retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
+      }
+      p.textContent += " – retrying…";
+    }
   };
 
   // A frame this page cannot decode almost always means the car runs a
@@ -225,7 +243,13 @@
     }
   };
 
-  function connect() {
+  function connect(auto = false) {
+    if (!auto) {                                          // Connect button / page load
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      retryMs = RETRY_MIN_MS;
+    }
+    refused = false;
     const id = "web-" + Math.random().toString(16).slice(2, 8);
     mqtt.connect($("url").value, { clientId: id, username: "web", password: $("pw").value });
     localStorage.setItem("g12-url", $("url").value);

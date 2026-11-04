@@ -686,12 +686,6 @@ obstacle_step (nav_in_t const * p_in)
                 enter(NAV_LINE_FOLLOW);
             break;
 
-            case US_RESULT_REVERSE:
-                g_nav.b_reverse_wait = true;      /* back off, rescan     */
-                g_nav.pending_seq    = motion_control_reverse(
-                    SPEED_SEARCH_CMS, REVERSE_RETRY_CM, true);
-            break;
-
             case US_RESULT_LEFT:
             case US_RESULT_RIGHT:
                 /* Team rule: always go around on the left. The scan
@@ -708,7 +702,6 @@ obstacle_step (nav_in_t const * p_in)
                 nav_fault(FC_NO_ROUTE, true, DETAIL_SCAN_UNSAFE);
             break;
 
-            case US_RESULT_NO_ROUTE:
             default:
                 nav_fault(FC_NO_ROUTE, true, 0);
             break;

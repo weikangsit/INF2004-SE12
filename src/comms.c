@@ -34,6 +34,8 @@
 
 #include "lwip/apps/mqtt.h"
 #include "lwip/ip_addr.h"
+#include "lwip/pbuf.h"
+#include "lwip/udp.h"
 #include <tm/tmonitor.h>
 
 #include "port.h"
@@ -55,12 +57,22 @@
 #define CONNECT_TIMEOUT_MS   (8000U)
 #define HOOK_STALE_MS        (500U)   /* hook not called -> link is down */
 #define BACKOFF_BASE_MS      (500U)   /* doubles per failed attempt      */
-#define BACKOFF_STEP_MAX     (3U)     /* 500 << 3 = MQTT_BACKOFF_MAX_MS  */
+#define BACKOFF_STEP_MAX     (3U)     /* 500 << 3 = 4 s                  */
 #define KEEPALIVE_S          (10U)
 #define SUBSCRIBE_QOS        (1U)
 #define PUBLISH_QOS          (0U)
 #define PUBLISH_RETAIN       (0U)
 #define DRAIN_PER_POLL       (4U)     /* keeps the radio poll short      */
+
+/* Broker discovery: web/server.py broadcasts a 1-byte beacon (the tag)
+ * to this UDP port once a second. The car connects to the sender on
+ * MQTT_BROKER_PORT, so MQTT_BROKER_IP is only the fallback when no beacon
+ * is heard. The sender's address is the only information needed, so the
+ * beacon carries no fields: one byte just tells it from stray traffic. */
+#define BEACON_PORT          (1884U)  /* must match web/server.py        */
+#define BEACON_LEN           (1U)
+#define BEACON_TAG           (0x12U)  /* group 12; must match server.py  */
+#define DISCOVER_WAIT_MS     (3000U)  /* first attempt waits for a beacon */
 
 /* Publish queue: 1-byte topic header + packed frame per message.
  * NOTE: A T-Kernel message buffer stores each message as a 4-byte length
@@ -150,6 +162,23 @@ static uint8_t                  g_drop_reported = 0U;
  * under 65 s and the hook runs every 2 ms while they are in use. The
  * last-call time stays 32-bit because other tasks compare it after a WiFi
  * outage of any length, where a 16-bit value could wrap and look recent. */
+/** Broker discovery flags, packed into one byte (Change Requirement 1).
+ *  NOTE: Only the CYW43 task touches them (the hook and the lwIP UDP
+ *  callback it runs), so no lock is needed. */
+typedef struct
+{
+    bool b_tried     : 1;        /* beacon socket set up (or failed)      */
+    bool b_seen      : 1;        /* a beacon has named a broker           */
+    bool b_new       : 1;        /* its address is not tried yet          */
+    bool b_wait_over : 1;        /* first-attempt wait for a beacon done  */
+} discover_status_t;
+
+static struct udp_pcb *         gp_beacon       = NULL;
+static ip_addr_t                g_beacon_addr;          /* last sender    */
+static discover_status_t        g_disc          =
+    { false, false, false, false };
+static uint16_t                 g_discover_ms   = 0U;
+
 static volatile uint32_t        g_last_hook_ms  = 0U;
 static uint16_t                 g_state_ms      = 0U;
 static uint16_t                 g_hb_ms         = 0U;
@@ -181,6 +210,10 @@ static void     on_incoming_publish (void * p_arg, char const * p_topic,
                                      u32_t total_len);
 static void     on_incoming_data (void * p_arg, u8_t const * p_data,
                                   u16_t len, u8_t flags);
+static void     beacon_start (void);
+static void     on_beacon (void * p_arg, struct udp_pcb * p_pcb,
+                           struct pbuf * p_buf, ip_addr_t const * p_addr,
+                           u16_t port);
 
 /*!
  * @brief  Create the publish queue. Call from usermain() before the tasks
@@ -307,6 +340,7 @@ mqtt_utk_start (void)
     }
 
     g_last_hook_ms = now;
+    beacon_start();
 
     switch (g_link.state)
     {
@@ -343,14 +377,23 @@ link_reset (void)
 }
 
 /*!
- * @brief  IDLE: start a connection attempt.
+ * @brief  IDLE: start a connection attempt. The first attempt after boot
+ *         waits up to DISCOVER_WAIT_MS for a beacon, so the car does not
+ *         spend a full connect timeout on a stale fallback address.
  */
 static void
 link_idle (void)
 {
-    link_connect();
-    g_link.state = LINK_CONNECTING;
-    g_state_ms   = stamp_now();
+    bool const b_waiting = (!g_disc.b_seen) && (!g_disc.b_wait_over) &&
+                           (stamp_elapsed(g_discover_ms) < DISCOVER_WAIT_MS);
+
+    if (!b_waiting)
+    {
+        g_disc.b_wait_over = true;
+        link_connect();
+        g_link.state = LINK_CONNECTING;
+        g_state_ms   = stamp_now();
+    }
 }
 
 /*!
@@ -375,6 +418,13 @@ link_connecting (void)
         tm_printf((UB *) "mqtt: connect failed, retry in %d ms\n",
                   (int) (BACKOFF_BASE_MS << step));
         link_start_backoff();
+    }
+    else if (g_disc.b_new)
+    {
+        /* A broker appeared at another address: try it now instead of
+         * waiting for this attempt to time out. */
+        link_disconnect();
+        g_link.state = LINK_IDLE;
     }
     else
     {
@@ -477,7 +527,8 @@ link_connect (void)
 {
     struct mqtt_connect_client_info_t info;
     ip_addr_t                         broker;
-    err_t                             result = ERR_ARG;
+    bool                              b_addr_ok = false;
+    err_t                             result    = ERR_ARG;
 
     (void) memset(&info, 0, sizeof(info));
     (void) memset(&broker, 0, sizeof(broker));
@@ -503,10 +554,27 @@ link_connect (void)
         mqtt_disconnect(gp_mqtt);
     }
 
-    if ((NULL != gp_mqtt) &&
-        (0 != ip4addr_aton(MQTT_BROKER_IP, ip_2_ip4(&broker))))
+    /* The address of the last beacon wins; the compiled-in one is only
+     * used while no beacon has been heard. */
+    g_disc.b_new = false;
+
+    if (g_disc.b_seen)
+    {
+        ip_addr_copy(broker, g_beacon_addr);
+        b_addr_ok = true;
+    }
+    else if (0 != ip4addr_aton(MQTT_BROKER_IP, ip_2_ip4(&broker)))
     {
         IP_SET_TYPE(&broker, IPADDR_TYPE_V4);
+        b_addr_ok = true;
+    }
+    else
+    {
+        /* Bad MQTT_BROKER_IP and no beacon: fail and back off. */
+    }
+
+    if ((NULL != gp_mqtt) && b_addr_ok)
+    {
         mqtt_set_inpub_callback(gp_mqtt, on_incoming_publish,
                                 on_incoming_data, NULL);
         result = mqtt_client_connect(gp_mqtt, &broker, MQTT_BROKER_PORT,
@@ -526,7 +594,81 @@ link_connect (void)
         /* The CONNACK arrives through on_connection(). */
     }
 
-    tm_printf((UB *) "mqtt: connecting to " MQTT_BROKER_IP "\n");
+    tm_printf((UB *) "mqtt: connecting to %s:%d (%s)\n",
+              ipaddr_ntoa(&broker), (int) MQTT_BROKER_PORT,
+              g_disc.b_seen ? "found by beacon" : "MQTT_BROKER_IP fallback");
+}
+
+/*!
+ * @brief  Open the UDP socket that hears the broker's beacon. Called on
+ *         every hook; does its work once (lwIP is only usable from here).
+ */
+static void
+beacon_start (void)
+{
+    if (!g_disc.b_tried)
+    {
+        g_disc.b_tried = true;
+        g_discover_ms    = stamp_now();
+        gp_beacon        = udp_new_ip_type(IPADDR_TYPE_V4);
+
+        if (NULL != gp_beacon)
+        {
+            if (ERR_OK == udp_bind(gp_beacon, IP4_ADDR_ANY, BEACON_PORT))
+            {
+                udp_recv(gp_beacon, on_beacon, NULL);
+            }
+            else
+            {
+                udp_remove(gp_beacon);
+                gp_beacon = NULL;
+            }
+        }
+
+        if (NULL == gp_beacon)
+        {
+            tm_printf((UB *) "mqtt: no beacon socket, using MQTT_BROKER_IP\n");
+        }
+    }
+}
+
+/*!
+ * @brief  lwIP UDP callback: a beacon names the broker's address (its
+ *         sender). Anything but the 1-byte tag is ignored.
+ */
+static void
+on_beacon (void * p_arg, struct udp_pcb * p_pcb, struct pbuf * p_buf,
+           ip_addr_t const * p_addr, u16_t port)
+{
+    uint8_t frame[BEACON_LEN];
+
+    (void) p_arg;
+    (void) p_pcb;
+    (void) port;
+
+    if (NULL != p_buf)
+    {
+        if ((NULL != p_addr) && IP_IS_V4(p_addr) &&
+            (BEACON_LEN == p_buf->tot_len) &&
+            (BEACON_LEN == pbuf_copy_partial(p_buf, frame, BEACON_LEN, 0U)) &&
+            (BEACON_TAG == frame[0]))
+        {
+            bool const b_same = g_disc.b_seen &&
+                (ip4_addr_get_u32(ip_2_ip4(p_addr)) ==
+                 ip4_addr_get_u32(ip_2_ip4(&g_beacon_addr)));
+
+            if (!b_same)
+            {
+                ip_addr_copy(g_beacon_addr, *p_addr);
+                g_disc.b_seen = true;
+                g_disc.b_new  = true;
+                tm_printf((UB *) "mqtt: broker beacon from %s\n",
+                          ipaddr_ntoa(p_addr));
+            }
+        }
+
+        (void) pbuf_free(p_buf);
+    }
 }
 
 /*!

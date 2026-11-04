@@ -21,8 +21,7 @@ typedef enum
     NAV_OBSTACLE_AVOID,
     NAV_LINE_REACQUIRE,
     NAV_MISSION_DONE,
-    NAV_FAULT,
-    NAV_STATE_COUNT
+    NAV_FAULT
 } nav_fsm_state_t;
 
 void nav_fsm_init (void);

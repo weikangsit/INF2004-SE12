@@ -135,7 +135,8 @@ def main():
     shutil.copy(HERE / "server.py", work / "server.py")
     shutil.copytree(HERE / "static", work / "static")
     proc = subprocess.Popen([sys.executable, str(work / "server.py"), "--mqtt-port", str(MQTT_PORT),
-                             "--web-port", str(WEB_PORT), "--password", PW],
+                             "--web-port", str(WEB_PORT), "--password", PW,
+                             "--mqtt-host", "127.0.0.1"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     ok = True
     try:
@@ -199,7 +200,8 @@ def main():
         # 6. retained survives a broker restart (persisted binary file)
         proc.terminate(); proc.wait(5)
         proc = subprocess.Popen([sys.executable, str(work / "server.py"), "--mqtt-port", str(MQTT_PORT),
-                                 "--web-port", str(WEB_PORT), "--password", PW],
+                                 "--web-port", str(WEB_PORT), "--password", PW,
+                             "--mqtt-host", "127.0.0.1"],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         time.sleep(1.0)
         car = Tcp()
@@ -208,6 +210,24 @@ def main():
         t, p, r = read_publish(car)
         assert p == frame and r
         print("PASS retained config persisted across restart")
+        # 7. discovery beacon: one tag byte, 0x12
+        sys.path.insert(0, str(HERE))
+        import asyncio
+        import server
+        assert server.beacon_frame() == b""
+        rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        rx.bind(("127.0.0.1", server.BEACON_PORT))
+        rx.settimeout(3)
+
+        async def one_beacon():
+            task = asyncio.ensure_future(server.beacon("127.0.0.1", dest="127.0.0.1"))
+            await asyncio.sleep(0.5)
+            task.cancel()
+        asyncio.run(one_beacon())
+        data, _ = rx.recvfrom(64)
+        rx.close()
+        assert data == b"", data
+        print("PASS discovery beacon sent:", data.hex())
         print("WORKDIR", work)
     except Exception as e:                       # noqa: BLE001
         ok = False

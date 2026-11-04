@@ -51,8 +51,6 @@ typedef enum
     OBSTACLE_ROUTE_CONTINUE = 0, /* nothing in the path                   */
     OBSTACLE_ROUTE_LEFT,         /* bypass on the left                    */
     OBSTACLE_ROUTE_RIGHT,        /* bypass on the right                   */
-    OBSTACLE_ROUTE_REVERSE,      /* blocked: back off and scan again      */
-    OBSTACLE_ROUTE_NO_ROUTE,     /* still blocked after the retry         */
     OBSTACLE_ROUTE_UNSAFE        /* too little valid data to decide       */
 } obstacle_route_t;
 
@@ -61,8 +59,7 @@ void             obstacle_profile_build (obstacle_ray_t const * p_rays,
                                          obstacle_limits_t const * p_limits,
                                          obstacle_profile_t * p_out);
 obstacle_route_t obstacle_profile_plan (obstacle_profile_t const * p_prof,
-                                        obstacle_limits_t const * p_limits,
-                                        bool b_retry_done);
+                                        obstacle_limits_t const * p_limits);
 int32_t          obstacle_profile_cos1000 (uint32_t angle_deg);
 
 #endif /* OBSTACLE_PROFILE_H */

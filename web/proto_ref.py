@@ -102,12 +102,6 @@ def encode_event(kind, values):
                       start=EVENT_KIND_BITS, out=out))
 
 
-def decode_event(data):
-    kind = unpack(data, [("kind", EVENT_KIND_BITS, 0)])["kind"]
-    assert kind in EVENT_LAYOUT and len(data) == event_len(kind), (kind, len(data))
-    return kind, unpack(data, EVENT_LAYOUT[kind][1], EVENT_KIND_BITS)
-
-
 def encode_config(table):
     """table: {action code 0..3: "A".."Z" or None} -> 3-byte CONFIG frame.
 

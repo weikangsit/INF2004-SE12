@@ -57,6 +57,7 @@ compiler (Barr-C 5.5).
 | Backoff delay | `uint32_t` ms | 2-bit step (500 ms << step) | CYW43 task only | not shared |
 | Heartbeat sequence | `uint32_t` | `uint8_t` | CYW43 task only | not shared |
 | Barcode table | 26 B + `uint32_t` mask + `bool` | one `uint16_t` (12-bit table + "from MQTT" bit) | comms writes, Nav and telemetry read | a halfword store is one access, so a reader never sees half a table |
+| Broker discovery (added later, see below) | - | 1-byte bit-field `discover_status_t` (4 flags), `ip_addr_t` (4 B, the broker), `uint16_t` wait timer, UDP socket pointer; the beacon itself is 1 byte (8 bits) | CYW43 task only (hook and lwIP UDP callback) | not shared |
 
 ## 2. RAM usage comparison
 
@@ -90,6 +91,15 @@ Whole firmware image (`arm-none-eabi-size robocar_g12.elf`):
 |---|---|---|---|
 | Before | 358 616 | 1 184 | 82 616 |
 | After | 360 548 | 1 176 | 82 464 |
+
+Broker discovery, added after these measurements (the car finds the
+laptop from a UDP beacon instead of a compiled-in IP, see
+[mqtt_protocol.md](mqtt_protocol.md)), raises `comms.c` from 45 B to
+**61 B** static RAM (+16 B: socket pointer 4, broker address 4, timer 2,
+flags 1, plus alignment). The Buddy 1 static total becomes 67 B, still
+-67 % against the 201 B before Change Requirement 1. The beacon is 1 byte
+on the air; a first version used 6 bytes (4-byte tag + 16-bit port). No queue or
+MQTT payload changed size.
 
 Static RAM drops by 160 B. The kernel memory pool is a fixed region, so the
 844 B saved there shows up as free pool space rather than smaller `.bss`.

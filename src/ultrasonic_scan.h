@@ -19,17 +19,18 @@
 #include <stddef.h>          /* size_t first (PROHIBIT_DEF_SIZE_T) */
 #include <tk/tkernel.h>
 
-/** Messages for the Navigation FSM (1 byte, 4 bits). Values 0..5 match
- *  obstacle_route_t; NEAR is the standby detection; PEEK_* answer
+#include "obstacle_profile.h"
+
+/** Messages for the Navigation FSM (1 byte, 3 bits). The route results
+ *  take their values from obstacle_route_t, so a route converts to a
+ *  result unchanged; NEAR is the standby detection; PEEK_* answer
  *  ultrasonic_scan_peek(). */
 typedef enum
 {
-    US_RESULT_CONTINUE = 0,
-    US_RESULT_LEFT,
-    US_RESULT_RIGHT,
-    US_RESULT_REVERSE,
-    US_RESULT_NO_ROUTE,
-    US_RESULT_UNSAFE,
+    US_RESULT_CONTINUE = OBSTACLE_ROUTE_CONTINUE,
+    US_RESULT_LEFT     = OBSTACLE_ROUTE_LEFT,
+    US_RESULT_RIGHT    = OBSTACLE_ROUTE_RIGHT,
+    US_RESULT_UNSAFE   = OBSTACLE_ROUTE_UNSAFE,
     US_RESULT_NEAR,
     US_RESULT_PEEK_CLEAR,
     US_RESULT_PEEK_BLOCKED

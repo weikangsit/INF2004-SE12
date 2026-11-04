@@ -140,9 +140,7 @@ barcode_poll (void)
         capture_finish();
     }
 
-    /* A stray edge (the line passing under the sensor on a curve) is not
-     * a barcode yet: only a read with BAR_HOLD_EDGES edges counts. */
-    g_b_reading = (g_n_edges >= BAR_HOLD_EDGES);
+    g_b_reading = (g_n_edges > 0U);
 
     if ((0 != BAR_LOG) &&
         ((systime_now_ms() - g_stats.sent_ms) >= BAR_STATUS_MS))
@@ -164,10 +162,9 @@ barcode_take (uint8_t * p_slot)
 }
 
 /*!
- * @brief  Report whether a barcode is being read: from the read's
- *         BAR_HOLD_EDGES-th edge until it is decoded or rejected. Fewer
- *         edges (a line or mark crossing the sensor) do not count. Safe
- *         from any task.
+ * @brief  Report whether a barcode is being read: from the read's first
+ *         edge until it is decoded or rejected. A stray edge counts too
+ *         and ends after BAR_QUIET_MM of white. Safe from any task.
  * @return True while a read is in progress.
  */
 bool

@@ -462,20 +462,21 @@ def ref_cos(a):
     return ref_sin(90 - a) if a <= 90 else -ref_sin(a - 90)
 
 
-def ref_plan(p, lim, retry):
+def ref_plan(p, lim):
+    # 0 continue, 1 left, 2 right, 3 unsafe (obstacle_route_t)
     side = lim[2]
     lk, rk = p["left"] != NO_ECHO, p["right"] != NO_ECHO
     lok, rok = lk and p["left"] >= side, rk and p["right"] >= side
     if p["valid"] == 0:
-        return 5
+        return 3
     if not p["in_path"]:
-        return 0 if p["centre"] else 5
+        return 0 if p["centre"] else 3
     if lok or rok:
         if lok and rok:
             return 1 if p["left"] >= p["right"] else 2
         return 1 if lok else 2
     if not lk and not rk:
-        return 5
+        return 3
     if lk and rk:
         return 1 if p["left"] >= p["right"] else 2
     return 1 if lk else 2
@@ -505,9 +506,8 @@ def test_obstacle(cpu):
         got = dict(closest=c, closest_deg=cd, width=w, valid=valid, in_path=bool(inp),
                    centre=bool(cen), left=cl, right=cr)
         check(got == ref, f"profile {rays}: {got} != {ref}")
-        for retry in (0, 1):
-            route = cpu.call("obstacle_profile_plan", RAM + 0x500, RAM + 0x400, retry) & 0xFF
-            check(route == ref_plan(ref, lim, retry), f"plan {rays} retry={retry}: {route}")
+        route = cpu.call("obstacle_profile_plan", RAM + 0x500, RAM + 0x400) & 0xFF
+        check(route == ref_plan(ref, lim), f"plan {rays}: {route}")
         count += 1
     report(start, f"obstacle_profile: cos 0-180 deg, {count} random sweeps "
                   "(no-echo rays, profile and route vs reference)")
