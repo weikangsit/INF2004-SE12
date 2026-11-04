@@ -48,6 +48,7 @@
 #define QUEUE_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + 1 byte, rounded */
 #define COLLECT_CHUNK        (16U)     /* edges taken from the ring at once */
+#define COLLECT_CHUNKS_MAX   (BAR_RING_LEN / COLLECT_CHUNK)  /* per period */
 #define LETTER_FIRST         ('A')
 #define US_PER_MS            (1000U)
 #define STATUS_READS_MAX     (15U)     /* 4-bit reads field              */
@@ -167,7 +168,9 @@ barcode_is_reading (void)
 /*!
  * @brief  Move the edges from the interrupt ring through the glitch
  *         filter into the capture, COLLECT_CHUNK at a time (bounded
- *         stack).
+ *         stack), at most one ring's worth per period (bounded time: a
+ *         chattering sensor must not hold up the line reading that shares
+ *         this task; the rest waits for the next period).
  */
 static void
 edges_collect (void)
@@ -175,7 +178,8 @@ edges_collect (void)
     uint32_t fresh[COLLECT_CHUNK];
     int32_t  fresh_cl[COLLECT_CHUNK];
     int32_t  fresh_cr[COLLECT_CHUNK];
-    uint32_t count = hal_bar_take(fresh, fresh_cl, fresh_cr, COLLECT_CHUNK);
+    uint32_t chunks = 1U;
+    uint32_t count  = hal_bar_take(fresh, fresh_cl, fresh_cr, COLLECT_CHUNK);
 
     while (count > 0U)
     {
@@ -209,7 +213,15 @@ edges_collect (void)
             }
         }
 
-        count = hal_bar_take(fresh, fresh_cl, fresh_cr, COLLECT_CHUNK);
+        if (chunks < COLLECT_CHUNKS_MAX)
+        {
+            count = hal_bar_take(fresh, fresh_cl, fresh_cr, COLLECT_CHUNK);
+            chunks++;
+        }
+        else
+        {
+            count = 0U;                           /* next period          */
+        }
     }
 }
 

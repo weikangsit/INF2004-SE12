@@ -741,22 +741,29 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
     float32_t       speed  = 0.0f;
     float32_t       steer  = 0.0f;
     float32_t       target = g_ctx.speed_mps;
+    bool            b_hold = false;
 
     if (g_ctx.dist_m > 0.0f)
     {
         target = fminf(target, end_speed_cap(g_ctx.dist_m - (sign * travel)));
     }
 
-    if (bar_hold(p_in))
+    b_hold = bar_hold(p_in);
+
+    /* A line sensor on black always steers, even during a barcode hold:
+     * the hold only replaces the gentle both-white turn, so a false hold
+     * (or a curve right after a barcode) cannot run the car off. */
+    if (g_ctx.b_follow && p_in->b_line_fresh &&
+        ((!b_hold) || (0U != p_in->line_bits)))
+    {
+        steer = line_steer(p_in);
+    }
+    else if (b_hold)
     {
         /* Barcode read: straight at the speed it began with (no steering,
          * no speeding up), like the hand push that reads reliably. */
         steer  = 0.0f;
         target = fminf(target, g_ctx.v_base);
-    }
-    else if (g_ctx.b_follow && p_in->b_line_fresh)
-    {
-        steer = line_steer(p_in);
     }
     else
     {

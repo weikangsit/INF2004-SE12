@@ -54,6 +54,9 @@ static volatile uint32_t g_bar_tail    = 0U;
  * is a single access. */
 static volatile uint32_t g_bar_edges   = 0U;     /* interrupts on the pin */
 static volatile uint32_t g_bar_dropped = 0U;     /* lost to a full ring   */
+/* The ring filled and the ISR switched the pin's interrupt off; the
+ * Line task switches it back on once the ring is empty. */
+static volatile bool     g_b_bar_paused = false;
 
 /* Ultrasonic echo: written by the ISR, read after the echo signal. */
 static volatile uint32_t g_echo_rise_us  = 0U;
@@ -153,6 +156,14 @@ hal_bar_take (uint32_t * p_buf, int32_t * p_cl, int32_t * p_cr,
         p_cr[count]  = g_bar_cr[g_bar_tail];
         g_bar_tail   = (g_bar_tail + 1U) % BAR_RING_LEN;
         count++;
+    }
+
+    if (g_b_bar_paused && (g_bar_tail == g_bar_head))
+    {
+        /* Empty, and the paused ISR cannot add to it: resume. The SDK
+         * clears stale edge flags before enabling. */
+        g_b_bar_paused = false;
+        gpio_set_irq_enabled(PIN_IR_BC, EDGE_BOTH, true);
     }
 
     return (count);
@@ -318,6 +329,14 @@ input_pin (uint32_t pin, bool b_pull_up)
  *         task (bar_filter.c). A full ring drops the edge and counts it,
  *         and the read it belonged to is rejected.
  *
+ *  A full ring also switches the pin's interrupt off until hal_bar_take()
+ *  has emptied it. An IR comparator without hysteresis resting on a line
+ *  edge (on a curve) can chatter without end; unbounded, those interrupts
+ *  and their draining starved the Line task, the line reading went
+ *  stale and the car drove straight off curves. The read is rejected
+ *  anyway, so pausing loses nothing; it bounds this handler to one ring
+ *  (BAR_RING_LEN edges) per Line period.
+ *
  *  The edge flags are cleared BEFORE the level is read: an edge after the
  *  clear sets them again and runs this handler once more, so the last
  *  edge stored for a burst always carries the settled level. (Reading
@@ -357,6 +376,8 @@ barcode_isr (uint32_t now_us)
         else
         {
             g_bar_dropped++;
+            gpio_set_irq_enabled(PIN_IR_BC, EDGE_BOTH, false);
+            g_b_bar_paused = true;                /* hal_bar_take resumes */
         }
     }
 
