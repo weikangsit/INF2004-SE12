@@ -7,10 +7,12 @@
  *   1. Collect: raw edges pass through the glitch filter (bar_filter.c),
  *      which removes the chatter a slowly passing edge causes. A capture
  *      starts on a white-to-black edge.
- *   2. End: once the barcode has fully passed the sensor -- the level
- *      has been white and steady for BAR_QUIET_MS after at least
- *      BAR_EDGES_MIN edges -- or after BAR_IDLE_TIMEOUT_US without an
- *      edge (a partial read that never reached BAR_EDGES_MIN).
+ *   2. End: once the barcode has fully passed the sensor: white after at
+ *      least BAR_EDGES_MIN edges for BAR_QUIET_MM of travel while the car
+ *      drives (so a slow car cannot cut a read short; BAR_STALL_TIMEOUT_US
+ *      if it stops for good), or for BAR_QUIET_MS on a hand swipe or open
+ *      loop; or after BAR_IDLE_TIMEOUT_US without an edge (a partial read
+ *      that never reached BAR_EDGES_MIN).
  *   3. Check: a read during which the ring overflowed lost edges and is
  *      rejected. Otherwise code39.c accepts only a complete '*X*' symbol
  *      with a clear wide / narrow ratio in every character. Bars are
@@ -39,6 +41,7 @@
 #include "code39.h"
 #include "hal.h"
 #include "motion_control.h"
+#include "motor_driver.h"
 #include "proto.h"
 #include "systime.h"
 #include "telemetry.h"
@@ -65,6 +68,13 @@
 #define BARDBG_WIDTH_MAX     (2047.0f) /* 11-bit width field             */
 #define ROUND_HALF           (0.5f)
 #define YAW_SCALE            (1000.0f)
+#define SETUP_LEN            (3U)      /* bar_filter_positions() setup:  */
+#define SETUP_SIGN_L         (0U)      /* left encoder sign              */
+#define SETUP_SIGN_R         (1U)      /* right encoder sign             */
+#define SETUP_YAW            (2U)      /* sensor offset / track x 1000   */
+/* 1/16 encoder counts per mm of travel. */
+#define SUB_PER_MM           ((ENC_COUNTS_PER_REV * SUB_PER_COUNT) /         \
+                              (PI_F * WHEEL_DIAMETER_M * MM_PER_M))
 
 /** Running totals for the status report (task only). */
 typedef struct
@@ -92,6 +102,8 @@ static bar_stats_t g_stats;                            /* task only        */
 
 static void     edges_collect (void);
 static bool     capture_is_done (void);
+static uint32_t travel_since (uint32_t idx, int32_t const * p_setup);
+static bool     travel_setup (int32_t * p_setup);
 static void     capture_finish (void);
 static uint8_t  capture_decode (bool * p_b_distance);
 static void     capture_send (uint8_t letter, bool b_distance);
@@ -227,11 +239,13 @@ edges_collect (void)
 
 /*!
  * @brief  Decide whether the capture is complete.
- * @return True once the sensor has been white (steady, no edge) for
- *         BAR_QUIET_MS after at least BAR_EDGES_MIN edges -- the barcode
- *         has fully passed the sensor. A lone stray capture that never
- *         reaches BAR_EDGES_MIN still ends on the BAR_IDLE_TIMEOUT_US
- *         backstop (and decodes as unreadable).
+ * @return True once the sensor has been white (steady, no edge) after at
+ *         least BAR_EDGES_MIN edges for BAR_QUIET_MM of travel (car
+ *         driving: it moved BAR_MIN_TRAVEL_COUNTS since the first edge)
+ *         or BAR_QUIET_MS (hand swipe, open loop) -- the barcode has fully
+ *         passed the sensor. Backstops: BAR_STALL_TIMEOUT_US without an
+ *         edge while driving, BAR_IDLE_TIMEOUT_US otherwise (a lone stray
+ *         capture, which then decodes as unreadable).
  */
 static bool
 capture_is_done (void)
@@ -248,13 +262,78 @@ capture_is_done (void)
          * a long WIDE bar (level still black) must not end the read. */
         bool const     b_white = (0U == (g_edges[g_n_edges - 1U] &
                                          LEVEL_BIT));
+        int32_t        setup[SETUP_LEN];
+        uint32_t       moved   = 0U;              /* since the first edge */
+        uint32_t       quiet   = 0U;              /* since the last edge  */
 
-        b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
-                  (idle >= (BAR_QUIET_MS * US_PER_MS))) ||
-                 (idle > BAR_IDLE_TIMEOUT_US);
+        if (travel_setup(setup))
+        {
+            moved = travel_since(0U, setup);
+            quiet = travel_since(g_n_edges - 1U, setup);
+        }
+
+        if (moved >= ((uint32_t) BAR_MIN_TRAVEL_COUNTS *
+                      (uint32_t) SUB_PER_COUNT))
+        {
+            /* Driving: by distance, so a slow or briefly stopped car
+             * cannot end the read in the middle of an element. Constant
+             * expression, a few hundred: fits a uint32_t. */
+            uint32_t const quiet_end = (uint32_t) (BAR_QUIET_MM * SUB_PER_MM);
+
+            b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
+                      (quiet >= quiet_end)) ||
+                     (idle > BAR_STALL_TIMEOUT_US);
+        }
+        else
+        {
+            /* Hand swipe or open loop: by time. */
+            b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
+                      (idle >= (BAR_QUIET_MS * US_PER_MS))) ||
+                     (idle > BAR_IDLE_TIMEOUT_US);
+        }
     }
 
     return (b_done);
+}
+
+/*!
+ * @brief  Sensor travel from one edge of the capture to now.
+ * @param  idx      Edge (below g_n_edges).
+ * @param  p_setup  travel_setup() values.
+ * @return Distance, 1/16 counts (reversing counts too).
+ */
+static uint32_t
+travel_since (uint32_t idx, int32_t const * p_setup)
+{
+    int32_t const moved = bar_filter_travel(
+        motor_driver_count_left() - g_cl[idx],
+        motor_driver_count_right() - g_cr[idx], p_setup);
+
+    /* |moved| is a few thousand within one read, so it fits. */
+    return ((uint32_t) ((moved < 0) ? -moved : moved));
+}
+
+/*!
+ * @brief  Fill the bar_filter_positions() setup: encoder signs and the
+ *         sensor's offset.
+ * @param  p_setup  Output, SETUP_LEN values { sign L, sign R, yaw x 1000 }.
+ * @return False if the encoders are not used (open loop): travel is then
+ *         meaningless.
+ */
+static bool
+travel_setup (int32_t * p_setup)
+{
+    bool const b_closed = !motion_control_is_open_loop();
+
+    p_setup[SETUP_SIGN_L] = 1;
+    p_setup[SETUP_SIGN_R] = 1;
+    motion_control_encoder_signs(&p_setup[SETUP_SIGN_L],
+                                 &p_setup[SETUP_SIGN_R]);
+    /* Offset / track x 1000: a few hundred at most, fits. */
+    p_setup[SETUP_YAW] = (int32_t) ((BAR_SENSOR_Y_MM * YAW_SCALE) /
+                                    (TRACK_WIDTH_M * MM_PER_M));
+
+    return (b_closed);
 }
 
 /*!
@@ -326,15 +405,10 @@ capture_decode (bool * p_b_distance)
 
     if (hal_bar_dropped() == g_dropped0)
     {
-        if (!motion_control_is_open_loop())
+        int32_t setup[SETUP_LEN];
+
+        if (travel_setup(setup))
         {
-            int32_t setup[3] = { 1, 1, 0 };       /* sign L, sign R, yaw  */
-
-            motion_control_encoder_signs(&setup[0], &setup[1]);
-            /* Offset / track x 1000: a few hundred at most, fits. */
-            setup[2] = (int32_t) ((BAR_SENSOR_Y_MM * YAW_SCALE) /
-                                  (TRACK_WIDTH_M * MM_PER_M));
-
             if (bar_filter_positions(g_edges, g_cl, g_cr, g_n_edges, setup,
                                      g_pos) >=
                 ((uint32_t) BAR_MIN_TRAVEL_COUNTS * (uint32_t) SUB_PER_COUNT))

@@ -749,13 +749,14 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 
     if (bar_hold(p_in))
     {
-        /* Barcode read: straight at the speed it began with (no steering,
-         * no speeding up), like the hand push that reads reliably. Line
-         * steering during a read pivots the sensor over the bars and
-         * spoils it (measured), so the hold wins; it starts only after
-         * BAR_HOLD_EDGES edges and lasts at most BAR_HOLD_MAX_MS. */
+        /* Barcode read: straight at a steady SPEED_STEER_CMS (not the
+         * speed it began with, which right after a start is a crawl),
+         * like the hand push that reads reliably. Line steering during a
+         * read pivots the sensor over the bars and spoils it (measured),
+         * so the hold wins; it starts only after BAR_HOLD_EDGES edges and
+         * lasts at most BAR_HOLD_MAX_MS. */
         steer  = 0.0f;
-        target = fminf(target, g_ctx.v_base);
+        target = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
     }
     else if (g_ctx.b_follow && p_in->b_line_fresh)
     {

@@ -684,6 +684,11 @@ def test_bar_distance(cpu):
                 got_t = cpu.call("code39_decode", RAM, n, 15) & 0xFF
                 check(got_d == want, f"distance read {letter} n={narrow} y={y} rev={rev}: {got_d}")
                 check(travel > 100 * 16, f"travel {travel} for {letter}")
+                # bar_filter_travel() (barcode.c's distance end) agrees
+                moved = cpu.call("bar_filter_travel", (cls[-1] - cls[0]) & 0xFFFFFFFF,
+                                 (crs[-1] - crs[0]) & 0xFFFFFFFF, RAM + 0x600)
+                moved = moved - (1 << 32) if moved & 0x80000000 else moved
+                check(abs(moved) == travel, f"bar_filter_travel {moved} != {travel}")
                 by_dist += got_d == want
                 by_time += got_t == want
                 total += 1

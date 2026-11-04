@@ -211,6 +211,15 @@
  * reached (a partial/garbage read). TUNE.                               */
 #define BAR_QUIET_MS         (300U)
 #define BAR_IDLE_TIMEOUT_US  (500000U)
+/* While the car drives (it moved BAR_MIN_TRAVEL_COUNTS since the first
+ * edge) the quiet gap is measured in DISTANCE instead: a slow car took
+ * over 300 ms to cross the last narrow space, and the read ended two
+ * edges short of the stop '*' (measured: 28 of 30 edges, '*W' decoded).
+ * Must exceed the widest element (measured up to 21 mm by the encoders;
+ * the encoders read the whole symbol as ~245 mm). BAR_STALL_TIMEOUT_US
+ * ends a read if the car stops on the barcode. TUNE.                    */
+#define BAR_QUIET_MM         (40.0f)
+#define BAR_STALL_TIMEOUT_US (5000000U)
 #define BAR_EDGE_BUF_LEN     (64U)     /* clean edges of one read       */
 /* Reads are decoded by the distance the sensor travelled (wheel encoders
  * stamped on every edge), so the car's speed may change during a read
@@ -241,13 +250,15 @@
  * while line following (Week 6: 3 s). TUNE on long straights.          */
 #define LINE_LOST_MS         (3000U)
 /* While a barcode read is in progress the car stops steering on the line
- * and holds its speed, so the barcode sensor moves straight and steadily
- * over the bars (measured: reads work when the car is pushed by hand but
- * fail while the line steering pivots it). The hold ends after this long
- * even if the read has not, so a stray edge cannot leave the car unsteered;
- * 141 mm of barcode takes ~1.8 s at SPEED_STEER. Keep below LINE_LOST_MS.
- * TUNE.                                                                 */
-#define BAR_HOLD_MAX_MS      (2000U)
+ * and drives at a steady SPEED_STEER_CMS, so the barcode sensor moves
+ * straight and steadily over the bars (measured: reads work when the car
+ * is pushed by hand but fail while the line steering pivots it). Not the
+ * speed the read began with: just after a start the car is still ramping
+ * up and crawled over the barcode. The hold ends after this long even if the
+ * read has not, so a stray edge cannot leave the car unsteered; ~245 mm
+ * (encoder) of barcode takes ~3 s at SPEED_STEER. Keep below LINE_LOST_MS:
+ * both line sensors can stay white for the whole hold. TUNE.           */
+#define BAR_HOLD_MAX_MS      (2800U)
 /* The hold starts only once the read has this many edges. A single black
  * edge is not a barcode: on a curve the line itself (or a mark) passes
  * under the barcode sensor (29 mm left of centre) and gives 1-2 edges,

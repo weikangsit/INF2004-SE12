@@ -131,9 +131,24 @@ static int32_t
 sensor_travel (int32_t const * p_cl, int32_t const * p_cr, uint32_t idx,
                int32_t const * p_setup)
 {
+    return (bar_filter_travel(p_cl[idx] - p_cl[0], p_cr[idx] - p_cr[0],
+                              p_setup));
+}
+
+/*!
+ * @brief  Sensor travel for a change in both encoder counts (the same
+ *         formula as bar_filter_positions()).
+ * @param  delta_l  Change of the left encoder count (raw direction).
+ * @param  delta_r  Change of the right encoder count (raw direction).
+ * @param  p_setup  See bar_filter_positions().
+ * @return Travel, 1/16 counts (+ forward).
+ */
+int32_t
+bar_filter_travel (int32_t delta_l, int32_t delta_r, int32_t const * p_setup)
+{
     /* Counts within one read stay below ~20 000, so the products fit. */
-    int32_t const left  = p_setup[SETUP_SIGN_L] * (p_cl[idx] - p_cl[0]);
-    int32_t const right = p_setup[SETUP_SIGN_R] * (p_cr[idx] - p_cr[0]);
+    int32_t const left  = p_setup[SETUP_SIGN_L] * delta_l;
+    int32_t const right = p_setup[SETUP_SIGN_R] * delta_r;
 
     return ((HALF_SUB * (left + right)) -
             ((SUB_COUNTS * p_setup[SETUP_YAW] * (right - left)) / YAW_SCALE));
