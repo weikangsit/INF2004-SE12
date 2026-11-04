@@ -49,6 +49,7 @@
 #define MBF_SLOT_BYTES       (8U)      /* 4-byte header + 1 byte, rounded */
 #define COLLECT_CHUNK        (16U)     /* edges taken from the ring at once */
 #define LETTER_FIRST         ('A')
+#define US_PER_MS            (1000U)
 #define STATUS_READS_MAX     (15U)     /* 4-bit reads field              */
 #define STATUS_COUNT_MAX     (255U)    /* 8-bit count fields             */
 #define SUB_PER_COUNT        (16.0f)   /* bar_filter_positions() units   */
@@ -218,7 +219,7 @@ capture_is_done (void)
                                          LEVEL_BIT));
 
         b_done = (b_white && (g_n_edges >= BAR_EDGES_MIN) &&
-                  (idle >= (BAR_QUIET_MS * 1000U))) ||
+                  (idle >= (BAR_QUIET_MS * US_PER_MS))) ||
                  (idle > BAR_IDLE_TIMEOUT_US);
     }
 

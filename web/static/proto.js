@@ -235,12 +235,20 @@
   const MIN_RATIO = 1.5;   // BAR_MIN_WIDE_RATIO_X10 / 10
 
   /** One character of 9 widths, decoded like char_decode() in code39.c:
-   *  the 3 widest are wide (ties to the earlier element), then the pattern
-   *  and the narrowest-wide / widest-narrow ratio are checked. */
+   *  bars (even elements) and spaces (odd) are classified apart, the 2
+   *  widest bars and the widest space are wide (ties to the earlier
+   *  element), and each colour's narrowest-wide / widest-narrow ratio is
+   *  checked. ratio is the lower of the two. */
   function c39Char(el) {
-    const wide = el.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).slice(0, 3).map((p) => p[1]);
-    const wides = el.filter((_, i) => wide.includes(i)), narrows = el.filter((_, i) => !wide.includes(i));
-    const ratio = Math.min(...wides) / Math.max(...narrows);
+    const widest = (first, count) => el.map((w, i) => [w, i]).filter((p) => p[1] % 2 === first)
+      .sort((a, b) => b[0] - a[0] || a[1] - b[1]).slice(0, count).map((p) => p[1]);
+    const wide = widest(0, 2).concat(widest(1, 1));
+    const classRatio = (first) => {
+      const own = el.map((w, i) => [w, i]).filter((p) => p[1] % 2 === first);
+      return Math.min(...own.filter((p) => wide.includes(p[1])).map((p) => p[0])) /
+             Math.max(...own.filter((p) => !wide.includes(p[1])).map((p) => p[0]));
+    };
+    const ratio = Math.min(classRatio(0), classRatio(1));
     const ch = C39_PATTERNS[el.map((_, i) => (wide.includes(i) ? "1" : "0")).join("")] || null;
     return { wide, ratio, ch, ok: ratio >= MIN_RATIO && ch !== null };
   }

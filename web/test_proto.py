@@ -379,6 +379,48 @@ def test_code39(cpu):
     report(start, f"code39_decode: {cases} cases (A-Z both directions, 15-45 cm/s, "
                   "+/-10 % jitter, ratio/letter/length rejects)")
 
+    # Bar shrink: the sensor reads every black element narrower and every
+    # white one wider by s x narrow (measured on the car: narrow bars ~4 ms,
+    # narrow spaces ~7.5 ms). Each colour is classified on its own, so it
+    # must not matter; the old "3 widest of 9" rule is counted for comparison.
+    start = len(failures)
+    ok = old_ok = total = 0
+    for idx, letter in enumerate(ref.LETTERS):
+        for rev in (False, True):
+            for shrink in (-0.3, 0.3, 0.45, 0.6):
+                widths = []
+                for n, ch in enumerate("*" + letter + "*"):
+                    widths += [25000 if b == "1" else 10000 for b in C39[ch]]
+                    if n < 2:
+                        widths.append(10000)
+                widths = [w - shrink * 10000 if k % 2 == 0 else w + shrink * 10000
+                          for k, w in enumerate(widths)]
+                if rev:
+                    widths.reverse()
+                t, edges = 100000, []
+                for k, w in enumerate(widths):
+                    edges.append((int(t) & ~1) | (1 - k % 2))
+                    t += w
+                edges.append((int(t) & ~1) | 0)
+                cpu.write(RAM, struct.pack("<%dI" % len(edges), *edges))
+                got = cpu.call("code39_decode", RAM, len(edges), 15) & 0xFF
+                check(got == idx, f"code39 shrink {shrink} {letter} rev={rev}: {got}")
+                ok += got == idx
+                fwd = widths if not rev else list(reversed(widths))
+                old_ok += all(old_char_ok(fwd[o:o + 9]) for o in (0, 10, 20))
+                total += 1
+    report(start, f"code39_decode bar shrink: {ok}/{total} decoded (black elements up to 60 % "
+                  f"of a narrow bar narrower, white wider, both directions; old 3-widest-of-9 "
+                  f"rule {old_ok}/{total})")
+
+
+def old_char_ok(el):
+    """The previous char_decode() rule (3 widest of all 9, one ratio)."""
+    wide = sorted(range(9), key=lambda i: (-el[i], i))[:3]
+    narrow = [el[i] for i in range(9) if i not in wide]
+    mask = "".join("1" if i in wide else "0" for i in range(9))
+    return min(el[i] for i in wide) * 10 >= max(narrow) * 15 and mask in C39.values()
+
 
 NO_ECHO = 0xFFFF
 

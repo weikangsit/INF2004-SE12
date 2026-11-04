@@ -3,26 +3,41 @@
  *
  *  A symbol '*X*' is 3 characters of 9 elements (bar, space, ... bar)
  *  with a narrow inter-character gap between them: 29 element widths
- *  from 30 edge times. In each character the 3 widest elements are wide,
- *  which does not depend on the car's speed. A read is accepted only if
- *  (Tribunal 1, Buddy 3):
+ *  from 30 edges. '*' and every letter have exactly 2 wide bars (of 5)
+ *  and 1 wide space (of 4), so bars and spaces are classified apart: the
+ *  2 widest bars and the widest space are wide. Comparing black only
+ *  with black and white only with white cancels "bar shrink": an IR
+ *  sensor's spot and threshold read every black element narrower and
+ *  every white one wider by about the same amount (measured: narrow bars
+ *  ~4 ms, narrow spaces ~7.5 ms in one character), which made a mixed
+ *  "3 widest of 9" choice misjudge or reject characters. The widths may
+ *  be times or distances; neither depends on the speed within a
+ *  character. A read is accepted only if (Tribunal 1, Buddy 3):
  *   - both outer characters are the '*' start/stop character,
  *   - the middle character is a letter A..Z (digits and the other
  *     Code 39 characters are rejected),
- *   - every character's narrowest wide element is at least
- *     min_ratio_x10 / 10 times its widest narrow element.
+ *   - in every character, the narrowest wide bar is at least
+ *     min_ratio_x10 / 10 times the widest narrow bar, and the same for
+ *     the spaces.
  *  A reversed scan is tried when the forward one fails; reversed '*'
  *  reads as 'P', so a backward pass can never pass the forward check.
  *
  *  Reference: ANSI/AIM BC1-1995, Uniform Symbology Specification Code 39.
  */
+#include <stdbool.h>
+
 #include "code39.h"
 
 #define CHAR_ELEMENTS        (9U)
 #define CHAR_STRIDE          (10U)     /* 9 elements + inter-char gap    */
 #define SYMBOL_ELEMENTS      (29U)
 #define SYMBOL_CHARS         (3U)
-#define WIDE_PER_CHAR        (3U)
+#define BAR_FIRST            (0U)      /* bars: elements 0, 2, 4, 6, 8   */
+#define SPACE_FIRST          (1U)      /* spaces: elements 1, 3, 5, 7    */
+#define CLASS_STEP           (2U)
+#define WIDE_BARS            (2U)
+#define WIDE_SPACES          (1U)
+#define WIDTH_MAX            (0x00FFFFFFU) /* larger: a backward step  */
 #define RATIO_SCALE          (10U)
 #define LEVEL_BIT            (1U)      /* bit 0 of an edge = level       */
 #define PATTERN_COUNT        (27U)     /* '*' + A..Z                    */
@@ -65,8 +80,12 @@ static uint16_t const g_patterns[PATTERN_COUNT] =
     0x0016U      /* 'Z'  011010000 */
 };
 
-static uint8_t symbol_decode (uint32_t const * p_widths, uint32_t ratio_x10);
-static uint8_t char_decode (uint32_t const * p_widths, uint32_t ratio_x10);
+static uint8_t  symbol_decode (uint32_t const * p_widths, uint32_t ratio_x10);
+static uint8_t  char_decode (uint32_t const * p_widths, uint32_t ratio_x10);
+static uint32_t widest_mask (uint32_t const * p_widths, uint32_t first,
+                             uint32_t wide_count);
+static bool     class_is_clear (uint32_t const * p_widths, uint32_t first,
+                                uint32_t wide_mask, uint32_t ratio_x10);
 
 
 /*!
@@ -75,12 +94,15 @@ static uint8_t char_decode (uint32_t const * p_widths, uint32_t ratio_x10);
  *  The capture may carry a stray leading or trailing edge (a chatter the
  *  filter did not catch, or the barcode's own approach/exit), so the
  *  '*X*' symbol is not guaranteed to start at edge 0. Every 30-edge
- *  window is tried, forward then reversed, and the first that frames a
+ *  window that starts on a white-to-black edge (a symbol starts with a
+ *  bar) is tried, forward then reversed, and the first that frames a
  *  valid '*X*' wins. A window starting mid-symbol cannot pass the
- *  start/stop '*' check, so a false positive is not possible.
+ *  start/stop '*' check.
  *
- * @param  p_edges_us     Edge times in us; bit 0 holds the level and is
- *                        ignored for the widths.
+ * @param  p_edges_us     Edge times in us, or sensor travel
+ *                        (bar_filter_positions()); bit 0 holds the level
+ *                        after the edge (1 = black) and is not part of
+ *                        the widths.
  * @param  n_edges        Number of edges (at least CODE39_SYMBOL_EDGES).
  * @param  min_ratio_x10  Minimum wide / narrow ratio, x10.
  * @return 0..25 for A..Z, or CODE39_NONE.
@@ -100,21 +122,25 @@ code39_decode (uint32_t const * p_edges_us, uint32_t n_edges,
              (start <= last_start) && (CODE39_NONE == symbol);
              start++)
         {
-            uint32_t widths[SYMBOL_ELEMENTS];
-            uint32_t reversed[SYMBOL_ELEMENTS];
-            uint32_t idx = 0U;
-
-            for (idx = 0U; idx < SYMBOL_ELEMENTS; idx++)
+            if (0U != (p_edges_us[start] & LEVEL_BIT))   /* starts a bar */
             {
-                widths[idx] = (p_edges_us[start + idx + 1U] & ~LEVEL_BIT) -
-                              (p_edges_us[start + idx] & ~LEVEL_BIT);
-                reversed[SYMBOL_ELEMENTS - 1U - idx] = widths[idx];
-            }
+                uint32_t widths[SYMBOL_ELEMENTS];
+                uint32_t reversed[SYMBOL_ELEMENTS];
+                uint32_t idx = 0U;
 
-            symbol = symbol_decode(widths, min_ratio_x10);
-            if (CODE39_NONE == symbol)
-            {
-                symbol = symbol_decode(reversed, min_ratio_x10);
+                for (idx = 0U; idx < SYMBOL_ELEMENTS; idx++)
+                {
+                    widths[idx] = (p_edges_us[start + idx + 1U] &
+                                   ~LEVEL_BIT) -
+                                  (p_edges_us[start + idx] & ~LEVEL_BIT);
+                    reversed[SYMBOL_ELEMENTS - 1U - idx] = widths[idx];
+                }
+
+                symbol = symbol_decode(widths, min_ratio_x10);
+                if (CODE39_NONE == symbol)
+                {
+                    symbol = symbol_decode(reversed, min_ratio_x10);
+                }
             }
         }
     }
@@ -148,7 +174,8 @@ symbol_decode (uint32_t const * p_widths, uint32_t ratio_x10)
 }
 
 /*!
- * @brief  Decode one character of 9 element widths.
+ * @brief  Decode one character of 9 element widths: the 2 widest bars and
+ *         the widest space are wide, each colour checked on its own.
  * @param  p_widths   Element widths.
  * @param  ratio_x10  Minimum wide / narrow ratio, x10.
  * @return Index into g_patterns, or NOT_FOUND.
@@ -156,48 +183,15 @@ symbol_decode (uint32_t const * p_widths, uint32_t ratio_x10)
 static uint8_t
 char_decode (uint32_t const * p_widths, uint32_t ratio_x10)
 {
-    uint32_t wide_mask  = 0U;
-    uint32_t wide_min   = UINT32_MAX;
-    uint32_t narrow_max = 0U;
-    uint32_t pick       = 0U;
-    uint32_t idx        = 0U;
-    uint8_t  found      = NOT_FOUND;
+    uint32_t const wide_bars   = widest_mask(p_widths, BAR_FIRST, WIDE_BARS);
+    uint32_t const wide_spaces = widest_mask(p_widths, SPACE_FIRST,
+                                             WIDE_SPACES);
+    uint32_t const wide_mask   = wide_bars | wide_spaces;
+    uint32_t       idx         = 0U;
+    uint8_t        found       = NOT_FOUND;
 
-    /* Mark the 3 widest elements as wide. */
-    for (pick = 0U; pick < WIDE_PER_CHAR; pick++)
-    {
-        uint32_t best   = 0U;
-        uint32_t best_i = 0U;
-
-        for (idx = 0U; idx < CHAR_ELEMENTS; idx++)
-        {
-            if ((0U == (wide_mask & (1U << idx))) && (p_widths[idx] > best))
-            {
-                best   = p_widths[idx];
-                best_i = idx;
-            }
-        }
-
-        wide_mask |= 1U << best_i;
-    }
-
-    for (idx = 0U; idx < CHAR_ELEMENTS; idx++)
-    {
-        if (0U != (wide_mask & (1U << idx)))
-        {
-            wide_min = (p_widths[idx] < wide_min) ? p_widths[idx] : wide_min;
-        }
-        else
-        {
-            narrow_max = (p_widths[idx] > narrow_max) ? p_widths[idx] :
-                                                        narrow_max;
-        }
-    }
-
-    /* Reject an unclear read: the wide and narrow widths must be
-     * clearly apart. Element widths are at most a few hundred ms in us,
-     * so the products cannot overflow. */
-    if ((wide_min * RATIO_SCALE) >= (narrow_max * ratio_x10))
+    if (class_is_clear(p_widths, BAR_FIRST, wide_bars, ratio_x10) &&
+        class_is_clear(p_widths, SPACE_FIRST, wide_spaces, ratio_x10))
     {
         for (idx = 0U; idx < PATTERN_COUNT; idx++)
         {
@@ -210,6 +204,82 @@ char_decode (uint32_t const * p_widths, uint32_t ratio_x10)
     }
 
     return (found);
+}
+
+/*!
+ * @brief  Mark the widest elements of one colour as wide.
+ * @param  p_widths    Element widths of one character.
+ * @param  first       BAR_FIRST or SPACE_FIRST (every second element).
+ * @param  wide_count  How many of that colour are wide.
+ * @return Bit mask, bit n = element n is wide (ties go to the earlier).
+ */
+static uint32_t
+widest_mask (uint32_t const * p_widths, uint32_t first, uint32_t wide_count)
+{
+    uint32_t mask = 0U;
+    uint32_t pick = 0U;
+
+    for (pick = 0U; pick < wide_count; pick++)
+    {
+        uint32_t best   = 0U;
+        uint32_t best_i = first;
+        uint32_t idx    = 0U;
+
+        for (idx = first; idx < CHAR_ELEMENTS; idx += CLASS_STEP)
+        {
+            if ((0U == (mask & (1U << idx))) && (p_widths[idx] > best))
+            {
+                best   = p_widths[idx];
+                best_i = idx;
+            }
+        }
+
+        mask |= 1U << best_i;
+    }
+
+    return (mask);
+}
+
+/*!
+ * @brief  Check that one colour's wide and narrow elements are clearly
+ *         apart: narrowest wide >= ratio x widest narrow.
+ * @param  p_widths   Element widths of one character.
+ * @param  first      BAR_FIRST or SPACE_FIRST.
+ * @param  wide_mask  That colour's wide elements (widest_mask()).
+ * @param  ratio_x10  Minimum ratio, x10.
+ * @return True if the colour is clear. False also if any width is above
+ *         WIDTH_MAX (a backward step of the sensor wraps around).
+ */
+static bool
+class_is_clear (uint32_t const * p_widths, uint32_t first,
+                uint32_t wide_mask, uint32_t ratio_x10)
+{
+    uint32_t wide_min   = UINT32_MAX;
+    uint32_t narrow_max = 0U;
+    uint32_t idx        = 0U;
+    bool     b_sane     = true;
+
+    for (idx = first; idx < CHAR_ELEMENTS; idx += CLASS_STEP)
+    {
+        if (p_widths[idx] > WIDTH_MAX)
+        {
+            b_sane = false;
+        }
+        else if (0U != (wide_mask & (1U << idx)))
+        {
+            wide_min = (p_widths[idx] < wide_min) ? p_widths[idx] : wide_min;
+        }
+        else
+        {
+            narrow_max = (p_widths[idx] > narrow_max) ? p_widths[idx] :
+                                                        narrow_max;
+        }
+    }
+
+    /* Widths are at most WIDTH_MAX (2^24) and ratio_x10 is small, so the
+     * products cannot overflow. */
+    return (b_sane &&
+            ((wide_min * RATIO_SCALE) >= (narrow_max * ratio_x10)));
 }
 
 /*** end of file ***/
