@@ -1,11 +1,12 @@
 /** @file    ultrasonic_scan.h
  *  @brief   Ultrasonic Scan task (Buddy 5): HC-SR04 on the SG90 servo.
  *
- *  STANDBY pings straight ahead every 100 ms and reports an obstacle
- *  nearer than US_OBSTACLE_CM. On request it sweeps SCAN_MIN_DEG to
+ *  STANDBY pings straight ahead every 100 ms and publishes the range
+ *  (ultrasonic_scan_front_cm()); the Navigation FSM compares it with
+ *  US_OBSTACLE_CM in every state. On request it sweeps SCAN_MIN_DEG to
  *  SCAN_MAX_DEG (coarse, then fine around the closest hit), builds the
  *  obstacle profile and suggests a route (obstacle_profile.h). During a
- *  bypass, PEEK pings SCAN_MIN_DEG, centre and SCAN_MAX_DEG and answers
+ *  bypass, PEEK pings PEEK_RIGHT_DEG, centre and PEEK_LEFT_DEG and answers
  *  whether the obstacle is still within BYPASS_PEEK_CM. The scan
  *  never drives the motors; the Navigation FSM acts on the suggestion
  *  (Tribunal 1 interface rule). A missing echo is invalid, never clear.
@@ -23,15 +24,13 @@
 
 /** Messages for the Navigation FSM (1 byte, 3 bits). The route results
  *  take their values from obstacle_route_t, so a route converts to a
- *  result unchanged; NEAR is the standby detection; PEEK_* answer
- *  ultrasonic_scan_peek(). */
+ *  result unchanged; PEEK_* answer ultrasonic_scan_peek(). */
 typedef enum
 {
     US_RESULT_CONTINUE = OBSTACLE_ROUTE_CONTINUE,
     US_RESULT_LEFT     = OBSTACLE_ROUTE_LEFT,
     US_RESULT_RIGHT    = OBSTACLE_ROUTE_RIGHT,
     US_RESULT_UNSAFE   = OBSTACLE_ROUTE_UNSAFE,
-    US_RESULT_NEAR,
     US_RESULT_PEEK_CLEAR,
     US_RESULT_PEEK_BLOCKED
 } us_result_t;

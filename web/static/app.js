@@ -75,7 +75,8 @@
     const bar = $("t-obst-bar");
     bar.style.width = pct + "%";
     bar.style.background = t.obstacle != null && t.obstacle < 12 ? "var(--bad)" : t.obstacle != null && t.obstacle < 30 ? "var(--warn)" : "var(--ok)";
-    $("t-state").textContent = t.state;
+    $("t-state").textContent = STATE_TEXT[t.state] || t.state;
+    document.body.dataset.state = t.state;          // style.css colours FAULT
     carState = t.state;
     $("t-motion").textContent = t.motion;
     $("t-dist").textContent = t.distance.toFixed(2) + " m";
@@ -85,7 +86,10 @@
       el.textContent = black ? "BLACK" : "white";
       el.classList.toggle("black", black);
     }
-    $("t-line").textContent = t.linePos === -1 ? "left black \u2192 steer left (slow)" : t.linePos === 1 ? "right black \u2192 steer right (slow)" : t.lineSeen ? "junction (both black)" : "centred \u2192 straight";
+    $("track").dataset.line = (t.irLBlack ? "l" : "") + (t.irRBlack ? "r" : "");   // moves the tape
+    $("t-line").textContent = t.linePos === -1 ? "Line under the left sensor: steering left."
+      : t.linePos === 1 ? "Line under the right sensor: steering right."
+      : t.lineSeen ? "Both sensors on black: junction." : "Line between the sensors: driving straight.";
     carTable = t.cfgFromMqtt ? config : P.DEFAULT_TABLE;
     $("t-bc").textContent = t.barcodeSlot == null ? "\u2013"
       : (carTable[t.barcodeSlot] || "?") + " \u2192 " + P.ACTIONS[t.barcodeSlot];
@@ -99,6 +103,12 @@
     $("tlm-bits").textContent = P.bits(raw);
     push(hist.speed, v); push(hist.pitch, t.pitch); push(hist.obst, t.obstacle == null ? NaN : t.obstacle);
   }
+  const STATE_TEXT = {
+    INIT: "Starting up", READY: "Ready", LINE_FOLLOW: "Following the line",
+    BARCODE_ACT: "Acting on a barcode", HUMP_REPORT: "Crossing a hump",
+    OBSTACLE_AVOID: "Going around an obstacle", LINE_REACQUIRE: "Finding the line",
+    MISSION_DONE: "Run finished", FAULT: "Stopped: fault",
+  };
   const compass = (d) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(d / 45) % 8];
   const fmtTime = (s) => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
 
@@ -109,7 +119,7 @@
     if (vals.length < 2) return;
     let lo = Math.min(...vals), hi = Math.max(...vals);
     if (hi - lo < 1e-3) { hi += 1; lo -= 1; }
-    g.strokeStyle = "#2a3542"; g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+    g.strokeStyle = "#d4d8d5"; g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
     g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
     let pen = false;
     data.forEach((x, i) => {
@@ -118,7 +128,7 @@
       pen ? g.lineTo(px, py) : g.moveTo(px, py); pen = true;
     });
     g.stroke();
-    g.fillStyle = "#8b98a5"; g.font = "11px sans-serif";
+    g.fillStyle = "#626a6e"; g.font = "11px Bahnschrift, sans-serif";
     g.fillText(hi.toFixed(1), 4, 12); g.fillText(lo.toFixed(1), 4, h - 4);
   }
 
@@ -214,7 +224,10 @@
       else if (e.kind === "BARCODE" && e.fields.valid && carState && !BARCODE_STATES.includes(carState))
         logEvent(e.text + " (ignored: the car is in " + carState + "; it acts on barcodes only while " +
                  "following the line)", e.fault);
-      else logEvent(e.text, e.fault);
+      else {
+        if (e.kind === "HUMP") $("t-hump-last").textContent = (e.fields.height / 2).toFixed(1) + " mm";
+        logEvent(e.text, e.fault);
+      }
     } else if (sub === "debug/barcode") {
       const f = P.decodeBarDebug(u8);
       if (f) barDebug(f); else badFrame(sub, u8, "3-16");
@@ -273,9 +286,9 @@
     p.className = "pill " + (age < 3000 ? "on" : "off");
     p.textContent = age < 3000 ? "car online" : "car offline";
     $("tlm-age").textContent = lastTlm ? "(" + ((Date.now() - lastTlm) / 1000).toFixed(1) + " s ago)" : badMsg;
-    chart("c-speed", hist.speed, "#3b9eff");
-    chart("c-pitch", hist.pitch, "#d29922");
-    chart("c-obst", hist.obst, "#3fb950");
+    chart("c-speed", hist.speed, "#1d2124");
+    chart("c-pitch", hist.pitch, "#1d2124");
+    chart("c-obst", hist.obst, "#1d2124");
   }, 250);
 
   connect();

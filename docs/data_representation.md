@@ -56,8 +56,8 @@ the two raw bits, so they are no longer stored twice.
 | `motion_cmd_q` | Nav, Safety -> Motion | 20 bytes (enum, 3 floats, 2 bools) | 4 bytes | 32 (below) |
 | `motion_done_q` (new, Version C) | Motion -> Nav | (shared `motion_evt_q`, 8 bytes) | 1 byte | 5 (seq 3 + result 2) |
 | terrain events | IMU -> Nav | (shared `motion_evt_q`, 8 bytes) | 1 byte | 1 (hump start / end) |
-| `obstacle_q` | Ultrasonic -> Nav | 24 bytes (enum + 5 values) | 1 byte | 3 (route / near) |
-| `scan_req_q` | Nav -> Ultrasonic | 1 byte | 1 byte | 1 |
+| `obstacle_q` | Ultrasonic -> Nav | 24 bytes (enum + 5 values) | 1 byte | 3 (route 0..3 / peek clear, blocked) |
+| `scan_req_q` | Nav -> Ultrasonic | 1 byte | 1 byte | 2 (profile / abort / peek) |
 | `remote_cmd_q` | Comms -> Nav | 1 byte | 1 byte | 3 |
 | `telemetry_q` | any -> Telemetry | 8 bytes | 1-4 bytes | per event kind |
 | publish queue | Telemetry -> Comms | 49 bytes | 1 + 1..18 bytes | topic 1 bit + frame |

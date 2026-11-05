@@ -71,6 +71,7 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
                 x_min = (lateral < x_min) ? lateral : x_min;
                 x_max = (lateral > x_max) ? lateral : x_max;
 
+                /* half_corridor_cm is a uint16_t, so it fits int32_t. */
                 if ((lateral <= (int32_t) p_limits->half_corridor_cm) &&
                     (lateral >= -(int32_t) p_limits->half_corridor_cm))
                 {
@@ -103,12 +104,10 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
  *  No valid echo at all, or a free path with no valid ray ahead, cannot be
  *  trusted: UNSAFE. A blocked path takes the side whose edge ray shows at
  *  least min_side_clear_cm (the larger one; left on a tie). A side whose
- *  edge ray had no echo is unknown and never chosen. If neither side is
- *  known the scan is UNSAFE. If both are known but neither clears
- *  min_side_clear_cm (the car stops close, so the edge rays often hit the
- *  obstacle itself), the car still goes around on the side with more
- *  room: the bypass watches ahead and stops if that side is blocked.
- *  The car never reverses.
+ *  edge ray had no echo is unknown and never chosen. If no side is both
+ *  known and clear, the scan is UNSAFE: from the stop point the 15 / 165
+ *  deg edge rays pass the obstacle's face, so a short edge ray is a real
+ *  wall beside the car, not the obstacle itself.
  *
  * @param  p_prof        Profile of the sweep.
  * @param  p_limits      Planning limits.
@@ -118,15 +117,14 @@ obstacle_route_t
 obstacle_profile_plan (obstacle_profile_t const * p_prof,
                        obstacle_limits_t const * p_limits)
 {
-    bool const left_known  = (OBSTACLE_NO_ECHO != p_prof->clear_left_cm);
-    bool const right_known = (OBSTACLE_NO_ECHO != p_prof->clear_right_cm);
-    bool const left_ok     = left_known &&
-                             (p_prof->clear_left_cm >=
-                              p_limits->min_side_clear_cm);
-    bool const right_ok    = right_known &&
-                             (p_prof->clear_right_cm >=
-                              p_limits->min_side_clear_cm);
-    obstacle_route_t route = OBSTACLE_ROUTE_UNSAFE;
+    /* A no-echo edge (OBSTACLE_NO_ECHO) is unknown, never clear. */
+    bool const b_left_clear  = (OBSTACLE_NO_ECHO != p_prof->clear_left_cm) &&
+                               (p_prof->clear_left_cm >=
+                                p_limits->min_side_clear_cm);
+    bool const b_right_clear = (OBSTACLE_NO_ECHO != p_prof->clear_right_cm) &&
+                               (p_prof->clear_right_cm >=
+                                p_limits->min_side_clear_cm);
+    obstacle_route_t route   = OBSTACLE_ROUTE_UNSAFE;
 
     if (0U == p_prof->valid_rays)
     {
@@ -137,30 +135,18 @@ obstacle_profile_plan (obstacle_profile_t const * p_prof,
         route = p_prof->b_centre_known ? OBSTACLE_ROUTE_CONTINUE :
                                          OBSTACLE_ROUTE_UNSAFE;
     }
-    else if (left_ok || right_ok)
-    {
-        if (left_ok && right_ok)
-        {
-            route = (p_prof->clear_left_cm >= p_prof->clear_right_cm) ?
-                    OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
-        }
-        else
-        {
-            route = left_ok ? OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
-        }
-    }
-    else if ((!left_known) && (!right_known))
-    {
-        route = OBSTACLE_ROUTE_UNSAFE;
-    }
-    else if (left_known && right_known)
+    else if (b_left_clear && b_right_clear)
     {
         route = (p_prof->clear_left_cm >= p_prof->clear_right_cm) ?
                 OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
     }
+    else if (b_left_clear || b_right_clear)
+    {
+        route = b_left_clear ? OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
+    }
     else
     {
-        route = left_known ? OBSTACLE_ROUTE_LEFT : OBSTACLE_ROUTE_RIGHT;
+        route = OBSTACLE_ROUTE_UNSAFE;
     }
 
     return (route);
@@ -200,8 +186,8 @@ static int32_t
 sin1000 (uint32_t angle_deg)
 {
     /* angle <= 180, so the products stay far below INT32_MAX. */
-    int32_t const lateral       = (int32_t) angle_deg;
-    int32_t const product = lateral * ((int32_t) STRAIGHT_DEG - lateral);
+    int32_t const angle   = (int32_t) angle_deg;
+    int32_t const product = angle * ((int32_t) STRAIGHT_DEG - angle);
 
     return ((BHASKARA_A * product * SCALE) / (BHASKARA_B - product));
 }

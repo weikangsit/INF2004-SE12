@@ -13,14 +13,15 @@
  *  completion with the awaited number moves the FSM on, so a late report
  *  of an older command is ignored.
  *
- *  Obstacle (Tribunal 1 Version C): stop; reverse REVERSE_BEFORE_SCAN_CM
- *  with line following only if the car drove at least that far plus the
- *  margin straight along the line since its last turn; then scan. A scan
- *  without enough valid echoes stops with FC_NO_ROUTE detail 1 ("scan
- *  cannot proceed safely"). The bypass then drives around the obstacle
- *  with BYPASS_TURN_DEG (90 deg) spot turns, step and check: turn out,
- *  step sideways, face forward and check (servo pings at SCAN_MIN_DEG,
- *  centre, SCAN_MAX_DEG); still blocked -> another sideways step. Then
+ *  Obstacle: while following, a standby range under US_OBSTACLE_CM
+ *  (checked every period, so an obstacle that came into view during a
+ *  barcode turn is still caught afterwards) stops the car and scans
+ *  where it stopped. A scan without enough valid echoes, or with both
+ *  sides blocked, stops with FC_NO_ROUTE detail 1 ("scan cannot proceed
+ *  safely"). The bypass goes round on the side the scan chose, with
+ *  BYPASS_TURN_DEG (90 deg) spot turns, step and check: turn out,
+ *  step sideways, face forward and check (servo pings at PEEK_RIGHT_DEG,
+ *  centre, PEEK_LEFT_DEG); still blocked -> another sideways step. Then
  *  drive along, turn toward the line and check; still blocked -> turn
  *  back and step further along. After BYPASS_MAX_STEPS either way it
  *  stops with FC_NO_ROUTE detail 3 ("obstacle too large"). The return
@@ -123,18 +124,14 @@ typedef struct
                                              latest barcode wins)         */
     bypass_step_t   bypass;
     bool            b_bypass_left;
-    bool            b_reversed;           /* scan follows a reverse      */
-    bool            b_reverse_wait;
     bool            b_on_line_step;       /* reacquire: line seen, axle
                                              being driven onto it        */
     int32_t         leg_start_mm;         /* start of a sideways step    */
     int32_t         offset_mm;            /* sideways steps, measured    */
     uint32_t        width_steps;          /* sideways steps driven       */
     uint32_t        length_steps;         /* extra along steps driven    */
-    bool            b_width_margin;       /* width clear: margin step    */
     bool            b_mag_cal;
     bool            b_led_online;
-    int32_t         straight_start_mm;    /* start of the straight run   */
     button_t        btn_start;
     button_t        btn_cal;
 } nav_ctx_t;
@@ -441,7 +438,7 @@ state_step (nav_in_t const * p_in)
         }
 
         /* A completion of the awaited command that the state did not use
-         * (e.g. the bypass or reverse steps) is handled there; READY uses
+         * (e.g. the bypass steps) is handled there; READY uses
          * it to finish the magnetometer calibration. */
         if (b_done && (NAV_READY == g_nav.state) && g_nav.b_mag_cal)
         {
@@ -544,7 +541,7 @@ follow_step (nav_in_t const * p_in)
         g_nav.pending_slot = p_in->bar_slot;      /* latest wins          */
     }
 
-    if (p_in->b_have_us && (US_RESULT_NEAR == p_in->us))
+    if (path_is_blocked())
     {
         obstacle_begin();
     }
@@ -631,39 +628,20 @@ barcode_act (uint8_t slot)
 }
 
 /*!
- * @brief  Obstacle ahead: stop, then reverse along the own track if it is
- *         long enough, or scan from here.
+ * @brief  Obstacle ahead: stop and scan from here.
  */
 static void
 obstacle_begin (void)
 {
-    int32_t const run_mm  = dist_now_mm() - g_nav.straight_start_mm;
-    int32_t const need_mm = (int32_t) (REVERSE_BEFORE_SCAN_CM +
-                                       REVERSE_MARGIN_CM) * MM_PER_CM;
-
     motion_control_stop();
-    g_nav.bypass     = BYPASS_NONE;
-    g_nav.b_reversed = false;
-
-    if ((0U != REVERSE_BEFORE_SCAN_CM) && (run_mm >= need_mm))
-    {
-        g_nav.b_reversed     = true;
-        g_nav.b_reverse_wait = true;
-        g_nav.pending_seq    = motion_control_reverse(SPEED_SEARCH_CMS,
-                                                      REVERSE_BEFORE_SCAN_CM,
-                                                      true);
-    }
-    else
-    {
-        ultrasonic_scan_request();
-    }
-
+    g_nav.bypass = BYPASS_NONE;
+    ultrasonic_scan_request();
     enter(NAV_OBSTACLE_AVOID);
 }
 
 /*!
- * @brief  OBSTACLE_AVOID: wait for the reverse, act on the scan result,
- *         and run the bypass steps.
+ * @brief  OBSTACLE_AVOID: act on the scan result and run the bypass
+ *         steps.
  * @param  p_in  Inputs of this period.
  */
 static void
@@ -671,13 +649,7 @@ obstacle_step (nav_in_t const * p_in)
 {
     bool const b_idle = (NO_SEQ == g_nav.pending_seq);
 
-    if (g_nav.b_reverse_wait && b_idle)
-    {
-        g_nav.b_reverse_wait = false;             /* stopped: now scan    */
-        ultrasonic_scan_request();
-    }
-    else if (p_in->b_have_us && (US_RESULT_NEAR != p_in->us) &&
-             (BYPASS_NONE == g_nav.bypass) && (!g_nav.b_reverse_wait))
+    if (p_in->b_have_us && (BYPASS_NONE == g_nav.bypass))
     {
         switch (p_in->us)
         {
@@ -688,13 +660,11 @@ obstacle_step (nav_in_t const * p_in)
 
             case US_RESULT_LEFT:
             case US_RESULT_RIGHT:
-                /* Team rule: always go around on the left. The scan
-                 * still decides whether a bypass is needed and safe. */
-                g_nav.b_bypass_left = true;
+                /* The side with more clearance (obstacle_profile_plan). */
+                g_nav.b_bypass_left = (US_RESULT_LEFT == p_in->us);
                 g_nav.offset_mm     = 0;
                 g_nav.width_steps   = 0U;
                 g_nav.length_steps  = 0U;
-                g_nav.b_width_margin = false;
                 bypass_go(BYPASS_TURN_OUT);
             break;
 
@@ -710,8 +680,7 @@ obstacle_step (nav_in_t const * p_in)
     else if ((BYPASS_PEEK_WIDTH == g_nav.bypass) ||
              (BYPASS_PEEK_LENGTH == g_nav.bypass))
     {
-        /* Car stopped; only the check's answer moves it on (a standby
-         * NEAR while facing the obstacle is ignored). */
+        /* Car stopped; only the check's answer moves it on. */
         if (p_in->b_have_us && ((US_RESULT_PEEK_CLEAR == p_in->us) ||
                                 (US_RESULT_PEEK_BLOCKED == p_in->us)))
         {
@@ -731,7 +700,7 @@ obstacle_step (nav_in_t const * p_in)
     }
     else
     {
-        /* Waiting for the reverse, the scan or a bypass step. */
+        /* Waiting for the scan or a bypass step. */
     }
 }
 
@@ -763,11 +732,9 @@ bypass_go (bypass_step_t step)
 
         case BYPASS_STEP_OUT:
             g_nav.leg_start_mm = dist_now_mm();
-            g_nav.pending_seq  = motion_control_forward(
-                SPEED_SEARCH_CMS,
-                g_nav.b_width_margin ? BYPASS_WIDTH_MARGIN_CM :
-                                       BYPASS_STEP_CM,
-                false);
+            g_nav.pending_seq  = motion_control_forward(SPEED_SEARCH_CMS,
+                                                        BYPASS_STEP_CM,
+                                                        false);
         break;
 
         case BYPASS_ALONG:
@@ -803,17 +770,7 @@ bypass_step_done (void)
             g_nav.offset_mm += dist_now_mm() - g_nav.leg_start_mm;
             bypass_go(BYPASS_FACE_FWD);
         break;
-        case BYPASS_FACE_FWD:
-            if (g_nav.b_width_margin)
-            {
-                g_nav.b_width_margin = false;     /* margin done: along   */
-                bypass_go(BYPASS_ALONG);
-            }
-            else
-            {
-                bypass_go(BYPASS_PEEK_WIDTH);
-            }
-        break;
+        case BYPASS_FACE_FWD:      bypass_go(BYPASS_PEEK_WIDTH);  break;
         case BYPASS_ALONG:         bypass_go(BYPASS_TURN_IN);     break;
         case BYPASS_TURN_IN:       bypass_go(BYPASS_PEEK_LENGTH); break;
         case BYPASS_TURN_PARALLEL: bypass_go(BYPASS_ALONG);       break;
@@ -837,15 +794,7 @@ bypass_peek_result (bool b_blocked)
     {
         g_nav.width_steps++;
 
-        if (!b_blocked && (0U != BYPASS_WIDTH_MARGIN_CM))
-        {
-            /* The check reads clear with the car's side still close to
-             * the edge; one more step out leaves room for the spot
-             * turns beside the obstacle. */
-            g_nav.b_width_margin = true;
-            bypass_go(BYPASS_TURN_OUT);
-        }
-        else if (!b_blocked)
+        if (!b_blocked)
         {
             bypass_go(BYPASS_ALONG);
         }
@@ -1000,7 +949,6 @@ reset_step (nav_in_t const * p_in)
         g_nav.pending_seq    = NO_SEQ;
         g_nav.pending_slot   = NO_SLOT;
         g_nav.bypass         = BYPASS_NONE;
-        g_nav.b_reverse_wait = false;
         g_nav.b_on_line_step = false;
         g_nav.b_mag_cal      = false;
         enter(NAV_READY);
@@ -1036,8 +984,7 @@ done_awaited (nav_in_t const * p_in, motion_result_t * p_res)
 static void
 follow_begin (void)
 {
-    g_nav.straight_start_mm = dist_now_mm();
-    g_nav.pending_slot      = NO_SLOT;    /* drop any stale barcode       */
+    g_nav.pending_slot = NO_SLOT;         /* drop any stale barcode       */
     (void) motion_control_forward(SPEED_CRUISE_CMS, 0U, true);
 }
 

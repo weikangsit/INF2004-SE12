@@ -1,62 +1,196 @@
+/* Group 12 robot car: a machine control box (rail) beside the track board.
+ * Colour only ever means state: red fault / stop, yellow warning, green ok. */
 :root {
-  --bg: #0f1419; --panel: #182029; --line: #2a3542; --fg: #e6edf3; --muted: #8b98a5;
-  --accent: #3b9eff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --board: #f2f3f1;      /* the white track board            */
+  --surface: #ffffff;
+  --rule: #d4d8d5;
+  --tape: #000000;       /* the black line                   */
+  --ink: #1d2124;
+  --faint: #626a6e;
+  --steel: #2e3336;      /* control enclosure                */
+  --steel-2: #3c4245;
+  --steel-ink: #e9ecea;
+  --bad: #d52b1e;        /* signal red                       */
+  --warn: #f2c200;       /* signal yellow                    */
+  --ok: #237f52;         /* signal green                     */
+  --din: "Bahnschrift", "DIN Alternate", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --text: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+  font: 15px/1.45 var(--text);
+  color: var(--ink);
+  background: var(--board);
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); }
-header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center;
-         padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
-h1 { font-size: 1.2rem; margin: 0; }
-h2 { font-size: 1rem; margin: 0 0 10px; }
-.conn { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-input, select, button { font: inherit; color: var(--fg); background: var(--bg);
-  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
-button { cursor: pointer; }
-button:hover { border-color: var(--accent); }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; }
-.status { display: flex; gap: 8px; margin-left: auto; }
-.pill { padding: 3px 10px; border-radius: 999px; font-size: .85rem; }
-.pill.on { background: rgba(63,185,80,.2); color: var(--ok); }
-.pill.off { background: rgba(248,81,73,.15); color: var(--bad); }
-.pill.warn { background: rgba(210,153,34,.2); color: var(--warn); }
-main { display: grid; gap: 16px; padding: 16px 20px; max-width: 1280px; margin: 0 auto; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
-.hint, .muted { color: var(--muted); font-size: .88rem; }
-.letters { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-.letter { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line);
-          border-radius: 8px; padding: 6px 8px; }
-.letter b { font-size: 1rem; min-width: 4.6em; }
-.letter select { flex: 1; min-width: 0; }
-.letter.a0 { border-color: var(--ok); } .letter.a1 { border-color: var(--accent); }
-.letter.a2 { border-color: #a371f7; } .letter.a3 { border-color: var(--warn); }
-.letter.unack { box-shadow: inset 0 0 0 1px var(--bad); }
-.bits { margin-top: 10px; overflow-x: auto; }
-code { font-family: ui-monospace, Consolas, monospace; font-size: .8rem; color: var(--muted); white-space: nowrap; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-.card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
-.card span { color: var(--muted); font-size: .8rem; }
-.card b { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
-.card.big b { font-size: 1.6rem; }
-.card small { color: var(--muted); font-variant-numeric: tabular-nums; }
-.meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+body { margin: 0; }
+h1, h2 { font-family: var(--din); font-weight: 600; margin: 0; }
+h2 { font-size: 1.0625rem; margin-bottom: .5rem; }
+p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- bar */
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1.5rem;
+  padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+}
+.bar h1 { font-size: 1.25rem; letter-spacing: .01em; }
+.status { display: flex; gap: 1rem; }
+.pill { display: inline-flex; align-items: center; gap: .4rem; font-size: .875rem; }
+.pill::before { content: ""; width: .6rem; height: .6rem; border-radius: 50%; background: var(--faint); }
+.pill.on::before { background: var(--ok); }
+.pill.off { color: var(--faint); }
+.pill.off::before { background: transparent; box-shadow: inset 0 0 0 2px var(--bad); }
+.conn-box { margin-left: auto; font-size: .875rem; }
+.conn-box summary { cursor: pointer; color: var(--faint); }
+.conn { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; margin-top: .5rem; }
+.conn input { border: 1px solid var(--rule); border-radius: 4px; padding: .3rem .5rem; background: var(--surface); }
+.conn button { border: 1px solid var(--ink); border-radius: 4px; padding: .3rem .8rem; background: var(--surface); cursor: pointer; }
+
+/* ---------------------------------------------------------------- layout */
+.layout { display: grid; grid-template-columns: 18.5rem minmax(0, 1fr); min-height: calc(100vh - 3.4rem); }
+
+/* ---------------------------------------------------------------- rail */
+.rail {
+  background: var(--steel); color: var(--steel-ink);
+  padding: 1.25rem; display: flex; flex-direction: column; gap: 1.75rem;
+}
+.rail h2 { color: #fff; }
+.rail :focus-visible { outline-color: var(--warn); }
+.note { font-size: .8125rem; color: #aeb5b2; margin: -.25rem 0 .6rem; max-width: 34ch; }
+.cmds { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.cmds button, .letters select {
+  background: var(--steel-2); border: 1px solid #555d60; border-radius: 4px;
+  padding: .55rem .6rem; cursor: pointer;
+}
+.cmds button:hover { border-color: var(--steel-ink); }
+.cmds button.go { background: var(--steel-ink); color: var(--steel); border-color: var(--steel-ink); font-weight: 600; }
+
+/* The one bold thing: flat signal red, set apart by colour and size alone. */
+.estop {
+  width: 100%; min-height: 4.75rem; cursor: pointer; text-align: left;
+  display: flex; flex-direction: column; justify-content: center; gap: .15rem;
+  padding: .75rem 1rem; border: 0; border-radius: 4px;
+  background: var(--bad); color: #fff;
+  font: 600 1.375rem/1.1 var(--din);
+}
+.estop small { font: .8125rem var(--text); opacity: .85; }
+.estop:hover { background: #bf2419; }
+.estop:active { background: #9e1d14; }
+.estop:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+.letters { display: grid; gap: .4rem; margin-bottom: .6rem; }
+.letter { display: grid; grid-template-columns: 1fr 4.5rem; align-items: center; gap: .5rem; }
+.letter b { font-weight: 400; }
+.letter select { padding: .35rem .4rem; }
+.letter.unack select { border-color: var(--warn); }
+#cfg-state { margin: .6rem 0 0; }
+#cfg-state:empty { display: none; }
+
+/* ---------------------------------------------------------------- board */
+.board { padding: 1.5rem 2rem 2.5rem; display: flex; flex-direction: column; gap: 2rem; min-width: 0; }
+body:has(#car-pill.off) .board { opacity: .5; }   /* stale data never looks live */
+
+.headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: .25rem 1rem; }
+.state {
+  font-size: clamp(2rem, 3.2vw, 2.75rem); line-height: 1.1; margin: 0;
+  font-stretch: semi-condensed; letter-spacing: -.01em;
+}
+body[data-state="FAULT"] .state { color: var(--bad); }
+.sub { color: var(--faint); font-variant-numeric: tabular-nums; }
+.health { margin-top: .35rem; color: var(--faint); }
+.health b { color: var(--ink); font-weight: 600; margin-right: 1rem; }
+#t-faults.bad { color: var(--bad); }
+#t-faults.warn { color: #8a6d00; }
+
+/* Track strip: the car's three IR sensors over the black tape. */
+.track {
+  position: relative; height: 5.5rem; margin-top: 1.1rem; max-width: 46rem;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden;
+}
+.tape {
+  position: absolute; top: 0; bottom: 0; left: 62%; width: 2.2rem; transform: translateX(-50%);
+  background: var(--tape);   /* no transition: 10 Hz telemetry already moves it */
+}
+.track[data-line="l"] .tape { left: 54%; }
+.track[data-line="r"] .tape { left: 70%; }
+.track[data-line="lr"] .tape { width: 30%; }   /* junction: both on black */
+.sensor {
+  position: absolute; top: .9rem; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: .3rem;
+}
+.s-bar { left: 22%; }
+.s-left { left: 54%; }
+.s-right { left: 70%; }
+.sensor small {
+  font-size: .75rem; color: var(--faint); background: var(--surface); padding: 0 .3rem; border-radius: 2px;
+}
+.ir {
+  display: grid; place-items: center; width: 3.6rem; height: 2.2rem;
+  border: 2px solid var(--ink); border-radius: 4px; background: var(--surface);
+  font: 600 .8125rem var(--din);
+}
+.ir.black { background: var(--ink); color: #fff; border-color: var(--surface); box-shadow: 0 0 0 1px var(--ink); }
+.track-caption { margin-top: .5rem; font-size: .875rem; max-width: 46rem; }
+.faint { color: var(--faint); }
+
+/* Readouts: one row, divided by rules, no boxes. */
+.readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.ro { display: flex; flex-direction: column; gap: .1rem; padding: .9rem 1.25rem; }
+.ro + .ro { border-left: 1px solid var(--rule); }
+.ro:first-child { padding-left: 0; }
+.ro b { font: 600 1.9rem/1.1 var(--din); font-variant-numeric: tabular-nums; }
+.ro span { font-size: .875rem; }
+.ro small { color: var(--faint); font-size: .8125rem; font-variant-numeric: tabular-nums; min-height: 1.2em; }
+.meter { height: .35rem; background: var(--rule); margin-top: .4rem; max-width: 12rem; }
 .meter i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .1s; }
-.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 12px; }
-figure { margin: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
-figcaption { color: var(--muted); font-size: .8rem; }
-canvas { width: 100%; height: 110px; display: block; }
-.log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto;
-       font-family: ui-monospace, Consolas, monospace; font-size: .85rem; }
-.log li { padding: 3px 0; border-bottom: 1px solid var(--line); }
-.log li.fault { color: var(--bad); font-weight: 600; }
-.log li.dbg { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
-.card b.bad { color: var(--bad); } .card b.warn { color: var(--warn); }
-.log time { color: var(--muted); margin-right: 8px; }
 
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 1.5rem; }
+figure { margin: 0; }
+figcaption { font-size: .8125rem; color: var(--faint); margin-bottom: .25rem; }
+canvas { width: 100%; height: 110px; display: block; background: var(--surface); border-bottom: 1px solid var(--rule); }
 
-/* raw IR line sensor readings */
-.ir { display: inline-block; min-width: 3.6em; padding: 0 .3em; border-radius: 4px; text-align: center; }
-.ir.black { background: #111; color: #fff; }
+.lower { display: grid; grid-template-columns: minmax(0, 20rem) minmax(0, 1fr); gap: 2.5rem; align-items: start; }
+.facts { display: grid; grid-template-columns: 1fr auto; margin: 0; }
+.facts dt, .facts dd { padding: .45rem 0; border-bottom: 1px solid var(--rule); margin: 0; }
+.facts dt { color: var(--faint); font-size: .875rem; }
+.facts dd { font: 600 1rem var(--din); text-align: right; font-variant-numeric: tabular-nums; }
+.raw { margin-top: 1rem; font-size: .8125rem; color: var(--faint); }
+.raw summary { cursor: pointer; }
+.raw p { margin-top: .4rem; }
+code { font: .75rem var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+
+.log {
+  list-style: none; margin: 0; padding: 0; max-height: 26rem; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; font-size: .875rem;
+}
+.log:empty::before {
+  content: "Commands you send and events from the car appear here.";
+  display: block; padding: 1rem .75rem; color: var(--faint);
+}
+.log li { padding: .4rem .75rem; border-bottom: 1px solid var(--board); }
+.log li.fault { color: var(--bad); font-weight: 600; box-shadow: inset 3px 0 0 var(--bad); }
+.log li.dbg { white-space: pre-wrap; font: .75rem/1.5 var(--mono); }
+.log time { color: var(--faint); margin-right: .75rem; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- narrow */
+@media (max-width: 1100px) {
+  .lower { grid-template-columns: 1fr; }
+}
+@media (max-width: 820px) {
+  /* Live state first; the stop is pinned to the bottom edge at all times. */
+  .layout { display: flex; flex-direction: column; padding-bottom: 4.5rem; }
+  .board { order: -1; }
+  .ir { width: 2.9rem; }
+  .rail { padding: 1rem; }
+  .estop-plate { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1; }
+  .estop { min-height: 4rem; border-radius: 0; padding: .6rem 1rem; }
+  .board { padding: 1.25rem 1rem 2rem; }
+  .readouts { grid-template-columns: 1fr 1fr; }
+  .ro:nth-child(3) { border-left: 0; padding-left: 0; }
+  .ro:nth-child(n+3) { border-top: 1px solid var(--rule); }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+/*** end of file ***/

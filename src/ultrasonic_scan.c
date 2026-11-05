@@ -2,8 +2,9 @@
  *  @brief   Ultrasonic Scan task (Buddy 5), see ultrasonic_scan.h.
  *
  *  STANDBY -> COARSE_SCAN -> FINE_SCAN -> PROFILE -> PLAN (Week 6 6.3).
- *  The task reports its heartbeat after every ping, so a scan (about
- *  12 x 180 ms) never looks like a stalled task to the Safety Monitor.
+ *  The task reports its heartbeat after every ping, so a scan (12 rays,
+ *  about 1.2-1.5 s with travel-based settling) never looks like a stalled
+ *  task to the Safety Monitor.
  *
  *  NOTE: (void) casts mark return values that are deliberately ignored.
  */
@@ -23,7 +24,6 @@
 
 #define US_PER_CM            (58U)      /* round trip at 343 m/s         */
 #define ECHO_WAIT_MS         ((US_ECHO_TIMEOUT_US / 1000U) + 1U)
-#define NEAR_HYSTERESIS_CM   (5U)
 #define FINE_MAX             (((2U * SERVO_FINE_SPAN_DEG) /                \
                                SERVO_FINE_STEP_DEG) + 1U)
 #define RAY_MAX              (SCAN_COARSE_RAYS + FINE_MAX)
@@ -43,9 +43,11 @@ static ID                g_req_q      = 0;
 static ID                g_result_q   = 0;
 static volatile uint16_t g_front_cm   = US_RANGE_NO_ECHO;
 static volatile bool     g_b_ever_ok  = false;
+static uint32_t          g_servo_deg  = SERVO_CENTRE_DEG;   /* task only */
 
 static uint16_t         ping_cm (void);
 static uint16_t         ping_at (uint32_t angle_deg);
+static RELTIM           servo_turn (uint32_t angle_deg);
 static bool             peek_ahead (void);
 static obstacle_route_t scan_and_plan (void);
 static uint32_t         sweep_coarse (obstacle_ray_t * p_rays);
@@ -65,6 +67,7 @@ ultrasonic_scan_init (void)
 
     (void) memset(&create, 0, sizeof(create));
     create.mbfatr = TA_TFIFO;
+    /* Both casts take small positive constants (32 and 1). */
     create.bufsz  = (SZ) (Q_DEPTH * MBF_SLOT_BYTES);           /* 32 B    */
     create.maxmsz = (INT) sizeof(uint8_t);
     g_req_q       = tk_cre_mbf(&create);
@@ -79,8 +82,7 @@ ultrasonic_scan_init (void)
 void
 ultrasonic_scan_task (INT stacd, void * p_exinf)
 {
-    uint64_t next_us        = time_us_64();
-    bool     b_near_sent    = false;
+    uint64_t next_us = time_us_64();
 
     (void) stacd;
     (void) p_exinf;
@@ -89,11 +91,14 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
 
     for (;;)
     {
-        uint8_t  req   = 0U;
-        uint16_t range = US_RANGE_NO_ECHO;
+        uint8_t req = 0U;
 
         if (tk_rcv_mbf(g_req_q, &req, TMO_POL) > 0)
         {
+            /* The last standby range is from before this request; the
+             * Navigation FSM must not act on it afterwards. */
+            g_front_cm = US_RANGE_NO_ECHO;
+
             if (SCAN_REQ_PROFILE == req)
             {
                 /* us_result_t takes its route values from
@@ -109,35 +114,15 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
             }
             else
             {
-                hal_servo_set_deg(SERVO_CENTRE_DEG);
+                (void) servo_turn(SERVO_CENTRE_DEG);  /* period settles it */
             }
-
-            b_near_sent = false;
         }
 
-        /* STANDBY: one ping straight ahead per period. */
+        /* STANDBY: one ping straight ahead per period. The Navigation
+         * FSM reads the range every period, in every state. */
         systime_period_wait(&next_us, PERIOD_US_MS);
         safety_heartbeat(SAFETY_HB_US);
-        range      = ping_cm();
-        g_front_cm = range;
-
-        if ((US_RANGE_NO_ECHO != range) && (range < US_OBSTACLE_CM))
-        {
-            if (!b_near_sent)
-            {
-                result_post(US_RESULT_NEAR);
-                b_near_sent = true;
-            }
-        }
-        else if ((US_RANGE_NO_ECHO != range) &&
-                 (range > (US_OBSTACLE_CM + NEAR_HYSTERESIS_CM)))
-        {
-            b_near_sent = false;                  /* hysteresis           */
-        }
-        else
-        {
-            /* In the hysteresis band, or no echo: no change. */
-        }
+        g_front_cm = ping_cm();
     }
 }
 
@@ -149,6 +134,7 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
 void
 ultrasonic_scan_peek (void)
 {
+    /* scan_req_t is 0..2 and the message is 1 byte. */
     uint8_t const req = (uint8_t) SCAN_REQ_PEEK;
 
     (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
@@ -160,6 +146,7 @@ ultrasonic_scan_peek (void)
 void
 ultrasonic_scan_request (void)
 {
+    /* scan_req_t is 0..2 and the message is 1 byte. */
     uint8_t const req = (uint8_t) SCAN_REQ_PROFILE;
 
     (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
@@ -171,6 +158,7 @@ ultrasonic_scan_request (void)
 void
 ultrasonic_scan_abort (void)
 {
+    /* scan_req_t is 0..2 and the message is 1 byte. */
     uint8_t const req = (uint8_t) SCAN_REQ_ABORT;
 
     (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
@@ -189,7 +177,7 @@ ultrasonic_scan_result_take (us_result_t * p_result)
 
     if (b_got)
     {
-        /* Only us_result_t values (0..8) are queued. */
+        /* Only us_result_t values (0..5) are queued. */
         *p_result = (us_result_t) msg;
     }
 
@@ -242,44 +230,79 @@ ping_cm (void)
 }
 
 /*!
- * @brief  Turn the servo, let it settle, ping, and keep the minimum gap
- *         between pings. Reports the heartbeat.
+ * @brief  Turn the servo and wait until it has settled there and the
+ *         minimum gap since the previous ping has passed, then ping.
+ *         Reports the heartbeat.
  * @param  angle_deg  Servo angle.
  * @return Range in cm, or US_RANGE_NO_ECHO.
  */
 static uint16_t
 ping_at (uint32_t angle_deg)
 {
-    uint16_t range = US_RANGE_NO_ECHO;
+    RELTIM   wait_ms = servo_turn(angle_deg);
+    uint16_t range   = US_RANGE_NO_ECHO;
 
-    hal_servo_set_deg(angle_deg);
-    (void) tk_dly_tsk((RELTIM) SERVO_SETTLE_MS);
+    /* The previous ping (scan ray or standby) may have been just before
+     * this call, so wait at least US_MIN_GAP_MS (HC-SR04 echo decay). */
+    wait_ms = (wait_ms < (RELTIM) US_MIN_GAP_MS) ? (RELTIM) US_MIN_GAP_MS :
+                                                   wait_ms;
+    (void) tk_dly_tsk(wait_ms);
     range = ping_cm();
-    (void) tk_dly_tsk((RELTIM) US_MIN_GAP_MS);
     safety_heartbeat(SAFETY_HB_US);
 
     return (range);
 }
 
 /*!
- * @brief  Bypass check: ping at SCAN_MIN_DEG, centre and SCAN_MAX_DEG
- *         (the car's width, not just the centre beam), then centre.
- * @return True if any echo is nearer than BYPASS_PEEK_CM. A missing
- *         echo counts as no obstacle on that ray.
+ * @brief  Move the servo and work out how long it needs to get there:
+ *         SERVO_SETTLE_BASE_MS plus SERVO_MS_PER_DEG for every degree
+ *         of travel (a 75 deg jump needs more than a 5 deg fine step).
+ * @param  angle_deg  Servo angle, 0..180.
+ * @return Settle time, ms.
+ */
+static RELTIM
+servo_turn (uint32_t angle_deg)
+{
+    uint32_t const travel = (angle_deg > g_servo_deg) ?
+                            (angle_deg - g_servo_deg) :
+                            (g_servo_deg - angle_deg);
+
+    hal_servo_set_deg(angle_deg);
+    g_servo_deg = angle_deg;
+
+    /* travel <= 180, so the result is under 400 ms and fits RELTIM. */
+    return ((RELTIM) (SERVO_SETTLE_BASE_MS + (travel * SERVO_MS_PER_DEG)));
+}
+
+/*!
+ * @brief  Bypass check: ping at PEEK_RIGHT_DEG, centre and PEEK_LEFT_DEG
+ *         (the strip just ahead of the car's full width, not just the
+ *         centre beam), then centre.
+ *
+ *  A missing echo is pinged once more: a dropout (3.3 V supply, angled
+ *  face) rarely repeats, but open space never answers. Only a second
+ *  missing echo counts as no obstacle on that ray.
+ *
+ * @return True if any echo is nearer than BYPASS_PEEK_CM.
  */
 static bool
 peek_ahead (void)
 {
     static uint32_t const angles[] =
     {
-        SCAN_MIN_DEG, SERVO_CENTRE_DEG, SCAN_MAX_DEG
+        PEEK_RIGHT_DEG, SERVO_CENTRE_DEG, PEEK_LEFT_DEG
     };
     bool     b_blocked = false;
     uint32_t idx       = 0U;
 
     for (idx = 0U; idx < (sizeof(angles) / sizeof(angles[0])); idx++)
     {
-        uint16_t const range = ping_at(angles[idx]);
+        uint16_t range = ping_at(angles[idx]);
+
+        if (US_RANGE_NO_ECHO == range)
+        {
+            range = ping_at(angles[idx]);         /* retry once           */
+        }
 
         if ((US_RANGE_NO_ECHO != range) && (range < BYPASS_PEEK_CM))
         {
@@ -287,8 +310,7 @@ peek_ahead (void)
         }
     }
 
-    hal_servo_set_deg(SERVO_CENTRE_DEG);
-    (void) tk_dly_tsk((RELTIM) SERVO_SETTLE_MS);
+    (void) tk_dly_tsk(servo_turn(SERVO_CENTRE_DEG));
     safety_heartbeat(SAFETY_HB_US);
 
     return (b_blocked);
@@ -315,7 +337,8 @@ scan_and_plan (void)
     count = sweep_coarse(rays);
     obstacle_profile_build(rays, count, &limits, &coarse);
     count = sweep_fine(rays, count, coarse.closest_deg);
-    hal_servo_set_deg(SERVO_CENTRE_DEG);
+    (void) tk_dly_tsk(servo_turn(SERVO_CENTRE_DEG));
+    safety_heartbeat(SAFETY_HB_US);
 
     obstacle_profile_build(rays, count, &limits, &profile);
     profile_report(&profile);
@@ -325,20 +348,22 @@ scan_and_plan (void)
 
 /*!
  * @brief  Coarse sweep: SCAN_COARSE_RAYS rays spread evenly over
- *         SCAN_MIN_DEG..SCAN_MAX_DEG.
+ *         SCAN_MIN_DEG..SCAN_MAX_DEG, both ends included (15 / 52 / 90 /
+ *         127 / 165 deg: dividing per ray keeps the ends and the centre
+ *         exact when the span does not divide evenly).
  * @param  p_rays  Output rays.
  * @return Number of rays.
  */
 static uint32_t
 sweep_coarse (obstacle_ray_t * p_rays)
 {
-    uint32_t const step = (SCAN_MAX_DEG - SCAN_MIN_DEG) /
-                          (SCAN_COARSE_RAYS - 1U);
-    uint32_t       idx  = 0U;
+    uint32_t idx = 0U;
 
     for (idx = 0U; idx < SCAN_COARSE_RAYS; idx++)
     {
-        uint32_t const angle = SCAN_MIN_DEG + (idx * step);
+        uint32_t const angle = SCAN_MIN_DEG +
+                               ((idx * (SCAN_MAX_DEG - SCAN_MIN_DEG)) /
+                                (SCAN_COARSE_RAYS - 1U));
 
         /* Angles are 0..180, so they fit a uint16_t. */
         p_rays[idx].angle_deg = (uint16_t) angle;
@@ -387,7 +412,7 @@ sweep_fine (obstacle_ray_t * p_rays, uint32_t count, uint32_t centre_deg)
 static void
 result_post (us_result_t result)
 {
-    /* us_result_t values are 0..8. */
+    /* us_result_t values are 0..5. */
     uint8_t const msg = (uint8_t) result;
 
     (void) tk_snd_mbf(g_result_q, &msg, (INT) sizeof(msg), TMO_POL);

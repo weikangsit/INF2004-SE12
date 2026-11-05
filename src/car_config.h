@@ -331,29 +331,22 @@
 #define US_SCAN_RANGE_CM     (40U)     /* hits beyond this are clear    */
 #define US_ECHO_TIMEOUT_US   (30000U)
 #define US_MIN_GAP_MS        (60U)
-#define SERVO_SETTLE_MS      (120U)
+/* Servo settle = base + per degree of travel. SG90: 0.1 s / 60 deg
+ * (1.7 ms/deg) at 4.8 V, rounded up; base = one 20 ms PWM frame. A
+ * 75 deg jump waits 170 ms, a 5 deg fine step 30 ms (raised to the
+ * 60 ms ping gap). TUNE: measure on the car.                           */
+#define SERVO_SETTLE_BASE_MS (20U)
+#define SERVO_MS_PER_DEG     (2U)
 #define SERVO_CENTRE_DEG     (90U)
-/* Sweep limits. Requirement: 15..165 deg. Interim (Tribunal 1, servo
- * travel limited until the mount is raised): 60..120 deg after a
- * reverse of REVERSE_BEFORE_SCAN_CM. Set 15 / 165 and 0 cm once fixed. */
-#define SCAN_MIN_DEG         (60U)
-#define SCAN_MAX_DEG         (120U)
+/* Sweep limits (Week 6 requirement; the servo mount is fixed).        */
+#define SCAN_MIN_DEG         (15U)
+#define SCAN_MAX_DEG         (165U)
 #define SCAN_COARSE_RAYS     (5U)
 #define SERVO_FINE_STEP_DEG  (5U)
 #define SERVO_FINE_SPAN_DEG  (15U)
 #define ROBOT_WIDTH_CM       (15U)     /* TUNE                          */
 #define CLEAR_MARGIN_CM      (5U)
 #define MIN_SIDE_CLEAR_CM    (30U)
-/* Reverse before scanning, only along the car's own straight track
- * (Tribunal 1 Version C): needs this distance + margin driven straight
- * on the line since the last turn. 0 disables the reverse.
- * 0: the car scans where it stopped and goes around (team decision,
- * replaces Version C). With 40 cm the car backed off until the obstacle
- * was beyond US_SCAN_RANGE_CM, the scan saw a clear path, the car drove
- * up to it again and reversed again (dist_mm is net, so the straight
- * run never got shorter).                                              */
-#define REVERSE_BEFORE_SCAN_CM (0U)
-#define REVERSE_MARGIN_CM    (4U)      /* +/-4 cm reverse tolerance     */
 /* Rectangular bypass with spot turns: 90 deg out, sideways, 90 deg back
  * to parallel, along the obstacle, 90 deg in, back to the line. The car
  * stops ~12 cm from the obstacle, so the old 45 deg out-leg met the
@@ -366,20 +359,21 @@
  *  length: drive along (BYPASS_ALONG_FIRST_CM, then BYPASS_STEP_CM),
  *          turn toward the line and check; obstacle still there ->
  *          turn back to parallel and repeat.
- * A check pings at SCAN_MIN_DEG, centre and SCAN_MAX_DEG, so it covers
- * the car's width, not just the narrow centre beam; any echo nearer
- * than BYPASS_PEEK_CM means the obstacle is still in the way. TUNE.   */
+ * A check pings at PEEK_RIGHT_DEG, centre and PEEK_LEFT_DEG; any echo
+ * nearer than BYPASS_PEEK_CM means the obstacle is still in the way.
+ * TUNE.                                                                */
 #define BYPASS_STEP_CM       (30U)
 #define BYPASS_ALONG_FIRST_CM (30U)    /* stop gap 12 cm + sensor-axle  */
-/* Once the width check reads clear, one more sideways step this long
- * (no check). The 60 / 120 deg rays only cover ~7 cm either side at
- * the obstacle, so "clear" can leave the car's side next to the edge,
- * and a 90 deg spot turn swings the corners ~5 cm wider than the body:
- * the turn toward the line hit the obstacle (measured). 0 = off. TUNE. */
-#define BYPASS_WIDTH_MARGIN_CM (15U)
 #define BYPASS_PEEK_CM       (20U)
+/* Check rays, fixed and not SCAN_MIN/MAX_DEG: at BYPASS_PEEK_CM a 60 deg
+ * ray is 10 cm to the side and 17 cm ahead, just outside the car's
+ * half width (7.5 cm), so the check sees the strip the body drives
+ * into. A 15 deg ray would point sideways (19 cm out, 5 cm ahead) and
+ * miss an obstacle edge in front of the car's side.                    */
+#define PEEK_RIGHT_DEG       (60U)
+#define PEEK_LEFT_DEG        (120U)
 /* Steps per side (width or length) before giving up with FC_NO_ROUTE
- * detail 3 ("obstacle too large"): 8 x 15 = 120 cm.                    */
+ * detail 3 ("obstacle too large"): 8 x 30 = 240 cm.                    */
 #define BYPASS_MAX_STEPS     (8U)
 /* Return leg toward the line: the measured sideways steps plus this
  * much extra before the car gives up (FC_REACQUIRE).                   */
