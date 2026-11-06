@@ -471,11 +471,16 @@ def ref_plan(p, lim):
         return 3
     if not p["in_path"]:
         return 0 if p["centre"] else 3
+    lbl, rbl = lk and p["left"] < side, rk and p["right"] < side
+    if lbl and rbl:
+        return 3
+    if lbl or rbl:
+        return 2 if lbl else 1
     if lok and rok:
         return 1 if p["left"] >= p["right"] else 2
     if lok or rok:
         return 1 if lok else 2
-    return 3
+    return 2 if p["closest_deg"] > 90 else 1
 
 
 def test_obstacle(cpu):

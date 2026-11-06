@@ -52,27 +52,18 @@
 #define COLLECT_CHUNK        (16U)     /* edges taken from the ring at once */
 #define COLLECT_CHUNKS_MAX   (BAR_RING_LEN / COLLECT_CHUNK)  /* per period */
 #define LETTER_FIRST         ('A')
-#define US_PER_MS            (1000U)
 #define STATUS_READS_MAX     (15U)     /* 4-bit reads field              */
 #define STATUS_COUNT_MAX     (255U)    /* 8-bit count fields             */
-#define SUB_PER_COUNT        (16.0f)   /* bar_filter_positions() units   */
-#define MM_PER_M             (1000.0f)
 #define TENTHS_PER_MM        (10.0f)
-#define PI_F                 (3.14159265f)
 /* 0.1 mm of travel per 1/16 encoder count. */
 #define TENTHS_PER_SUB       ((PI_F * WHEEL_DIAMETER_M * MM_PER_M *           \
                                TENTHS_PER_MM) /                              \
-                              (ENC_COUNTS_PER_REV * SUB_PER_COUNT))
+                              (ENC_COUNTS_PER_REV * BAR_SUB_COUNTS))
 #define POS_SHIFT_DIV        (2.0f)    /* positions are shifted left by 1 */
 #define BARDBG_WIDTH_MAX     (2047.0f) /* 11-bit width field             */
 #define ROUND_HALF           (0.5f)
-#define YAW_SCALE            (1000.0f)
-#define SETUP_LEN            (3U)      /* bar_filter_positions() setup:  */
-#define SETUP_SIGN_L         (0U)      /* left encoder sign              */
-#define SETUP_SIGN_R         (1U)      /* right encoder sign             */
-#define SETUP_YAW            (2U)      /* sensor offset / track x 1000   */
 /* 1/16 encoder counts per mm of travel. */
-#define SUB_PER_MM           ((ENC_COUNTS_PER_REV * SUB_PER_COUNT) /         \
+#define SUB_PER_MM           ((ENC_COUNTS_PER_REV * BAR_SUB_COUNTS) /         \
                               (PI_F * WHEEL_DIAMETER_M * MM_PER_M))
 
 /** Running totals for the status report (task only). */
@@ -94,7 +85,7 @@ static int32_t     g_cr[BAR_EDGE_BUF_LEN];
 static uint32_t    g_pos[BAR_EDGE_BUF_LEN];  /* travel, decoder format     */
 static uint32_t    g_n_edges   = 0U;                   /* 0 = waiting      */
 /* A read is in progress (set by the task, read by Motion Control). */
-static volatile bool g_b_reading = false;
+static volatile bool gb_reading = false;
 static uint32_t    g_dropped0  = 0U;   /* ring drops when the read began   */
 static uint8_t     g_dbg_seq   = 0U;                   /* task only        */
 static bar_stats_t g_stats;                            /* task only        */
@@ -104,7 +95,7 @@ static bool     capture_is_done (void);
 static uint32_t travel_since (uint32_t idx, int32_t const * p_setup);
 static bool     travel_setup (int32_t * p_setup);
 static void     capture_finish (void);
-static uint8_t  capture_decode (bool * p_b_distance);
+static uint8_t  capture_decode (bool * pb_distance);
 static void     capture_send (uint8_t letter, bool b_distance);
 static void     status_send (void);
 static int16_t  count_field (uint32_t count, uint32_t max);
@@ -140,7 +131,7 @@ barcode_poll (void)
         capture_finish();
     }
 
-    g_b_reading = (g_n_edges > 0U);
+    gb_reading = (g_n_edges > 0U);
 
     if ((0 != BAR_LOG) &&
         ((systime_now_ms() - g_stats.sent_ms) >= BAR_STATUS_MS))
@@ -170,7 +161,7 @@ barcode_take (uint8_t * p_slot)
 bool
 barcode_is_reading (void)
 {
-    return (g_b_reading);
+    return (gb_reading);
 }
 
 /*!
@@ -245,7 +236,7 @@ capture_is_done (void)
      * counts, so the casts keep them. */
     static bar_end_limits_t const limits =
     {
-        (uint32_t) BAR_MIN_TRAVEL_COUNTS * (uint32_t) SUB_PER_COUNT,
+        (uint32_t) (BAR_MIN_TRAVEL_COUNTS * BAR_SUB_COUNTS),
         (uint32_t) (BAR_QUIET_MM * SUB_PER_MM),
         BAR_STALL_TIMEOUT_US,
         BAR_EDGES_MIN,
@@ -258,7 +249,7 @@ capture_is_done (void)
     {
         uint32_t const  last = g_edges[g_n_edges - 1U];
         bar_end_state_t state;
-        int32_t         setup[SETUP_LEN];
+        int32_t         setup[BAR_SETUP_LEN];
 
         state.n_edges = g_n_edges;
         /* Edges were collected before this time was read, so the
@@ -301,7 +292,7 @@ travel_since (uint32_t idx, int32_t const * p_setup)
 /*!
  * @brief  Fill the bar_filter_positions() setup: encoder signs and the
  *         sensor's offset.
- * @param  p_setup  Output, SETUP_LEN values { sign L, sign R, yaw x 1000 }.
+ * @param  p_setup  Output, BAR_SETUP_LEN values { sign L, sign R, yaw x 1000 }.
  * @return False if the encoders are not used (open loop): travel is then
  *         meaningless.
  */
@@ -310,12 +301,12 @@ travel_setup (int32_t * p_setup)
 {
     bool const b_closed = !motion_control_is_open_loop();
 
-    p_setup[SETUP_SIGN_L] = 1;
-    p_setup[SETUP_SIGN_R] = 1;
-    motion_control_encoder_signs(&p_setup[SETUP_SIGN_L],
-                                 &p_setup[SETUP_SIGN_R]);
+    p_setup[BAR_SETUP_SIGN_L] = 1;
+    p_setup[BAR_SETUP_SIGN_R] = 1;
+    motion_control_encoder_signs(&p_setup[BAR_SETUP_SIGN_L],
+                                 &p_setup[BAR_SETUP_SIGN_R]);
     /* Offset / track x 1000: a few hundred at most, fits. */
-    p_setup[SETUP_YAW] = (int32_t) ((BAR_SENSOR_Y_MM * YAW_SCALE) /
+    p_setup[BAR_SETUP_YAW] = (int32_t) ((BAR_SENSOR_Y_MM * BAR_YAW_SCALE) /
                                     (TRACK_WIDTH_M * MM_PER_M));
 
     return (b_closed);
@@ -355,6 +346,7 @@ capture_finish (void)
                                             (uint32_t) BA_STRAIGHT);
 
             (void) tk_snd_mbf(g_slot_q, &slot, (INT) sizeof(slot), TMO_POL);
+            /* slot is 0..3, so flag | slot fits a byte. */
             vehicle_state_set_barcode((uint8_t) (VEHICLE_BAR_VALID | slot));
             telemetry_post_event(EV_BARCODE, slot, 0, edges);
         }
@@ -377,27 +369,27 @@ capture_finish (void)
  *         at least BAR_MIN_TRAVEL_COUNTS with working encoders, else by
  *         time (hand swipe, open loop). A read that lost edges to a full ring
  *         is rejected (Tribunal 1: decide what happens on overflow).
- * @param  p_b_distance  Output: true if the travel was used.
+ * @param  pb_distance  Output: true if the travel was used.
  * @return Letter 0..25, or CODE39_NONE.
  */
 static uint8_t
-capture_decode (bool * p_b_distance)
+capture_decode (bool * pb_distance)
 {
     uint8_t letter = CODE39_NONE;
 
-    *p_b_distance = false;
+    *pb_distance = false;
 
     if (hal_bar_dropped() == g_dropped0)
     {
-        int32_t setup[SETUP_LEN];
+        int32_t setup[BAR_SETUP_LEN];
 
         if (travel_setup(setup))
         {
             if (bar_filter_positions(g_edges, g_cl, g_cr, g_n_edges, setup,
                                      g_pos) >=
-                ((uint32_t) BAR_MIN_TRAVEL_COUNTS * (uint32_t) SUB_PER_COUNT))
+                (BAR_MIN_TRAVEL_COUNTS * BAR_SUB_COUNTS))
             {
-                *p_b_distance = true;
+                *pb_distance = true;
                 letter = code39_decode(g_pos, g_n_edges,
                                        BAR_MIN_WIDE_RATIO_X10);
             }
@@ -406,7 +398,7 @@ capture_decode (bool * p_b_distance)
         /* By time only without distance: while the car drives the speed
          * is never steady (0 of 156 wobbly emulator reads decode by
          * time), so a retry by time could only add a wrong letter. */
-        if (!*p_b_distance)
+        if (!*pb_distance)
         {
             letter = code39_decode(g_edges, g_n_edges,
                                    BAR_MIN_WIDE_RATIO_X10);
@@ -460,6 +452,7 @@ capture_send (uint8_t letter, bool b_distance)
                 float32_t const tenths = ((float32_t) width / POS_SHIFT_DIV) *
                                          TENTHS_PER_SUB;
 
+                /* Clamped to BARDBG_WIDTH_MAX (11 bits) first. */
                 dbg.widths[idx] = (uint16_t) ((tenths < BARDBG_WIDTH_MAX) ?
                                               (tenths + ROUND_HALF) :
                                               BARDBG_WIDTH_MAX);

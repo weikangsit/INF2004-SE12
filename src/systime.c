@@ -12,7 +12,6 @@
 #include "port.h"
 #include "systime.h"
 
-#define US_PER_MS            (1000U)
 
 /*!
  * @brief  Milliseconds since boot (wraps after 49 days).
@@ -37,7 +36,7 @@ systime_period_wait (uint64_t * p_next_us, uint32_t period_ms)
 {
     uint64_t const now = time_us_64();
 
-    *p_next_us += (uint64_t) period_ms * US_PER_MS;
+    *p_next_us += (uint64_t) period_ms * US_PER_MS;  /* no overflow */
 
     if (*p_next_us <= now)
     {

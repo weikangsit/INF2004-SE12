@@ -41,8 +41,6 @@ void    motion_control_task (INT stacd, void * p_exinf);
 
 uint8_t motion_control_forward (uint32_t speed_cms, uint32_t dist_cm,
                                 bool b_follow_line);
-uint8_t motion_control_reverse (uint32_t speed_cms, uint32_t dist_cm,
-                                bool b_follow_line);
 uint8_t motion_control_turn (bool b_left, uint32_t speed_cms,
                              uint32_t angle_deg, bool b_end_on_line);
 uint8_t motion_control_uturn (void);

@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#define US_PER_MS            (1000U)
+
 uint32_t systime_now_ms (void);
 void     systime_period_wait (uint64_t * p_next_us, uint32_t period_ms);
 uint16_t systime_stamp (void);

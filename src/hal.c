@@ -17,9 +17,9 @@
 #include "hal.h"
 #include "motor_driver.h"
 #include "port.h"
+#include "systime.h"
 #include "ws2812.pio.h"
 
-#define US_PER_MS            (1000U)
 #define LEVEL_BIT            (1U)        /* bit 0 of a stored edge       */
 #define TRIG_PULSE_US        (10U)
 #define SERVO_TICK_HZ        (1000000.0f) /* 1 us per PWM tick           */
@@ -56,16 +56,16 @@ static volatile uint32_t g_bar_edges   = 0U;     /* interrupts on the pin */
 static volatile uint32_t g_bar_dropped = 0U;     /* lost to a full ring   */
 /* The ring filled and the ISR switched the pin's interrupt off; the
  * Line task switches it back on once the ring is empty. */
-static volatile bool     g_b_bar_paused = false;
+static volatile bool     gb_bar_paused = false;
 
 /* Ultrasonic echo: written by the ISR, read after the echo signal. */
 static volatile uint32_t g_echo_rise_us  = 0U;
 static volatile uint32_t g_echo_width_us = 0U;
-static volatile bool     g_b_echo_valid  = false;
+static volatile bool     gb_echo_valid  = false;
 
 static PIO      g_led_pio  = NULL;
 static uint32_t g_led_sm   = 0U;
-static bool     g_b_led_ok = false;
+static bool     gb_led_ok = false;
 
 static void     input_pin (uint32_t pin, bool b_pull_up);
 static uint32_t barcode_isr (uint32_t now_us);
@@ -158,11 +158,11 @@ hal_bar_take (uint32_t * p_buf, int32_t * p_cl, int32_t * p_cr,
         count++;
     }
 
-    if (g_b_bar_paused && (g_bar_tail == g_bar_head))
+    if (gb_bar_paused && (g_bar_tail == g_bar_head))
     {
         /* Empty, and the paused ISR cannot add to it: resume. The SDK
          * clears stale edge flags before enabling. */
-        g_b_bar_paused = false;
+        gb_bar_paused = false;
         gpio_set_irq_enabled(PIN_IR_BC, EDGE_BOTH, true);
     }
 
@@ -175,7 +175,7 @@ hal_bar_take (uint32_t * p_buf, int32_t * p_cl, int32_t * p_cr,
 void
 hal_us_trigger (void)
 {
-    g_b_echo_valid = false;
+    gb_echo_valid = false;
     gpio_put(PIN_US_TRIG, true);
     port_busy_wait_us(TRIG_PULSE_US);
     gpio_put(PIN_US_TRIG, false);
@@ -189,7 +189,7 @@ hal_us_trigger (void)
 bool
 hal_us_echo_us (uint32_t * p_us)
 {
-    bool const b_valid = g_b_echo_valid;
+    bool const b_valid = gb_echo_valid;
 
     if (b_valid)
     {
@@ -208,7 +208,7 @@ hal_servo_init (void)
     pwm_config cfg = pwm_get_default_config();
 
     gpio_set_function(PIN_SERVO, GPIO_FUNC_PWM);
-    pwm_config_set_clkdiv(&cfg, (float) clock_get_hz(clk_sys) / SERVO_TICK_HZ);
+    pwm_config_set_clkdiv(&cfg, clock_get_hz(clk_sys) / SERVO_TICK_HZ);
     pwm_config_set_wrap(&cfg, SERVO_WRAP);
     pwm_init(pwm_gpio_to_slice_num(PIN_SERVO), &cfg, true);
     hal_servo_set_deg(SERVO_CENTRE_DEG);
@@ -269,10 +269,10 @@ hal_led_init (void)
     uint offset        = 0U;
     uint state_machine = 0U;
 
-    g_b_led_ok = pio_claim_free_sm_and_add_program(&ws2812_program,
+    gb_led_ok = pio_claim_free_sm_and_add_program(&ws2812_program,
                                                    &g_led_pio,
                                                    &state_machine, &offset);
-    if (g_b_led_ok)
+    if (gb_led_ok)
     {
         g_led_sm = state_machine;
         ws2812_program_init(g_led_pio, state_machine, offset, PIN_NEOPIXEL,
@@ -291,7 +291,7 @@ hal_led_set (hal_led_colour_t colour)
 {
     uint32_t idx = 0U;
 
-    if (g_b_led_ok && (colour < HAL_LED_COUNT))
+    if (gb_led_ok && (colour < HAL_LED_COUNT))
     {
         for (idx = 0U; idx < LED_PIXELS; idx++)
         {
@@ -377,7 +377,7 @@ barcode_isr (uint32_t now_us)
         {
             g_bar_dropped++;
             gpio_set_irq_enabled(PIN_IR_BC, EDGE_BOTH, false);
-            g_b_bar_paused = true;                /* hal_bar_take resumes */
+            gb_bar_paused = true;                /* hal_bar_take resumes */
         }
     }
 
@@ -407,7 +407,7 @@ echo_isr (uint32_t now_us)
         if (0U != (events & GPIO_IRQ_EDGE_FALL))
         {
             g_echo_width_us = now_us - g_echo_rise_us;
-            g_b_echo_valid  = true;
+            gb_echo_valid  = true;
             sig             = HAL_SIG_ECHO;
         }
     }

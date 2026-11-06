@@ -56,7 +56,7 @@ static hb_rule_t const g_rules[TASK_COUNT] =
 
 static ID            g_evt_flg   = 0;
 static ID            g_hb_flg    = 0;
-static volatile bool g_b_latched = false;
+static volatile bool gb_latched = false;
 
 static void events_handle (uint32_t events);
 static void heartbeats_check (uint32_t now, uint32_t boot_ms,
@@ -104,7 +104,7 @@ safety_task (INT stacd, void * p_exinf)
         if (E_OK == tk_wai_flg(g_evt_flg, ALL_EVENTS, TWF_ORW | TWF_BITCLR,
                                &events, (TMO) PERIOD_SAFETY_MS))
         {
-            events_handle((uint32_t) events);
+            events_handle((uint32_t) events);  /* UINT flag bits */
         }
 
         now = systime_now_ms();
@@ -115,7 +115,7 @@ safety_task (INT stacd, void * p_exinf)
         }
 
         /* Keep the brake asserted while latched. */
-        if (g_b_latched)
+        if (gb_latched)
         {
             motor_driver_brake();
         }
@@ -152,7 +152,7 @@ safety_report (uint32_t events)
 bool
 safety_is_latched (void)
 {
-    return (g_b_latched);
+    return (gb_latched);
 }
 
 /*!
@@ -164,7 +164,7 @@ void
 safety_clear (void)
 {
     (void) tk_clr_flg(g_evt_flg, ~(UINT) ALL_EVENTS);
-    g_b_latched = false;
+    gb_latched = false;
     motor_driver_inhibit(false);
     fault_clear_all();
 }
@@ -221,7 +221,7 @@ heartbeats_check (uint32_t now, uint32_t boot_ms, uint32_t * p_last_seen)
     {
         hb_rule_t const * const p_rule = &g_rules[idx];
 
-        if (0U != ((uint32_t) beats & p_rule->bit))
+        if (0U != ((uint32_t) beats & p_rule->bit))  /* UINT flag bits */
         {
             p_last_seen[idx] = now;
         }
@@ -255,9 +255,9 @@ trip (fault_code_t code, uint32_t detail)
 {
     motor_driver_inhibit(true);                   /* brakes immediately   */
 
-    if (!g_b_latched)
+    if (!gb_latched)
     {
-        g_b_latched = true;
+        gb_latched = true;
         motion_control_stop();
         /* code < 16 and detail < 7, so both fit. */
         telemetry_post_event(EV_FAULT, (uint8_t) code, (int16_t) detail, 0);

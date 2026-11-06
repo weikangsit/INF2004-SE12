@@ -38,9 +38,9 @@ and no hardware headers (see `port.h`).
 | Safety latch blocks motor drive (inhibit flag checked around every PWM write); queued commands discarded while latched | `motor_driver.c`, `motion_control.c` |
 | Every motion command has a time limit; completion with sequence number and result | `motion_control.c` (`motion_done_q`) |
 | Encoders + PID kept; open-loop fallback if an encoder fails the self-test | `motion_control.c` |
-| Missing echo is invalid, never a clear path; too few valid echoes, or no known clear side, stop with "scan cannot proceed safely"; a bypass check re-pings a missing echo once | `obstacle_profile.c`, `nav_fsm.c` |
-| Servo mount fixed: the interim reverse-and-scan (60-120 deg) is removed; the car scans 15-165 deg where it stops and goes round on the side with more room | `nav_fsm.c`, `obstacle_profile.c`, `car_config.h` |
-| Scan reports progress (heartbeat per ping); servo settle scales with travel, so a scan takes about 1.2-1.5 s | `ultrasonic_scan.c` |
+| Missing echo is invalid, never a clear path; no valid echo ahead, or both sides blocked, stop with "scan cannot proceed safely"; a no-echo side is unknown, not blocked, and the bypass checks it as it goes; a bypass check re-pings a missing echo once | `obstacle_profile.c`, `nav_fsm.c` |
+| Servo mount fixed: the interim reverse-and-scan (60-120 deg) is removed; the car scans 15-165 deg where it stops and goes round on the `BYPASS_ON_LEFT` side | `nav_fsm.c`, `obstacle_profile.c`, `car_config.h` |
+| Scan reports progress (heartbeat per ping); servo settle scales with travel, so a scan takes about 2 s (servo settle 4 ms per degree, measured too fast at 2) | `ultrasonic_scan.c` |
 | Per-task heartbeat deadlines; Telemetry warning only; WiFi loss never brakes; stalled radio task brakes | `safety.c`, `comms.c` |
 | Safety woken by fault events (50 ms timeout instead of polling); remote e-stop goes straight to Safety | `safety.c`, `comms.c` |
 | Binary MQTT payloads, minimum bits, documented layout | `proto.c`, `mqtt_protocol.md` |
@@ -60,11 +60,19 @@ and no hardware headers (see `port.h`).
 * `line_pos_q` became a single stamped word (newest value only).
 * Servo mount raised, so the Version C interim (reverse 40 cm, scan
   60-120 deg) is removed: the car scans 15-165 deg where it stopped. The
-  scan plans CONTINUE, LEFT, RIGHT or UNSAFE and the car goes round on the
-  side the scan chose; a blocked bypass leg stops with FC_NO_ROUTE detail 2.
+  scan decides CONTINUE, bypass or UNSAFE; the car always goes round on the
+  `BYPASS_ON_LEFT` side (left for anti-clockwise runs, right for
+  clockwise); a blocked bypass leg stops with FC_NO_ROUTE detail 2.
 * Obstacle detection while following reads the standby range every period
   instead of a one-shot message, so an obstacle that came into view during
   a barcode turn is still caught (Week 6 feedback).
+* Margin step: after the first clear width check the car steps out
+  `BYPASS_WIDTH_MARGIN_CM` (10) more and checks again, so the spot turn
+  toward the line clears the obstacle's edge (measured: it hit it).
+* Straight runs off the line (bypass legs, return leg, barcode straight)
+  hold on the wheel encoders only (`K_HEADING` 0): the magnetometer-only
+  heading shifted with the motors running and bent the return leg into an
+  arc (measured).
 * Step-and-check bypass (any obstacle size, team flow): 90 deg spot
   turns. Width: turn out, step BYPASS_STEP_CM, face forward and check
   (pings at PEEK_RIGHT_DEG 60, centre, PEEK_LEFT_DEG 120, hit under
@@ -72,6 +80,31 @@ and no hardware headers (see `port.h`).
   toward the line and check; blocked -> turn back and step along again.
   The return leg is the measured sideways steps plus a margin. More
   than BYPASS_MAX_STEPS either way stops with FC_NO_ROUTE detail 3.
+
+## Tuning history (moved out of `car_config.h`)
+
+Measured on the car; the current values and their reasons stay in
+`car_config.h`.
+
+* `PID_KFF` was 2.2, about 3x too high: the PID cancelled most of it and
+  swung the duty below the dead band, so the wheels stopped and lurched.
+  Per-wheel dead band and slope because the right wheel ran slower and the
+  car curved right.
+* `BAR_GLITCH_US` was 1000 us: at 8 cm/s it deleted real narrow bars when
+  a line-following stutter slowed the sensor (the main cause of
+  intermittent reads).
+* Reads used to end on exactly 30 clean edges, which failed whenever the
+  glitch filter dropped or kept one edge; a time-only quiet gap ended slow
+  reads two edges short (28 of 30, '*W' decoded).
+* Line steering during a read pivoted the barcode sensor: reads worked when
+  the car was pushed by hand and failed while it steered.
+* `LINE_LAST_GAIN`: with 0 the car left the circle after half a turn.
+* The bypass out-leg was 45 deg and drove diagonally into the obstacle's
+  face from the ~12 cm stop.
+* `SERVO_MS_PER_DEG` was 2: the first 15 deg ray read the obstacle straight
+  ahead (closest hit 15 deg, 13 cm, width 26 cm for a small box).
+* `K_HEADING` was 0.004: the compass shift with the motors running bent the
+  return leg into a smooth arc.
 
 ## Not yet verified on the car
 

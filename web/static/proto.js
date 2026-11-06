@@ -166,7 +166,7 @@
                 (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
       case 5: return "FAULT: " + (FAULTS[f.code] || f.code) +
                 (f.code === FC_HEARTBEAT ? " (" + (HB_TASKS[f.detail] || f.detail) + ")" : "") +
-                (f.code === FC_NO_ROUTE && f.detail === 1 ? " (scan cannot proceed safely: too few valid echoes)" : "") +
+                (f.code === FC_NO_ROUTE && f.detail === 1 ? " (scan cannot proceed safely: no valid echo ahead, or both sides blocked)" : "") +
                 (f.code === FC_NO_ROUTE && f.detail === 2 ? " (bypass path blocked)" : "") +
                 (f.code === FC_NO_ROUTE && f.detail === 3 ? " (obstacle too large: edge not found)" : "") +
                 (f.code === FC_STALL && f.detail ? " (" + stallReason(f.detail) + " while " +

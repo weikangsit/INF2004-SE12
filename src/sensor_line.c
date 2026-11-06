@@ -53,8 +53,8 @@ typedef struct
 static ID                g_evt_flg       = 0;
 static volatile uint32_t g_latest        = 0U;    /* bits | stamp << 16   */
 static volatile uint32_t g_last_black_ms = 0U;
-static volatile bool     g_b_cal_request = true;  /* calibrate at boot    */
-static volatile bool     g_b_ready       = false;
+static volatile bool     gb_cal_request = true;  /* calibrate at boot    */
+static volatile bool     gb_ready       = false;
 
 static black_hold_t      g_hold[2];             /* left, right          */
 
@@ -113,10 +113,10 @@ sensor_line_task (INT stacd, void * p_exinf)
         prev_bits = bits;
         prev_raw  = raw;
 
-        if (g_b_cal_request)
+        if (gb_cal_request)
         {
-            g_b_cal_request = false;
-            g_b_ready       = false;
+            gb_cal_request = false;
+            gb_ready       = false;
             cal_seen        = 0U;
             cal_start       = systime_now_ms();
             state           = LS_CALIBRATE;
@@ -129,7 +129,7 @@ sensor_line_task (INT stacd, void * p_exinf)
 
             if ((BOTH_BLACK == cal_seen) && (0U == raw))
             {
-                g_b_ready = true;                 /* both seen, now white */
+                gb_ready = true;                 /* both seen, now white */
                 state     = LS_FOLLOW;
             }
             else if ((systime_now_ms() - cal_start) > CAL_WINDOW_MS)
@@ -187,7 +187,7 @@ sensor_line_events_take (void)
     (void) tk_wai_flg(g_evt_flg, ALL_EVENTS, TWF_ORW | TWF_CLR, &pattern,
                       TMO_POL);
 
-    return ((uint32_t) pattern);
+    return ((uint32_t) pattern);  /* UINT flag bits, same width */
 }
 
 /*!
@@ -196,7 +196,7 @@ sensor_line_events_take (void)
 void
 sensor_line_request_calibration (void)
 {
-    g_b_cal_request = true;
+    gb_cal_request = true;
 }
 
 /*!
@@ -206,7 +206,7 @@ sensor_line_request_calibration (void)
 bool
 sensor_line_is_ready (void)
 {
-    return (g_b_ready);
+    return (gb_ready);
 }
 
 /*!
@@ -296,6 +296,7 @@ reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
     uint32_t const stamp = systime_stamp();
     UINT           events = 0U;
 
+    /* bits is a byte; the mask keeps 2 bits. */
     g_latest = ((uint32_t) bits & LATEST_BITS_MASK) |
                (stamp << LATEST_STAMP_SHIFT);
 

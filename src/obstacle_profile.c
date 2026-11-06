@@ -102,12 +102,16 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
  * @brief  Choose a route from a profile.
  *
  *  No valid echo at all, or a free path with no valid ray ahead, cannot be
- *  trusted: UNSAFE. A blocked path takes the side whose edge ray shows at
- *  least min_side_clear_cm (the larger one; left on a tie). A side whose
- *  edge ray had no echo is unknown and never chosen. If no side is both
- *  known and clear, the scan is UNSAFE: from the stop point the 15 / 165
- *  deg edge rays pass the obstacle's face, so a short edge ray is a real
- *  wall beside the car, not the obstacle itself.
+ *  trusted: UNSAFE. A blocked path checks each side's edge ray (15 / 165
+ *  deg, which pass beside the obstacle's face from the stop point):
+ *   - known and under min_side_clear_cm: that side is blocked;
+ *   - known and at least min_side_clear_cm: that side is clear;
+ *   - no echo: unknown. Open space beside the car often gives no echo
+ *     at all, so unknown is not blocked; the bypass then checks it as it
+ *     goes (centre ping on every sideways step, 3-ray check after it).
+ *  Both blocked: UNSAFE. Otherwise a clear side beats an unknown one (the
+ *  larger clearance if both are clear, left on a tie); with both unknown
+ *  the car goes away from the obstacle's closest point.
  *
  * @param  p_prof        Profile of the sweep.
  * @param  p_limits      Planning limits.
@@ -117,14 +121,17 @@ obstacle_route_t
 obstacle_profile_plan (obstacle_profile_t const * p_prof,
                        obstacle_limits_t const * p_limits)
 {
-    /* A no-echo edge (OBSTACLE_NO_ECHO) is unknown, never clear. */
-    bool const b_left_clear  = (OBSTACLE_NO_ECHO != p_prof->clear_left_cm) &&
-                               (p_prof->clear_left_cm >=
-                                p_limits->min_side_clear_cm);
-    bool const b_right_clear = (OBSTACLE_NO_ECHO != p_prof->clear_right_cm) &&
-                               (p_prof->clear_right_cm >=
-                                p_limits->min_side_clear_cm);
-    obstacle_route_t route   = OBSTACLE_ROUTE_UNSAFE;
+    bool const b_left_known    = (OBSTACLE_NO_ECHO != p_prof->clear_left_cm);
+    bool const b_right_known   = (OBSTACLE_NO_ECHO != p_prof->clear_right_cm);
+    bool const b_left_blocked  = b_left_known &&
+                                 (p_prof->clear_left_cm <
+                                  p_limits->min_side_clear_cm);
+    bool const b_right_blocked = b_right_known &&
+                                 (p_prof->clear_right_cm <
+                                  p_limits->min_side_clear_cm);
+    bool const b_left_clear    = b_left_known && !b_left_blocked;
+    bool const b_right_clear   = b_right_known && !b_right_blocked;
+    obstacle_route_t route     = OBSTACLE_ROUTE_UNSAFE;
 
     if (0U == p_prof->valid_rays)
     {
@@ -134,6 +141,14 @@ obstacle_profile_plan (obstacle_profile_t const * p_prof,
     {
         route = p_prof->b_centre_known ? OBSTACLE_ROUTE_CONTINUE :
                                          OBSTACLE_ROUTE_UNSAFE;
+    }
+    else if (b_left_blocked && b_right_blocked)
+    {
+        route = OBSTACLE_ROUTE_UNSAFE;
+    }
+    else if (b_left_blocked || b_right_blocked)
+    {
+        route = b_left_blocked ? OBSTACLE_ROUTE_RIGHT : OBSTACLE_ROUTE_LEFT;
     }
     else if (b_left_clear && b_right_clear)
     {
@@ -146,7 +161,9 @@ obstacle_profile_plan (obstacle_profile_t const * p_prof,
     }
     else
     {
-        route = OBSTACLE_ROUTE_UNSAFE;
+        /* Both unknown: closest hit left of ahead (> 90 deg) -> right. */
+        route = (p_prof->closest_deg > AHEAD_DEG) ? OBSTACLE_ROUTE_RIGHT :
+                                                    OBSTACLE_ROUTE_LEFT;
     }
 
     return (route);

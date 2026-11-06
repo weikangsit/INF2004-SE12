@@ -1,7 +1,7 @@
 /** @file    motion_control.c
  *  @brief   Motion Control task (Buddy 2), see motion_control.h.
  *
- *  STOPPED -> MOVING{STRAIGHT, REVERSE, TURN_L, TURN_R, U_TURN}
+ *  STOPPED -> MOVING{STRAIGHT, TURN_L, TURN_R, U_TURN}
  *          -> STOPPED | SAFE_STOP | FAULT
  *
  *  Per-wheel speed PID on the encoders (float inside this task only,
@@ -37,20 +37,17 @@
 #include "telemetry.h"
 #include "vehicle_state.h"
 
-#define PI_F                 (3.14159265f)
 #define M_PER_COUNT          ((PI_F * WHEEL_DIAMETER_M) / ENC_COUNTS_PER_REV)
-#define DT_S                 ((float32_t) PERIOD_MOTION_MS / 1000.0f)
+#define DT_S                 (PERIOD_MOTION_MS / 1000.0f)
 #define HALF                 (0.5f)
 #define DEG_PER_RAD          (180.0f / PI_F)
 #define HALF_DEG             (2.0f)        /* heading is in 0.5 deg       */
-#define MM_PER_M             (1000.0f)
 /* Bend detector for the barcode hold: encoder yaw sampled every
  * BEND_SAMPLE_MM, so the window spans BEND_SAMPLES x BEND_SAMPLE_MM. */
 #define BEND_SAMPLES         (8U)
 #define BEND_SAMPLE_MM       (BAR_BEND_WINDOW_MM / (float32_t) BEND_SAMPLES)
 #define PCT_PER_UNIT         (100.0f)
 #define PM_PER_UNIT          (1000.0f)
-#define CM_PER_M             (100.0f)
 #define LIMIT_FACTOR         (2000.0f)     /* 2x nominal, in ms           */
 #define LIMIT_EXTRA_MS       (2000U)
 #define MIN_LIMIT_SPEED_MPS  (0.05f)
@@ -102,7 +99,6 @@ typedef enum
 {
     CMD_STOP = 0,
     CMD_FWD,
-    CMD_BWD,
     CMD_TURN_L,
     CMD_TURN_R,
     CMD_UTURN,
@@ -111,13 +107,13 @@ typedef enum
 } cmd_id_t;
 
 /** Task states. The numbers 0..5 are also the stall "motion state"
- *  reported in EV_FAULT (web/static/proto.js MOTION_STATES). */
+ *  reported in EV_FAULT (web/static/proto.js MOTION_STATES); 2 was the
+ *  removed reverse run and stays free so those numbers hold. */
 typedef enum
 {
     MS_STOPPED = 0,
     MS_STRAIGHT,
-    MS_REVERSE,
-    MS_TURN_L,
+    MS_TURN_L = 3,
     MS_TURN_R,
     MS_UTURN,
     MS_ENC_CAL,
@@ -153,7 +149,7 @@ typedef struct
 typedef struct
 {
     motion_mode_t mode;
-    cmd_id_t      id;
+    cmd_id_t      cmd_id;
     uint8_t       seq;
     bool          b_follow;
     bool          b_steered;     /* line steering seen in this command    */
@@ -223,7 +219,7 @@ typedef struct
 static ID           g_cmd_q        = 0;
 static ID           g_done_q       = 0;
 static uint8_t      g_next_seq     = 1U;     /* Nav only, see header     */
-static volatile bool g_b_open_loop = false;
+static volatile bool gb_open_loop = false;
 static int32_t      g_sign_l       = ENC_SIGN_LEFT;
 static int32_t      g_sign_r       = ENC_SIGN_RIGHT;
 
@@ -231,14 +227,15 @@ static wheel_ff_t const g_ff_l = { MOTOR_DEADBAND_L, PID_KFF_L };
 static wheel_ff_t const g_ff_r = { MOTOR_DEADBAND_R, PID_KFF_R };
 static motion_ctx_t g_ctx;
 
-static uint8_t   cmd_send (cmd_id_t id, uint32_t speed_cms, uint32_t dist_cm,
-                           uint32_t angle_deg, bool b_follow, bool b_end);
+static uint8_t   cmd_send (cmd_id_t cmd_id, uint32_t speed_cms,
+                           uint32_t dist_cm, uint32_t angle_deg,
+                           bool b_follow, bool b_end);
 static void      inputs_read (motion_in_t * p_in);
 static void      speed_update (motion_in_t const * p_in);
 static void      commands_take (motion_in_t const * p_in);
 static void      command_start (uint32_t word, motion_in_t const * p_in);
 static bool      targets_set (motion_in_t const * p_in);
-static bool      straight_targets (motion_in_t const * p_in, float32_t sign);
+static bool      straight_targets (motion_in_t const * p_in);
 static bool      turn_targets (motion_in_t const * p_in);
 static void      ramp_base (float32_t target);
 static void      outputs_drive (motion_in_t const * p_in, bool b_done);
@@ -303,21 +300,6 @@ motion_control_forward (uint32_t speed_cms, uint32_t dist_cm,
                         bool b_follow_line)
 {
     return (cmd_send(CMD_FWD, speed_cms, dist_cm, 0U, b_follow_line, false));
-}
-
-/*!
- * @brief  Drive backward. With b_follow_line the front sensors keep the
- *         car on the line it came along (Tribunal 1 reverse-and-scan).
- * @param  speed_cms      Speed, cm/s.
- * @param  dist_cm        Distance, cm (1..511).
- * @param  b_follow_line  True to steer on the line sensors.
- * @return Sequence number of the command.
- */
-uint8_t
-motion_control_reverse (uint32_t speed_cms, uint32_t dist_cm,
-                        bool b_follow_line)
-{
-    return (cmd_send(CMD_BWD, speed_cms, dist_cm, 0U, b_follow_line, false));
 }
 
 /*!
@@ -402,6 +384,7 @@ motion_control_done_take (motion_done_t * p_done)
 
     if (b_got)
     {
+        /* Byte widened before the shift; the mask keeps 2 bits. */
         uint32_t const result = ((uint32_t) msg >> DONE_RESULT_SHIFT) &
                                 DONE_RESULT_MASK;
 
@@ -420,7 +403,7 @@ motion_control_done_take (motion_done_t * p_done)
 bool
 motion_control_is_open_loop (void)
 {
-    return (g_b_open_loop);
+    return (gb_open_loop);
 }
 
 /*!
@@ -450,12 +433,12 @@ void
 motion_control_task (INT stacd, void * p_exinf)
 {
     uint64_t    next_us = time_us_64();
-    motion_in_t in;
+    motion_in_t inputs;
 
     (void) stacd;
     (void) p_exinf;
 
-    (void) memset(&in, 0, sizeof(in));
+    (void) memset(&inputs, 0, sizeof(inputs));
     g_ctx.prev_cl = motor_driver_count_left();
     g_ctx.prev_cr = motor_driver_count_right();
 
@@ -466,8 +449,8 @@ motion_control_task (INT stacd, void * p_exinf)
         systime_period_wait(&next_us, PERIOD_MOTION_MS);
         safety_heartbeat(SAFETY_HB_MOTION);
 
-        inputs_read(&in);
-        speed_update(&in);
+        inputs_read(&inputs);
+        speed_update(&inputs);
 
         /* The safety latch overrides everything: Safety has braked and
          * inhibited the motors; queued commands are discarded. */
@@ -484,10 +467,10 @@ motion_control_task (INT stacd, void * p_exinf)
             /* Normal operation. */
         }
 
-        commands_take(&in);
-        b_done = targets_set(&in);
-        outputs_drive(&in, b_done);
-        counts_print(&in);
+        commands_take(&inputs);
+        b_done = targets_set(&inputs);
+        outputs_drive(&inputs, b_done);
+        counts_print(&inputs);
         state_publish();
     }
 }
@@ -497,11 +480,12 @@ motion_control_task (INT stacd, void * p_exinf)
  * @return Its sequence number (1..7).
  */
 static uint8_t
-cmd_send (cmd_id_t id, uint32_t speed_cms, uint32_t dist_cm,
+cmd_send (cmd_id_t cmd_id, uint32_t speed_cms, uint32_t dist_cm,
           uint32_t angle_deg, bool b_follow, bool b_end)
 {
     uint8_t const seq  = g_next_seq;
-    uint32_t      word = (((uint32_t) id & CMD_ID_MASK) << CMD_ID_SHIFT) |
+    /* Widened to 32 bits before shifting; each field is masked. */
+    uint32_t      word = (((uint32_t) cmd_id & CMD_ID_MASK) << CMD_ID_SHIFT) |
                          (((uint32_t) seq & CMD_SEQ_MASK) << CMD_SEQ_SHIFT);
 
     /* Sequence 1..7; 0 is reserved for STOP. */
@@ -536,7 +520,7 @@ inputs_read (motion_in_t * p_in)
     p_in->count_l           = motor_driver_count_left();
     p_in->count_r           = motor_driver_count_right();
     p_in->b_line_fresh = sensor_line_read(&p_in->line_bits);
-    p_in->heading_deg  = (float32_t) state.heading_half_deg / HALF_DEG;
+    p_in->heading_deg  = state.heading_half_deg / HALF_DEG;
     p_in->b_imu_fresh  = state.b_imu_valid &&
                          (systime_stamp_age(state.imu_stamp) <=
                           IMU_MAX_AGE_MS);
@@ -563,7 +547,7 @@ speed_update (motion_in_t const * p_in)
     g_ctx.prev_cl = p_in->count_l;
     g_ctx.prev_cr = p_in->count_r;
 
-    if (g_b_open_loop)
+    if (gb_open_loop)
     {
         g_ctx.speed_l = g_ctx.cmd_l;
         g_ctx.speed_r = g_ctx.cmd_r;
@@ -582,12 +566,10 @@ speed_update (motion_in_t const * p_in)
             sum_r += g_ctx.hist_r[idx];
         }
 
-        g_ctx.speed_l = ((float32_t) sum_l * M_PER_COUNT) /
-                        (DT_S * (float32_t) SPEED_AVG_PERIODS);
-        g_ctx.speed_r = ((float32_t) sum_r * M_PER_COUNT) /
-                        (DT_S * (float32_t) SPEED_AVG_PERIODS);
-        g_ctx.dist_l += (float32_t) delta_l * M_PER_COUNT;
-        g_ctx.dist_r += (float32_t) delta_r * M_PER_COUNT;
+        g_ctx.speed_l = (sum_l * M_PER_COUNT) / (DT_S * SPEED_AVG_PERIODS);
+        g_ctx.speed_r = (sum_r * M_PER_COUNT) / (DT_S * SPEED_AVG_PERIODS);
+        g_ctx.dist_l += delta_l * M_PER_COUNT;
+        g_ctx.dist_r += delta_r * M_PER_COUNT;
     }
 }
 
@@ -603,10 +585,12 @@ commands_take (motion_in_t const * p_in)
 
     while (tk_rcv_mbf(g_cmd_q, &word, TMO_POL) > 0)
     {
-        cmd_id_t const id = (cmd_id_t) ((word >> CMD_ID_SHIFT) & CMD_ID_MASK);
+        /* 3-bit field, only cmd_id_t values are packed (cmd_send). */
+        cmd_id_t const cmd_id = (cmd_id_t) ((word >> CMD_ID_SHIFT) &
+                                            CMD_ID_MASK);
 
         if ((MS_SAFE_STOP != g_ctx.mode) &&
-            ((MS_FAULT != g_ctx.mode) || (CMD_STOP == id)))
+            ((MS_FAULT != g_ctx.mode) || (CMD_STOP == cmd_id)))
         {
             command_start(word, p_in);
         }
@@ -625,16 +609,15 @@ command_start (uint32_t word, motion_in_t const * p_in)
     float32_t           arc = 0.0f;
 
     /* Each field is masked to its width, so the casts keep the value. */
-    g_ctx.id            = (cmd_id_t) ((word >> CMD_ID_SHIFT) & CMD_ID_MASK);
+    g_ctx.cmd_id            = (cmd_id_t) ((word >> CMD_ID_SHIFT) & CMD_ID_MASK);
     g_ctx.seq           = (uint8_t) ((word >> CMD_SEQ_SHIFT) & CMD_SEQ_MASK);
     g_ctx.b_follow      = (0U != (word & CMD_FOLLOW_BIT));
     g_ctx.b_end_on_line = (0U != (word & CMD_END_LINE_BIT));
-    g_ctx.speed_mps     = (float32_t) ((word >> CMD_SPEED_SHIFT) &
-                                       CMD_SPEED_MASK) / CM_PER_M;
-    g_ctx.dist_m        = (float32_t) ((word >> CMD_DIST_SHIFT) &
-                                       CMD_DIST_MASK) / CM_PER_M;
-    g_ctx.angle_deg     = (float32_t) ((word >> CMD_ANGLE_SHIFT) &
-                                       CMD_ANGLE_MASK);
+    g_ctx.speed_mps     = ((word >> CMD_SPEED_SHIFT) & CMD_SPEED_MASK) /
+                          CM_PER_M;
+    g_ctx.dist_m        = ((word >> CMD_DIST_SHIFT) & CMD_DIST_MASK) /
+                          CM_PER_M;
+    g_ctx.angle_deg     = (word >> CMD_ANGLE_SHIFT) & CMD_ANGLE_MASK;
     g_ctx.dist_l0           = g_ctx.dist_l;
     g_ctx.dist_r0           = g_ctx.dist_r;
     g_ctx.hdg0          = p_in->heading_deg;
@@ -653,10 +636,9 @@ command_start (uint32_t word, motion_in_t const * p_in)
     pid_reset(&g_ctx.pid_l);
     pid_reset(&g_ctx.pid_r);
 
-    switch (g_ctx.id)
+    switch (g_ctx.cmd_id)
     {
         case CMD_FWD:        g_ctx.mode = MS_STRAIGHT;   break;
-        case CMD_BWD:        g_ctx.mode = MS_REVERSE;    break;
         case CMD_TURN_L:     g_ctx.mode = MS_TURN_L;     break;
         case CMD_TURN_R:     g_ctx.mode = MS_TURN_R;     break;
         case CMD_UTURN:      g_ctx.mode = MS_UTURN;      break;
@@ -675,10 +657,10 @@ command_start (uint32_t word, motion_in_t const * p_in)
         g_ctx.v_base = 0.0f;
     }
 
-    /* Generous time limit: 2x nominal + 2 s; none for open-ended runs. */
+    /* Generous time limit: 2x nominal + 2 s; none for open-ended runs.
+     * At most 511 cm at the 5 cm/s floor: ~205 s, fits uint32_t ms. */
     g_ctx.limit_ms = 0U;
-    if (((MS_STRAIGHT == g_ctx.mode) || (MS_REVERSE == g_ctx.mode)) &&
-        (g_ctx.dist_m > 0.0f))
+    if ((MS_STRAIGHT == g_ctx.mode) && (g_ctx.dist_m > 0.0f))
     {
         g_ctx.limit_ms = (uint32_t) ((LIMIT_FACTOR * g_ctx.dist_m) /
                          fmaxf(g_ctx.speed_mps, MIN_LIMIT_SPEED_MPS)) +
@@ -711,11 +693,7 @@ targets_set (motion_in_t const * p_in)
     switch (g_ctx.mode)
     {
         case MS_STRAIGHT:
-            b_done = straight_targets(p_in, 1.0f);
-        break;
-
-        case MS_REVERSE:
-            b_done = straight_targets(p_in, -1.0f);
+            b_done = straight_targets(p_in);
         break;
 
         case MS_TURN_L:
@@ -735,19 +713,17 @@ targets_set (motion_in_t const * p_in)
 }
 
 /*!
- * @brief  Straight run, forward (sign +1) or backward (sign -1).
+ * @brief  Straight run forward.
  *
  *  On the line: steer toward the sensor that sees black and slow to
- *  SPEED_STEER_CMS while correcting. The sensors sit at the front, so the
- *  same differential pulls the front toward the line in both directions.
- *  Off the line: equalise wheel distance and hold the IMU heading.
+ *  SPEED_STEER_CMS while correcting. Off the line: equalise wheel
+ *  distance (and hold the IMU heading if K_HEADING > 0).
  *
  * @param  p_in  Inputs of this period.
- * @param  sign  +1 forward, -1 backward.
  * @return True when the commanded distance is covered.
  */
 static bool
-straight_targets (motion_in_t const * p_in, float32_t sign)
+straight_targets (motion_in_t const * p_in)
 {
     float32_t const travel = ((g_ctx.dist_l - g_ctx.dist_l0) +
                               (g_ctx.dist_r - g_ctx.dist_r0)) * HALF;
@@ -758,7 +734,7 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
 
     if (g_ctx.dist_m > 0.0f)
     {
-        target = fminf(target, end_speed_cap(g_ctx.dist_m - (sign * travel)));
+        target = fminf(target, end_speed_cap(g_ctx.dist_m - travel));
     }
 
     if (bar_hold(p_in))
@@ -770,7 +746,7 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
          * so the hold wins; it starts on the first edge while centred and
          * lasts at most BAR_HOLD_MAX_MM (BAR_HOLD_MAX_MS as a backstop). */
         steer  = 0.0f;
-        target = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
+        target = fminf(target, SPEED_STEER_CMS / CM_PER_M);
     }
     else if (g_ctx.b_follow && p_in->b_line_fresh)
     {
@@ -784,9 +760,7 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
                                 wrap180(p_in->heading_deg - g_ctx.hdg0) :
                                 0.0f;
 
-        /* Wheel speed differential turns the car the same way in both
-         * directions, so the correction does not change sign: the
-         * wheel that has travelled further is slowed either way. */
+        /* The wheel that has travelled further is slowed. */
         steer  = -((K_DIST_EQ * d_err) + (K_HEADING * h_err));
         b_hold = true;
     }
@@ -796,7 +770,7 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
     if (g_ctx.b_follow && g_ctx.b_steered &&
         ((p_in->now_ms - g_ctx.steer_ms) < LINE_SLOW_HOLD_MS))
     {
-        target       = fminf(target, (float32_t) SPEED_STEER_CMS / CM_PER_M);
+        target       = fminf(target, SPEED_STEER_CMS / CM_PER_M);
         g_ctx.v_base = fminf(g_ctx.v_base, target);
     }
 
@@ -814,10 +788,10 @@ straight_targets (motion_in_t const * p_in, float32_t sign)
         steer = fmaxf(-cap, fminf(cap, steer));
     }
 
-    g_ctx.tgt_l = (sign * speed) + steer;
-    g_ctx.tgt_r = (sign * speed) - steer;
+    g_ctx.tgt_l = speed + steer;
+    g_ctx.tgt_r = speed - steer;
 
-    return ((g_ctx.dist_m > 0.0f) && ((sign * travel) >= g_ctx.dist_m));
+    return ((g_ctx.dist_m > 0.0f) && (travel >= g_ctx.dist_m));
 }
 
 /*!
@@ -877,32 +851,34 @@ bar_hold (motion_in_t const * p_in)
 static bool
 bend_update (float32_t travel)
 {
-    /* Wheel travel difference over the turning track = yaw, rad. */
+    /* Wheel travel difference over the track = yaw, rad. The rolling
+     * track, not TURN_TRACK_WIDTH_M: that one is inflated for tyre scrub
+     * in spot turns and read corners at 0.67x their real angle. */
     float32_t const yaw    = (g_ctx.dist_r - g_ctx.dist_l) /
-                             TURN_TRACK_WIDTH_M;
+                             TRACK_WIDTH_M;
     bool            b_bend = false;
 
     /* Bit-fields read as int: copy into unsigned locals (Barr-C 5.3c). */
-    uint32_t const  n      = g_ctx.bend_n;
+    uint32_t const  count  = g_ctx.bend_n;
     uint32_t const  idx    = g_ctx.bend_idx;
 
-    if (n > 0U)
+    if (count > 0U)
     {
         /* Oldest sample: slot 0 until the ring is full, then the next
          * slot to be overwritten. */
-        uint32_t const  oldest = (n < BEND_SAMPLES) ? 0U : idx;
+        uint32_t const  oldest = (count < BEND_SAMPLES) ? 0U : idx;
         float32_t const turned = fabsf(yaw - g_ctx.bend_yaw[oldest]) *
                                  DEG_PER_RAD;
 
         b_bend = (turned > BAR_BEND_MAX_DEG);
     }
 
-    if ((0U == n) || (travel >= g_ctx.bend_next_m))
+    if ((0U == count) || (travel >= g_ctx.bend_next_m))
     {
         g_ctx.bend_yaw[idx] = yaw;
         /* Wraps below BEND_SAMPLES (8), so it fits a uint8_t. */
         g_ctx.bend_idx      = (uint8_t) ((idx + 1U) % BEND_SAMPLES);
-        g_ctx.bend_n        = (uint8_t) ((n < BEND_SAMPLES) ? (n + 1U) :
+        g_ctx.bend_n        = (uint8_t) ((count < BEND_SAMPLES) ? (count + 1U) :
                                                           BEND_SAMPLES);
         g_ctx.bend_next_m   = travel + (BEND_SAMPLE_MM / MM_PER_M);
     }
@@ -1002,6 +978,7 @@ turn_targets (motion_in_t const * p_in)
 
         if (fabsf(imu_turn - enc_turn) > TURN_XCHECK_DEG)
         {
+            /* Turns are at most 511 deg, so both fit an int16_t. */
             telemetry_post_event(EV_TURN_XCHECK, 0U,
                                  (int16_t) round_i(enc_turn),
                                  (int16_t) round_i(imu_turn));
@@ -1303,6 +1280,7 @@ self_test_step (motion_in_t const * p_in)
     if (spin > ENC_CAL_SPIN_DEG)
     {
         brake_to(MS_FAULT);
+        /* spin is a heading difference, 0..180 deg. */
         telemetry_post_event(EV_ENC_CAL, ENC_CAL_ROTATED,
                              (int16_t) round_i(spin), 0);
         done_post(MOTION_RESULT_FAULT);
@@ -1311,8 +1289,9 @@ self_test_step (motion_in_t const * p_in)
     {
         g_sign_l      = (raw_l > 0) ? 1 : -1;
         g_sign_r      = (raw_r > 0) ? 1 : -1;
-        g_b_open_loop = false;
+        gb_open_loop = false;
         brake_to(MS_STOPPED);
+        /* Signs are +/-1. */
         telemetry_post_event(EV_ENC_CAL, ENC_CAL_OK, (int16_t) g_sign_l,
                              (int16_t) g_sign_r);
         done_post(MOTION_RESULT_DONE);
@@ -1322,7 +1301,7 @@ self_test_step (motion_in_t const * p_in)
         uint32_t const silent = (b_ok_l ? 0U : ENC_CAL_LEFT_SILENT) |
                                 (b_ok_r ? 0U : ENC_CAL_RIGHT_SILENT);
 
-        g_b_open_loop = true;                     /* degraded mode        */
+        gb_open_loop = true;                     /* degraded mode        */
         brake_to(MS_STOPPED);
         /* silent <= 3; counts below ENC_CAL_COUNTS fit an int16_t. */
         telemetry_post_event(EV_ENC_CAL, (uint8_t) silent, (int16_t) raw_l,
@@ -1331,7 +1310,7 @@ self_test_step (motion_in_t const * p_in)
     }
     else
     {
-        g_ctx.duty_l = (float32_t) ENC_CAL_DUTY_PM / PM_PER_UNIT;
+        g_ctx.duty_l = ENC_CAL_DUTY_PM / PM_PER_UNIT;
         g_ctx.duty_r = g_ctx.duty_l;
         motor_driver_set(ENC_CAL_DUTY_PM, ENC_CAL_DUTY_PM);
     }
@@ -1352,7 +1331,7 @@ closed_loop_drive (motion_in_t const * p_in)
 
     wheels_slew();
 
-    if (g_b_open_loop)
+    if (gb_open_loop)
     {
         g_ctx.duty_l = clamp_f(feed_forward(g_ctx.cmd_l, &g_ff_l),
                                -1.0f, 1.0f);

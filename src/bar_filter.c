@@ -4,12 +4,7 @@
 #include "bar_filter.h"
 
 #define TIME_MASK            (~BAR_FILTER_LEVEL_BIT)
-#define SUB_COUNTS           (16)      /* positions in 1/16 count        */
-#define HALF_SUB             (8)
-#define YAW_SCALE            (1000)
-#define SETUP_SIGN_L         (0U)
-#define SETUP_SIGN_R         (1U)
-#define SETUP_YAW            (2U)
+#define HALF_SUB             (BAR_SUB_COUNTS / 2)
 
 static int32_t sensor_travel (int32_t const * p_cl, int32_t const * p_cr,
                               uint32_t idx, int32_t const * p_setup);
@@ -184,11 +179,12 @@ int32_t
 bar_filter_travel (int32_t delta_l, int32_t delta_r, int32_t const * p_setup)
 {
     /* Counts within one read stay below ~20 000, so the products fit. */
-    int32_t const left  = p_setup[SETUP_SIGN_L] * delta_l;
-    int32_t const right = p_setup[SETUP_SIGN_R] * delta_r;
+    int32_t const left  = p_setup[BAR_SETUP_SIGN_L] * delta_l;
+    int32_t const right = p_setup[BAR_SETUP_SIGN_R] * delta_r;
 
     return ((HALF_SUB * (left + right)) -
-            ((SUB_COUNTS * p_setup[SETUP_YAW] * (right - left)) / YAW_SCALE));
+            ((BAR_SUB_COUNTS * p_setup[BAR_SETUP_YAW] * (right - left)) /
+             BAR_YAW_SCALE));
 }
 
 /*** end of file ***/

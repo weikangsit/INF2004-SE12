@@ -3,7 +3,7 @@
  *
  *  STANDBY -> COARSE_SCAN -> FINE_SCAN -> PROFILE -> PLAN (Week 6 6.3).
  *  The task reports its heartbeat after every ping, so a scan (12 rays,
- *  about 1.2-1.5 s with travel-based settling) never looks like a stalled
+ *  about 2 s with travel-based settling) never looks like a stalled
  *  task to the Safety Monitor.
  *
  *  NOTE: (void) casts mark return values that are deliberately ignored.
@@ -42,7 +42,7 @@ typedef enum
 static ID                g_req_q      = 0;
 static ID                g_result_q   = 0;
 static volatile uint16_t g_front_cm   = US_RANGE_NO_ECHO;
-static volatile bool     g_b_ever_ok  = false;
+static volatile bool     gb_ever_ok  = false;
 static uint32_t          g_servo_deg  = SERVO_CENTRE_DEG;   /* task only */
 
 static uint16_t         ping_cm (void);
@@ -201,7 +201,7 @@ ultrasonic_scan_front_cm (void)
 bool
 ultrasonic_scan_is_ok (void)
 {
-    return (g_b_ever_ok);
+    return (gb_ever_ok);
 }
 
 /*!
@@ -223,7 +223,7 @@ ping_cm (void)
     {
         /* echo_us < 30000, so the range is under 520 cm. */
         range       = (uint16_t) (echo_us / US_PER_CM);
-        g_b_ever_ok = true;
+        gb_ever_ok = true;
     }
 
     return (range);
@@ -270,7 +270,7 @@ servo_turn (uint32_t angle_deg)
     hal_servo_set_deg(angle_deg);
     g_servo_deg = angle_deg;
 
-    /* travel <= 180, so the result is under 400 ms and fits RELTIM. */
+    /* travel <= 180, so the result is under 800 ms and fits RELTIM. */
     return ((RELTIM) (SERVO_SETTLE_BASE_MS + (travel * SERVO_MS_PER_DEG)));
 }
 
@@ -426,6 +426,7 @@ result_post (us_result_t result)
 static void
 profile_report (obstacle_profile_t const * p_prof)
 {
+    /* closest_cm < US_SCAN_RANGE_CM, so x 10 fits easily. */
     int32_t const range_x10 =
         (OBSTACLE_NO_ECHO == p_prof->closest_cm) ? TENTHS_NO_ECHO :
         ((int32_t) p_prof->closest_cm * (int32_t) TENTHS);

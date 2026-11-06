@@ -29,7 +29,7 @@ static int8_t const g_quad_table[QUAD_STATES] =
 };
 
 static uint16_t          g_pwm_top     = 0U;
-static volatile bool     g_b_inhibit   = false;
+static volatile bool     gb_inhibit   = false;
 static volatile int32_t  g_count_l     = 0;
 static volatile int32_t  g_count_r     = 0;
 static volatile uint32_t g_edge_ms_l   = 0U;
@@ -101,7 +101,7 @@ motor_driver_init (void)
 void
 motor_driver_set (int32_t duty_l_pm, int32_t duty_r_pm)
 {
-    if (g_b_inhibit)
+    if (gb_inhibit)
     {
         motor_driver_brake();
     }
@@ -111,7 +111,7 @@ motor_driver_set (int32_t duty_l_pm, int32_t duty_r_pm)
         drive_channel(PIN_M2A, PIN_M2B, duty_r_pm, (0 != RIGHT_FWD_ON_A));
         __dmb();
 
-        if (g_b_inhibit)
+        if (gb_inhibit)
         {
             motor_driver_brake();
         }
@@ -138,7 +138,7 @@ motor_driver_brake (void)
 void
 motor_driver_inhibit (bool b_inhibit)
 {
-    g_b_inhibit = b_inhibit;
+    gb_inhibit = b_inhibit;
     __dmb();
 
     if (b_inhibit)

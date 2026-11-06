@@ -452,6 +452,7 @@ link_go_online (void)
 
         g_link.b_connected   = true;
         g_link.backoff_step  = 0U;
+        /* An 8-bit running count: wrapping past 255 is fine. */
         g_drop_reported      = (uint8_t) (g_drop_reported + dropped);
         tm_printf((UB *) "mqtt: connected, %d frames dropped while offline\n",
                   (int) dropped);

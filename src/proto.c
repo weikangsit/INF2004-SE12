@@ -152,6 +152,7 @@ proto_pack_bar_debug (proto_bar_debug_t const * p_dbg, uint8_t * p_frame)
 
     for (idx = 0U; idx < count; idx++)
     {
+        /* A uint16_t width fits an int32_t. */
         pos = bitpack_put(p_frame, pos, (int32_t) p_dbg->widths[idx],
                           &g_bardbg_width);
     }
@@ -228,9 +229,9 @@ proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
     bool b_ok = false;
 
     if ((PROTO_CMD_LEN == len) &&
-        (CMD_TAG == ((uint32_t) p_frame[0] & CMD_TAG_MASK)))
+        (CMD_TAG == ((uint32_t) p_frame[0] & CMD_TAG_MASK)))  /* byte */
     {
-        uint32_t cmd_id = (uint32_t) p_frame[0] & CMD_ID_MASK;
+        uint32_t cmd_id = (uint32_t) p_frame[0] & CMD_ID_MASK;  /* byte */
 
         /* PROTO_CMD_COUNT is 7, so the cast keeps its value. */
         if (cmd_id < (uint32_t) PROTO_CMD_COUNT)
@@ -260,6 +261,7 @@ proto_unpack_config (uint8_t const * p_frame, uint32_t len,
 
     if (PROTO_CONFIG_LEN == len)
     {
+        /* Bytes widened to 32 bits before shifting. */
         uint32_t const word = (uint32_t) p_frame[0] |
                               ((uint32_t) p_frame[1] << BITS_PER_BYTE) |
                               ((uint32_t) p_frame[2] <<
@@ -294,6 +296,7 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
     {
         case EV_BARCODE:
         {
+            /* code is a byte (0..255); compared unsigned. */
             bool const b_valid = ((uint32_t) code < PROTO_ACTION_COUNT);
 
             /* code is 0..3 when valid, so it fits an int32_t. */
@@ -338,6 +341,7 @@ event_values (proto_event_t kind, uint8_t code, int16_t value1,
         break;
 
         case EV_BAR_STATUS:
+            /* One bit each, so they fit an int32_t. */
             p_values[0] = (int32_t) ((uint32_t) code & 1U);
             p_values[1] = (int32_t) (((uint32_t) code >> 1) & 1U);
             p_values[2] = (int32_t) ((uint32_t) code >> 2);   /* clamped */

@@ -72,6 +72,7 @@ bitpack_put (uint8_t * p_buf, uint32_t pos, int32_t value,
         }
         else
         {
+            /* A byte ANDed with a mask stays a byte. */
             p_buf[index] = (uint8_t) (p_buf[index] & ~mask);
         }
     }
@@ -100,6 +101,7 @@ bitpack_get (uint8_t const * p_buf, uint32_t pos,
         uint32_t const index = (pos + bit) / BITS_PER_BYTE;
         uint32_t const shift = (pos + bit) % BITS_PER_BYTE;
 
+        /* Byte widened before the shift; one bit is kept. */
         raw |= (((uint32_t) p_buf[index] >> shift) & 1U) << bit;
     }
 

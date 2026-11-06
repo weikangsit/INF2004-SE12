@@ -10,6 +10,12 @@
 
 #include <stdint.h>
 
+/* Units shared by the modules (US_PER_MS is in systime.h).            */
+#define PI_F                 (3.14159265f)
+#define MM_PER_M             (1000.0f)
+#define CM_PER_M             (100.0f)
+#define MM_PER_CM            (10)
+
 /* ------------------------------------------------------------------ */
 /* Pin map (Week 6 Section 2)                                           */
 /* ------------------------------------------------------------------ */
@@ -74,19 +80,17 @@
 /* ------------------------------------------------------------------ */
 #define ENC_COUNTS_PER_REV   (1440.0f) /* x4 counts per wheel rev       */
 #define WHEEL_DIAMETER_M     (0.065f)
-#define TRACK_WIDTH_M        (0.125f)  /* wheel centre-to-centre        */
-/* Effective track width for spot turns only. The tyres scrub and slip
- * while spinning, so with TRACK_WIDTH_M the encoders reached 90 deg
- * while the car turned less and the bypass hit the obstacle (measured).
- * A wider value asks for more wheel travel per degree. TUNE: command a
- * 90 deg turn on the floor and scale by 90 / actual angle turned.     */
+#define TRACK_WIDTH_M        (0.110f)  /* wheel centre-to-centre, measured */
+/* Track width for spot turns only: the tyres scrub, so the encoders need
+ * more travel per degree than TRACK_WIDTH_M gives. TUNE: command a 90 deg
+ * turn on the floor and scale by 90 / the angle turned.                */
 #define TURN_TRACK_WIDTH_M   (0.165f)
 /* Initial guesses; the power-on self-test measures the real count
  * direction of each encoder and overrides them.                        */
 #define ENC_SIGN_LEFT        (-1)
 #define ENC_SIGN_RIGHT       (1)
 #define ENC_CAL_DUTY_PM      (400)     /* self-test push, per mille     */
-#define ENC_CAL_COUNTS       (120)     /* counts per wheel (~5 cm)      */
+#define ENC_CAL_COUNTS       (120)     /* counts per wheel (~1.7 cm)    */
 #define ENC_CAL_TIMEOUT_MS   (1500U)
 #define ENC_CAL_SPIN_DEG     (25.0f)   /* rotation = a motor reversed   */
 #define MOTOR_TEST_DUTY_PM   (400)     /* bench motor test, per wheel   */
@@ -108,18 +112,11 @@
 #define STALL_TIMEOUT_MS     (300U)    /* no encoder edge while driving */
 #define STALL_MIN_DUTY       (0.25f)   /* duty above which a stall counts */
 
-/* Per-wheel speed PID (duty per m/s). Full precision float inside
- * Motion Control only (Tribunal 1, Buddy 2).
- * Feed-forward = MOTOR_DEADBAND + PID_KFF x speed. Motor test: 40 % duty
- * gave ~3957 counts/s = 0.56 m/s, so ~0.7 duty per m/s. The old 2.2 was
- * 3x too high: the PID had to cancel most of it and swung the duty below
- * the motor dead band, so the wheels stopped and lurched (measured).
- * Each wheel has its own dead band and slope: the motors differ, and a
- * weaker one the integrator cannot make up pulls the car to one side
- * (measured: right wheel slower on the floor, car curved right).
- * TUNE: dead band = lowest duty that turns that wheel (motor test);
- * on the floor, raise a wheel's KFF until its steady duty on the
- * dashboard matches the other wheel's.                                 */
+/* Per-wheel speed PID (duty per m/s), float inside Motion Control only
+ * (Tribunal 1, Buddy 2). Feed-forward = MOTOR_DEADBAND + PID_KFF x speed
+ * (motor test: 40 % duty = 0.56 m/s). Each wheel has its own dead band
+ * and slope: the motors differ. TUNE with the dashboard dead-band test;
+ * on the floor, raise a wheel's KFF until both steady duties match.    */
 #define PID_KP               (1.00f)
 #define PID_KI               (1.50f)
 #define PID_KD               (0.00f)
@@ -161,12 +158,10 @@
  * LINE_STEER_DIR +1 steers toward the black sensor, -1 away from it.   */
 #define K_LINE_STEER_MPS     (0.09f)   /* inner wheel ~0 at 8 cm/s */
 #define LINE_STEER_DIR       (1)
-/* Both white is either centred or a line that slipped out past the
- * inner sensor on a curve (measured: car left the circle after half a
- * turn). Keep turning toward the side that last saw black at this
- * fraction of K_LINE_STEER_MPS. Simulated: 0.25 loses the circle far
- * less than 0 (straight) with straights as tidy; 1.0 over-turns and
- * loses gentle curves. TUNE.                                           */
+/* Both white is centred, or the line slipped past the inner sensor on a
+ * curve: keep turning toward the side that last saw black at this
+ * fraction of K_LINE_STEER_MPS (simulated: 0 loses circles, 1.0 loses
+ * gentle curves). TUNE.                                                */
 #define LINE_LAST_GAIN       (0.25f)
 /* After the last steering correction the car stays at SPEED_STEER for
  * this long before ramping back to cruise, so the speed does not surge
@@ -174,7 +169,11 @@
  * jerky curves). TUNE: longer = smoother, slower on S-bends.           */
 #define LINE_SLOW_HOLD_MS    (400U)
 #define K_DIST_EQ            (2.00f)   /* m/s per m of wheel mismatch   */
-#define K_HEADING            (0.004f)  /* m/s per degree heading error  */
+/* Off-line straight runs hold on the wheel encoders only: the heading is
+ * magnetometer-only and shifts once the motors draw current, which bent
+ * the bypass return leg into an arc. Set > 0 only after checking the
+ * heading with the motors running (Week 6 A4).                         */
+#define K_HEADING            (0.0f)    /* m/s per degree heading error  */
 /* Straight runs without line following: the heading / distance hold
  * may change each wheel by at most this fraction of the speed, so
  * neither wheel stops or reverses (0.5: each keeps >= half). TUNE.     */
@@ -189,17 +188,10 @@
 /* ------------------------------------------------------------------ */
 /* Line / barcode (Week 6 Section 6.1)                                  */
 /* ------------------------------------------------------------------ */
-/* Raw barcode edges are filtered in the task (bar_filter.c), not in the
- * interrupt: an element shorter than BAR_GLITCH_US is chatter from an
- * edge passing the sensor slowly (measured: reads failed unless the
- * barcode was swiped fast), and is removed. Must stay BELOW the narrowest
- * genuine bar. Driving over the printed barcode at SPEED_STEER_CMS
- * (8 cm/s = 80 mm/s), a ~2 mm narrow bar lasts ~25 ms, so 300 us is far
- * below a real bar yet still kills LM393 chatter. Was 1000 us, which at
- * this speed deleted genuine narrow bars whenever a line-following stutter
- * briefly slowed the sensor, corrupting the width pattern (the dominant
- * cause of intermittent reads). TUNE: raise toward the narrowest observed
- * element width on debug/barcode if chatter still gets through.         */
+/* Raw barcode edges are filtered in the task (bar_filter.c): an element
+ * shorter than this is LM393 chatter and is removed. Must stay below the
+ * narrowest real bar: ~2 mm at SPEED_STEER (8 cm/s) lasts ~25 ms. TUNE:
+ * raise toward the narrowest width on debug/barcode if chatter passes. */
 #define BAR_GLITCH_US        (300U)
 /* Interrupt ring for raw edges, sized for chatter bursts between two
  * 5 ms polls; a read that loses edges to a full ring is rejected.      */
@@ -209,26 +201,17 @@
  * edge starting a bogus capture. The decoder still needs a full 30 to
  * accept anything; this only gates WHEN the capture is cut off.        */
 #define BAR_EDGES_MIN        (24U)
-/* A read ends when the sensor has been white (steady, no new edge) for
- * BAR_QUIET_MS after at least BAR_EDGES_MIN edges -- i.e. the barcode has
- * fully passed the sensor. This replaces the old "exactly 30 clean edges"
- * end condition, which failed whenever the glitch filter dropped or kept
- * one edge (the capture then never ended cleanly and timed out or
- * decoded a misaligned window). At 8 cm/s the widest bar/gap is well
- * under 100 ms, so 300 ms of white reliably means the barcode is over.
- * BAR_IDLE_TIMEOUT_US is the hard backstop if BAR_EDGES_MIN is never
- * reached (a partial/garbage read). TUNE.                               */
+/* A read ends after BAR_QUIET_MS of steady white once BAR_EDGES_MIN
+ * edges arrived (at 8 cm/s the widest element is under 100 ms).
+ * BAR_IDLE_TIMEOUT_US ends a partial read that never gets there. TUNE. */
 #define BAR_QUIET_MS         (300U)
 #define BAR_IDLE_TIMEOUT_US  (500000U)
-/* While the car drives (it moved BAR_MIN_TRAVEL_COUNTS since the first
- * edge) the quiet gap is measured in DISTANCE instead: a slow car took
- * over 300 ms to cross the last narrow space, and the read ended two
- * edges short of the stop '*' (measured: 28 of 30 edges, '*W' decoded).
- * Must exceed the widest element (measured up to 21 mm by the encoders;
- * the encoders read the whole symbol as ~245 mm). It ends any read, also
- * one with fewer than BAR_EDGES_MIN edges: a stray read must not stay
- * open and swallow the next barcode. BAR_STALL_TIMEOUT_US ends a read if
- * the car stops on the barcode. TUNE.                                   */
+/* While the car drives (moved BAR_MIN_TRAVEL_COUNTS since the first
+ * edge) the quiet gap is a distance instead, so a slow car does not end
+ * the read early. Must exceed the widest element (~21 mm; a symbol is
+ * ~245 mm). It ends any read, so a stray one cannot swallow the next
+ * barcode. BAR_STALL_TIMEOUT_US ends a read if the car stops on it.
+ * TUNE.                                                                */
 #define BAR_QUIET_MM         (40.0f)
 #define BAR_STALL_TIMEOUT_US (5000000U)
 #define BAR_EDGE_BUF_LEN     (64U)     /* clean edges of one read       */
@@ -260,33 +243,20 @@
  * counts as lost when neither sensor has seen black for this long
  * while line following (Week 6: 3 s). TUNE on long straights.          */
 #define LINE_LOST_MS         (3000U)
-/* While a barcode read is in progress the car stops steering on the line
- * and drives at a steady SPEED_STEER_CMS, so the barcode sensor moves
- * straight and steadily over the bars (measured: reads work when the car
- * is pushed by hand but fail while the line steering pivots it). Not the
- * speed the read began with: just after a start the car is still ramping
- * up and crawled over the barcode. The hold starts on the read's first
- * edge (barcodes lie on straights; it starts only when the car is not in
- * a bend, see BAR_BEND_MAX_DEG, so a stray read where the barcode sensor
- * sweeps over the line in a corner cannot keep the car straight) and
- * covers the whole barcode, so no bar
- * is measured while the car steers (the sensor sits far out and in front,
- * where steering distorts its travel most). It ends with the read, or
- * after BAR_HOLD_MAX_MM so a read kept open by stray edges cannot leave
- * the car unsteered: the encoders read the barcode as ~245 mm, plus the
- * BAR_QUIET_MM that ends the read. BAR_HOLD_MAX_MS is only a backstop
- * (300 mm at SPEED_STEER is ~3.8 s); the line-lost timeout already waits
- * while a barcode is read. TUNE.                                         */
+/* During a read the car stops line steering and drives straight at
+ * SPEED_STEER_CMS: steering pivots the barcode sensor (far out in front)
+ * over the bars and spoils the read. The hold starts on the first edge
+ * outside a bend (BAR_BEND_MAX_DEG) and ends with the read, or after
+ * BAR_HOLD_MAX_MM (symbol ~245 mm + BAR_QUIET_MM) so stray edges cannot
+ * leave the car unsteered; BAR_HOLD_MAX_MS is a backstop. TUNE.        */
 #define BAR_HOLD_MAX_MM      (300.0f)
 #define BAR_HOLD_MAX_MS      (5000U)
 /* Bend detector for the hold: the car is in a bend when the wheel
  * encoders show it turned more than BAR_BEND_MAX_DEG over the last
- * BAR_BEND_WINDOW_MM of travel. Not the line sensors: on a straight the
- * car may run off centre with one sensor on black, and inside a corner
- * both read white for moments. A corner of radius R turns the car by
- * 100 mm / R rad within the window (R 300 mm: 19 deg), while line
- * following on a straight only wiggles. TUNE: drive a straight and read
- * the yaw swing on the web app; set this above it, below a corner's.   */
+ * BAR_BEND_WINDOW_MM. A corner of radius R turns 100 mm / R rad in the
+ * window (R 300 mm: 19 deg); a straight only wiggles. TUNE: above a
+ * straight's swing, below a corner's (the dashboard yaw is the compass,
+ * not this encoder value).                                             */
 #define BAR_BEND_MAX_DEG     (15.0f)
 #define BAR_BEND_WINDOW_MM   (100.0f)
 /* A sensor that saw black keeps reporting black for this long, so a
@@ -331,12 +301,12 @@
 #define US_SCAN_RANGE_CM     (40U)     /* hits beyond this are clear    */
 #define US_ECHO_TIMEOUT_US   (30000U)
 #define US_MIN_GAP_MS        (60U)
-/* Servo settle = base + per degree of travel. SG90: 0.1 s / 60 deg
- * (1.7 ms/deg) at 4.8 V, rounded up; base = one 20 ms PWM frame. A
- * 75 deg jump waits 170 ms, a 5 deg fine step 30 ms (raised to the
- * 60 ms ping gap). TUNE: measure on the car.                           */
+/* Servo settle = one 20 ms PWM frame + per degree of travel. 2 ms/deg
+ * (SG90 datasheet, no load) pinged mid-swing on the car, so 4: a 75 deg
+ * jump waits 320 ms, a 5 deg step the 60 ms ping gap; a scan takes
+ * about 2 s. TUNE.                                                     */
 #define SERVO_SETTLE_BASE_MS (20U)
-#define SERVO_MS_PER_DEG     (2U)
+#define SERVO_MS_PER_DEG     (4U)
 #define SERVO_CENTRE_DEG     (90U)
 /* Sweep limits (Week 6 requirement; the servo mount is fixed).        */
 #define SCAN_MIN_DEG         (15U)
@@ -347,11 +317,8 @@
 #define ROBOT_WIDTH_CM       (15U)     /* TUNE                          */
 #define CLEAR_MARGIN_CM      (5U)
 #define MIN_SIDE_CLEAR_CM    (30U)
-/* Rectangular bypass with spot turns: 90 deg out, sideways, 90 deg back
- * to parallel, along the obstacle, 90 deg in, back to the line. The car
- * stops ~12 cm from the obstacle, so the old 45 deg out-leg met the
- * obstacle's face after ~12 cm and drove into it diagonally (measured).
- * A 90 deg out-leg runs parallel to the face instead.                  */
+/* Rectangular bypass with 90 deg spot turns: the out-leg runs parallel
+ * to the obstacle's face (the car stops ~12 cm from it).               */
 #define BYPASS_TURN_DEG      (90U)
 /* Step-and-check bypass (any obstacle size, team flow):
  *  width:  turn out, drive BYPASS_STEP_CM, turn back to the original
@@ -365,6 +332,17 @@
 #define BYPASS_STEP_CM       (30U)
 #define BYPASS_ALONG_FIRST_CM (30U)    /* stop gap 12 cm + sensor-axle  */
 #define BYPASS_PEEK_CM       (20U)
+/* Bypass side: 1 = left (anti-clockwise runs), 0 = right (clockwise),
+ * so the car goes round on the track's inside. The scan still decides
+ * whether a bypass is needed and safe; its side choice is not used.   */
+#define BYPASS_ON_LEFT       (1)
+/* Once the width check reads clear, one more sideways step this long,
+ * then check again. "Clear" can leave the car's side only ~2.5 cm from
+ * the edge (a 60 deg ray at 20 cm reaches 10 cm out, half width 7.5),
+ * and a 90 deg spot turn swings the corners ~5 cm wider than the body
+ * (measured: the turn toward the line hit the obstacle). 10 cm leaves
+ * >= 12.5 cm, 7.5 cm spare. TUNE: + extra if the corners swing more.  */
+#define BYPASS_WIDTH_MARGIN_CM (10U)
 /* Check rays, fixed and not SCAN_MIN/MAX_DEG: at BYPASS_PEEK_CM a 60 deg
  * ray is 10 cm to the side and 17 cm ahead, just outside the car's
  * half width (7.5 cm), so the check sees the strip the body drives
@@ -404,7 +382,7 @@
 #define HB_DEADLINE_LINE_MS  (100U)    /* period 5 ms                   */
 #define HB_DEADLINE_MOTION_MS (100U)   /* period 10 ms                  */
 #define HB_DEADLINE_IMU_MS   (200U)    /* period 20 ms + I2C timeouts   */
-#define HB_DEADLINE_US_MS    (600U)    /* one scan step: settle + ping  */
+#define HB_DEADLINE_US_MS    (900U)    /* 180 deg settle 740 + ping 31  */
 #define HB_DEADLINE_NAV_MS   (100U)    /* period 10 ms                  */
 #define HB_DEADLINE_TELEM_MS (300U)    /* warning only                  */
 #define HB_DEADLINE_COMMS_MS (500U)    /* radio task poll counter       */

@@ -28,7 +28,6 @@
 #define MS_PER_TICK          (100U)    /* uptime field resolution        */
 #define UPTIME_MASK          (0xFFFFU)
 #define RANGE_MAX_CM         (510U)    /* 511 is reserved for no echo    */
-#define MM_PER_CM            (10)
 #define HALF_DEG_PER_DEG     (2U)
 #define FULL_CIRCLE_DEG      (360U)
 #define QUEUE_DEPTH          (16U)
@@ -249,21 +248,22 @@ frame_fill (proto_telem_t * p_telem, uint16_t front_cm)
     p_telem->line_bits      = state.ir_black;
     p_telem->barcode        = state.last_barcode;
     p_telem->fault_mask     = fault_get_mask();
-    p_telem->status         = (uint8_t) status;
+    p_telem->status         = (uint8_t) status;  /* status flags, 8 bits */
     p_telem->speed_l_cms    = div_round(state.speed_l_mms, MM_PER_CM);
     p_telem->speed_r_cms    = div_round(state.speed_r_mms, MM_PER_CM);
     p_telem->duty_l_pct     = state.duty_l_pct;
     p_telem->duty_r_pct     = state.duty_r_pct;
     p_telem->pitch_half_deg = state.pitch_half_deg;
     p_telem->roll_deg       = state.roll_deg;
-    p_telem->heading_deg    = (uint16_t) heading;
+    p_telem->heading_deg    = (uint16_t) heading;  /* 0..359 */
     p_telem->turn_rate_dps  = state.turn_rate_dps;
     p_telem->range_cm       = (US_RANGE_NO_ECHO == front_cm) ?
                               PROTO_RANGE_NO_ECHO :
                               ((front_cm > RANGE_MAX_CM) ?
-                               (uint16_t) RANGE_MAX_CM : front_cm);
+                               (uint16_t) RANGE_MAX_CM : front_cm); /* 510 */
     p_telem->distance_cm    = div_round(state.dist_mm, MM_PER_CM);
     p_telem->hump_half_mm   = state.hump_peak_half_mm;
+    /* Masked to UPTIME_MASK, so it fits a uint16_t. */
     p_telem->uptime_ticks   = (uint16_t) ((systime_now_ms() / MS_PER_TICK) &
                                           UPTIME_MASK);
 }

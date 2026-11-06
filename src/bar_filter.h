@@ -52,6 +52,14 @@ typedef struct
 } bar_end_limits_t;
 
 #define BAR_FILTER_LEVEL_BIT (1U)   /* bit 0 of an edge: 1 = black after */
+#define BAR_SUB_COUNTS       (16)   /* travel unit: 1/16 encoder count  */
+#define BAR_YAW_SCALE        (1000) /* setup yaw = offset / track x this */
+
+/* bar_filter_positions() / bar_filter_travel() setup array (p_setup). */
+#define BAR_SETUP_SIGN_L     (0U)   /* left encoder sign, +/-1          */
+#define BAR_SETUP_SIGN_R     (1U)   /* right encoder sign, +/-1         */
+#define BAR_SETUP_YAW        (2U)   /* sensor offset / track x scale    */
+#define BAR_SETUP_LEN        (3U)
 
 uint32_t bar_filter_add (uint32_t * p_edges, uint32_t count,
                          uint32_t capacity, uint32_t edge,

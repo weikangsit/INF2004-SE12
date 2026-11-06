@@ -18,7 +18,7 @@
  *  barcode turn is still caught afterwards) stops the car and scans
  *  where it stopped. A scan without enough valid echoes, or with both
  *  sides blocked, stops with FC_NO_ROUTE detail 1 ("scan cannot proceed
- *  safely"). The bypass goes round on the side the scan chose, with
+ *  safely"). The bypass goes round on the BYPASS_ON_LEFT side, with
  *  BYPASS_TURN_DEG (90 deg) spot turns, step and check: turn out,
  *  step sideways, face forward and check (servo pings at PEEK_RIGHT_DEG,
  *  centre, PEEK_LEFT_DEG); still blocked -> another sideways step. Then
@@ -62,7 +62,6 @@
 #define BTN_STABLE_TICKS     (3U)
 #define REMOTE_Q_DEPTH       (4U)
 #define MBF_SLOT_BYTES       (8U)        /* 4-byte header + 1 byte       */
-#define MM_PER_CM            (10)
 #define NO_SEQ               (0U)
 #define NO_SLOT              (0xFFU)      /* pending_slot: no barcode held */
 #define DETAIL_SCAN_UNSAFE   (1)         /* FC_NO_ROUTE detail           */
@@ -106,7 +105,7 @@ typedef struct
     bool                b_have_terrain;
     imu_terrain_event_t terrain;
     bool                b_have_us;
-    us_result_t         us;
+    us_result_t         us_result;
     bool                b_have_rc;
     proto_cmd_t         remote;
     uint32_t            line_events;
@@ -129,6 +128,7 @@ typedef struct
     int32_t         leg_start_mm;         /* start of a sideways step    */
     int32_t         offset_mm;            /* sideways steps, measured    */
     uint32_t        width_steps;          /* sideways steps driven       */
+    bool            b_width_margin;       /* last step out was the margin */
     uint32_t        length_steps;         /* extra along steps driven    */
     bool            b_mag_cal;
     bool            b_led_online;
@@ -142,7 +142,7 @@ static nav_ctx_t g_nav;                   /* task only                   */
 static void    inputs_read (nav_in_t * p_in);
 static bool    button_press (button_t * p_btn, bool b_raw, uint32_t now);
 static bool    button_release_short (button_t * p_btn, bool b_raw,
-                                     uint32_t now, bool * p_long);
+                                     uint32_t now, bool * pb_long);
 static bool    global_transitions (nav_in_t const * p_in);
 static void    state_step (nav_in_t const * p_in);
 static void    init_step (nav_in_t const * p_in);
@@ -205,7 +205,7 @@ void
 nav_fsm_task (INT stacd, void * p_exinf)
 {
     uint64_t next_us = time_us_64();
-    nav_in_t in;
+    nav_in_t inputs;
 
     (void) stacd;
     (void) p_exinf;
@@ -217,7 +217,7 @@ nav_fsm_task (INT stacd, void * p_exinf)
         systime_period_wait(&next_us, PERIOD_NAV_POLL_MS);
         safety_heartbeat(SAFETY_HB_NAV);
 
-        inputs_read(&in);
+        inputs_read(&inputs);
 
         /* WiFi status LED while running. */
         if ((g_nav.state >= NAV_LINE_FOLLOW) &&
@@ -228,9 +228,9 @@ nav_fsm_task (INT stacd, void * p_exinf)
             hal_led_set(g_nav.b_led_online ? HAL_LED_GREEN : HAL_LED_AMBER);
         }
 
-        if (!global_transitions(&in))
+        if (!global_transitions(&inputs))
         {
-            state_step(&in);
+            state_step(&inputs);
         }
     }
 }
@@ -255,7 +255,7 @@ inputs_read (nav_in_t * p_in)
     p_in->b_have_bar     = barcode_take(&p_in->bar_slot);
     p_in->b_have_done    = motion_control_done_take(&p_in->done);
     p_in->b_have_terrain = imu_terrain_event_take(&p_in->terrain);
-    p_in->b_have_us      = ultrasonic_scan_result_take(&p_in->us);
+    p_in->b_have_us      = ultrasonic_scan_result_take(&p_in->us_result);
     p_in->b_have_rc      = (tk_rcv_mbf(g_remote_q, &remote, TMO_POL) > 0);
     p_in->line_events    = sensor_line_events_take();
 
@@ -305,12 +305,12 @@ button_press (button_t * p_btn, bool b_raw, uint32_t now)
  * @param  p_btn   Button state.
  * @param  b_raw   Raw level, true = pressed.
  * @param  now     Current time.
- * @param  p_long  Output: true once when the hold reaches the long time.
+ * @param  pb_long  Output: true once when the hold reaches the long time.
  * @return True on release after a short press.
  */
 static bool
 button_release_short (button_t * p_btn, bool b_raw, uint32_t now,
-                      bool * p_long)
+                      bool * pb_long)
 {
     bool const b_was_pressed = p_btn->b_stable;
     bool const b_long_sent   = p_btn->b_long_sent;
@@ -326,7 +326,7 @@ button_release_short (button_t * p_btn, bool b_raw, uint32_t now,
              ((now - p_btn->press_ms) >= BTN_LONG_PRESS_MS))
     {
         p_btn->b_long_sent = true;
-        *p_long            = true;
+        *pb_long            = true;
     }
     else
     {
@@ -651,7 +651,7 @@ obstacle_step (nav_in_t const * p_in)
 
     if (p_in->b_have_us && (BYPASS_NONE == g_nav.bypass))
     {
-        switch (p_in->us)
+        switch (p_in->us_result)
         {
             case US_RESULT_CONTINUE:
                 (void) motion_control_forward(SPEED_CRUISE_CMS, 0U, true);
@@ -660,10 +660,12 @@ obstacle_step (nav_in_t const * p_in)
 
             case US_RESULT_LEFT:
             case US_RESULT_RIGHT:
-                /* The side with more clearance (obstacle_profile_plan). */
-                g_nav.b_bypass_left = (US_RESULT_LEFT == p_in->us);
-                g_nav.offset_mm     = 0;
-                g_nav.width_steps   = 0U;
+                /* Fixed side (BYPASS_ON_LEFT, set by track direction);
+                 * the scan only decides whether a bypass is needed. */
+                g_nav.b_bypass_left  = (0 != BYPASS_ON_LEFT);
+                g_nav.offset_mm      = 0;
+                g_nav.width_steps    = 0U;
+                g_nav.b_width_margin = false;
                 g_nav.length_steps  = 0U;
                 bypass_go(BYPASS_TURN_OUT);
             break;
@@ -681,10 +683,10 @@ obstacle_step (nav_in_t const * p_in)
              (BYPASS_PEEK_LENGTH == g_nav.bypass))
     {
         /* Car stopped; only the check's answer moves it on. */
-        if (p_in->b_have_us && ((US_RESULT_PEEK_CLEAR == p_in->us) ||
-                                (US_RESULT_PEEK_BLOCKED == p_in->us)))
+        if (p_in->b_have_us && ((US_RESULT_PEEK_CLEAR == p_in->us_result) ||
+                                (US_RESULT_PEEK_BLOCKED == p_in->us_result)))
         {
-            bypass_peek_result(US_RESULT_PEEK_BLOCKED == p_in->us);
+            bypass_peek_result(US_RESULT_PEEK_BLOCKED == p_in->us_result);
         }
     }
     else if (((BYPASS_STEP_OUT == g_nav.bypass) ||
@@ -732,9 +734,11 @@ bypass_go (bypass_step_t step)
 
         case BYPASS_STEP_OUT:
             g_nav.leg_start_mm = dist_now_mm();
-            g_nav.pending_seq  = motion_control_forward(SPEED_SEARCH_CMS,
-                                                        BYPASS_STEP_CM,
-                                                        false);
+            g_nav.pending_seq  = motion_control_forward(
+                SPEED_SEARCH_CMS,
+                g_nav.b_width_margin ? BYPASS_WIDTH_MARGIN_CM :
+                                       BYPASS_STEP_CM,
+                false);
         break;
 
         case BYPASS_ALONG:
@@ -782,9 +786,11 @@ bypass_step_done (void)
 
 /*!
  * @brief  Act on a bypass check. Width: still ahead -> one more step
- *         sideways, else drive along. Length: still beside the car's
- *         path to the line -> back to parallel for one more step along,
- *         else drive back to the line. Gives up after BYPASS_MAX_STEPS.
+ *         sideways; first clear -> one BYPASS_WIDTH_MARGIN_CM step and
+ *         check again; clear after the margin -> drive along. Length:
+ *         still beside the car's path to the line -> back to parallel
+ *         for one more step along, else drive back to the line. Gives
+ *         up after BYPASS_MAX_STEPS.
  * @param  b_blocked  True if the obstacle is still within BYPASS_PEEK_CM.
  */
 static void
@@ -794,7 +800,15 @@ bypass_peek_result (bool b_blocked)
     {
         g_nav.width_steps++;
 
-        if (!b_blocked)
+        if (!b_blocked && !g_nav.b_width_margin)
+        {
+            /* Clear, but the car's side may be only ~2.5 cm from the
+             * edge: step out BYPASS_WIDTH_MARGIN_CM more and check
+             * again, so the spot turns beside it clear the obstacle. */
+            g_nav.b_width_margin = true;
+            bypass_go(BYPASS_TURN_OUT);
+        }
+        else if (!b_blocked)
         {
             bypass_go(BYPASS_ALONG);
         }
@@ -804,6 +818,7 @@ bypass_peek_result (bool b_blocked)
         }
         else
         {
+            g_nav.b_width_margin = false;         /* a full step again    */
             bypass_go(BYPASS_TURN_OUT);
         }
     }
@@ -833,6 +848,7 @@ bypass_peek_result (bool b_blocked)
 static void
 bypass_return (void)
 {
+    /* BYPASS_RETURN_EXTRA_CM is a small constant (15). */
     int32_t const back_cm = (g_nav.offset_mm / MM_PER_CM) +
                             (int32_t) BYPASS_RETURN_EXTRA_CM;
 
@@ -1021,7 +1037,7 @@ enter (nav_fsm_state_t state)
         break;
     }
 
-    telemetry_post_event(EV_STATE, (uint8_t) state, 0, 0);
+    telemetry_post_event(EV_STATE, (uint8_t) state, 0, 0);  /* 0..8 */
 }
 
 /*!

@@ -22,7 +22,7 @@
 #define HOLD_NS_MUL          (3U)
 #define TX_FIFO_DEPTH        (16U)
 
-static bool g_b_restart_next = false;
+static bool gb_restart_next = false;
 
 static void set_target (uint8_t addr);
 static bool expired (uint32_t start_us, uint32_t timeout_us);
@@ -61,7 +61,7 @@ i2c_drv_init (uint32_t pin_sda, uint32_t pin_scl, uint32_t baud)
                     I2C_IC_SDA_HOLD_IC_SDA_TX_HOLD_LSB,
                     I2C_IC_SDA_HOLD_IC_SDA_TX_HOLD_BITS);
     I2C_HW->enable      = 1U;
-    g_b_restart_next    = false;
+    gb_restart_next    = false;
 
     gpio_set_function(pin_sda, GPIO_FUNC_I2C);
     gpio_set_function(pin_scl, GPIO_FUNC_I2C);
@@ -93,11 +93,11 @@ i2c_drv_write (uint8_t addr, uint8_t const * p_src, uint32_t len,
         bool const b_first = (0U == idx);
         bool const b_last  = ((len - 1U) == idx);
 
-        I2C_HW->data_cmd = ((b_first && g_b_restart_next) ?
+        I2C_HW->data_cmd = ((b_first && gb_restart_next) ?
                             I2C_IC_DATA_CMD_RESTART_BITS : 0U) |
                            ((b_last && (!b_nostop)) ?
                             I2C_IC_DATA_CMD_STOP_BITS : 0U) |
-                           (uint32_t) p_src[idx];
+                           (uint32_t) p_src[idx];  /* byte, widened */
 
         while (0U == (I2C_HW->raw_intr_stat &
                       I2C_IC_RAW_INTR_STAT_TX_EMPTY_BITS))
@@ -131,7 +131,7 @@ i2c_drv_write (uint8_t addr, uint8_t const * p_src, uint32_t len,
         }
     }
 
-    g_b_restart_next = b_nostop && b_ok;
+    gb_restart_next = b_nostop && b_ok;
 
     return (b_ok);
 }
@@ -166,7 +166,7 @@ i2c_drv_read (uint8_t addr, uint8_t * p_dst, uint32_t len,
 
         if (b_ok)
         {
-            I2C_HW->data_cmd = ((b_first && g_b_restart_next) ?
+            I2C_HW->data_cmd = ((b_first && gb_restart_next) ?
                                 I2C_IC_DATA_CMD_RESTART_BITS : 0U) |
                                (b_last ? I2C_IC_DATA_CMD_STOP_BITS : 0U) |
                                I2C_IC_DATA_CMD_CMD_BITS;      /* read     */
@@ -193,7 +193,7 @@ i2c_drv_read (uint8_t addr, uint8_t * p_dst, uint32_t len,
         }
     }
 
-    g_b_restart_next = false;
+    gb_restart_next = false;
 
     return (b_ok);
 }

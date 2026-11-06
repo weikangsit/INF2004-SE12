@@ -58,7 +58,7 @@
 #define I2C_FAIL_LIMIT       (5U)
 
 #define RAD2DEG              (57.2957795f)
-#define DT_S                 ((float32_t) PERIOD_IMU_MS / 1000.0f)
+#define DT_S                 (PERIOD_IMU_MS / 1000.0f)
 #define RATE_ALPHA           (0.3f)
 #define FULL_TURN_DEG        (360.0f)
 #define HALF_TURN_DEG        (180.0f)
@@ -111,10 +111,10 @@ typedef struct
 } imu_ctx_t;
 
 static ID            g_evt_q            = 0;
-static volatile bool g_b_ok             = false;
-static volatile bool g_b_cal_start_req  = false;   /* Nav sets, task clears */
-static volatile bool g_b_cal_finish_req = false;
-static bool          g_b_mag_calibrated = false;   /* task only            */
+static volatile bool gb_ok             = false;
+static volatile bool gb_cal_start_req  = false;   /* Nav sets, task clears */
+static volatile bool gb_cal_finish_req = false;
+static bool          gb_mag_calibrated = false;   /* task only            */
 static vec3_t        g_mag_off;                    /* task only, gauss     */
 static imu_ctx_t     g_ctx;                        /* task only            */
 
@@ -172,7 +172,7 @@ imu_terrain_task (INT stacd, void * p_exinf)
     (void) stacd;
     (void) p_exinf;
 
-    g_b_ok = sensor_init();
+    gb_ok = sensor_init();
 
     for (;;)
     {
@@ -185,7 +185,7 @@ imu_terrain_task (INT stacd, void * p_exinf)
         if (acc_read(&acc) && mag_read(&mag))
         {
             g_ctx.fails = 0U;
-            g_b_ok      = true;
+            gb_ok      = true;
             mag_cal_step(&mag);
             sample_process(&acc, &mag);
         }
@@ -194,7 +194,7 @@ imu_terrain_task (INT stacd, void * p_exinf)
             g_ctx.fails++;
             if (g_ctx.fails >= I2C_FAIL_LIMIT)
             {
-                g_b_ok = false;                   /* Nav: sensor failure  */
+                gb_ok = false;                   /* Nav: sensor failure  */
             }
         }
     }
@@ -207,7 +207,7 @@ imu_terrain_task (INT stacd, void * p_exinf)
 bool
 imu_terrain_is_ok (void)
 {
-    return (g_b_ok);
+    return (gb_ok);
 }
 
 /*!
@@ -237,7 +237,7 @@ imu_terrain_event_take (imu_terrain_event_t * p_event)
 void
 imu_terrain_mag_cal_start (void)
 {
-    g_b_cal_start_req = true;
+    gb_cal_start_req = true;
 }
 
 /*!
@@ -247,7 +247,7 @@ imu_terrain_mag_cal_start (void)
 void
 imu_terrain_mag_cal_finish (void)
 {
-    g_b_cal_finish_req = true;
+    gb_cal_finish_req = true;
 }
 
 /*!
@@ -305,14 +305,15 @@ static bool
 acc_read (vec3_t * p_acc)
 {
     uint8_t    raw[SAMPLE_BYTES];
+    /* Register address constant 0xA8 fits a byte. */
     bool const b_ok = regs_read(IMU_ACC_ADDR,
                                 (uint8_t) (ACC_OUT_X_L | AUTO_INC), raw);
 
     if (b_ok)
     {
-        p_acc->axis[AXIS_X] = (float32_t) le16(&raw[0]) / ACC_LSB_PER_G;
-        p_acc->axis[AXIS_Y] = (float32_t) le16(&raw[2]) / ACC_LSB_PER_G;
-        p_acc->axis[AXIS_Z] = (float32_t) le16(&raw[4]) / ACC_LSB_PER_G;
+        p_acc->axis[AXIS_X] = le16(&raw[0]) / ACC_LSB_PER_G;
+        p_acc->axis[AXIS_Y] = le16(&raw[2]) / ACC_LSB_PER_G;
+        p_acc->axis[AXIS_Z] = le16(&raw[4]) / ACC_LSB_PER_G;
     }
 
     return (b_ok);
@@ -332,11 +333,11 @@ mag_read (vec3_t * p_mag)
 
     if (b_ok)
     {
-        p_mag->axis[AXIS_X] = ((float32_t) be16(&raw[0]) / MAG_LSB_XY) -
+        p_mag->axis[AXIS_X] = (be16(&raw[0]) / MAG_LSB_XY) -
                               g_mag_off.axis[AXIS_X];
-        p_mag->axis[AXIS_Z] = ((float32_t) be16(&raw[2]) / MAG_LSB_Z) -
+        p_mag->axis[AXIS_Z] = (be16(&raw[2]) / MAG_LSB_Z) -
                               g_mag_off.axis[AXIS_Z];
-        p_mag->axis[AXIS_Y] = ((float32_t) be16(&raw[4]) / MAG_LSB_XY) -
+        p_mag->axis[AXIS_Y] = (be16(&raw[4]) / MAG_LSB_XY) -
                               g_mag_off.axis[AXIS_Y];
     }
 
@@ -350,6 +351,7 @@ mag_read (vec3_t * p_mag)
 static int16_t
 le16 (uint8_t const * p_bytes)
 {
+    /* Bytes widened to 32 bits before shifting; 16 bits result. */
     uint32_t const word = (uint32_t) p_bytes[0] |
                           ((uint32_t) p_bytes[1] << 8);
 
@@ -364,6 +366,7 @@ le16 (uint8_t const * p_bytes)
 static int16_t
 be16 (uint8_t const * p_bytes)
 {
+    /* Bytes widened to 32 bits before shifting; 16 bits result. */
     uint32_t const word = ((uint32_t) p_bytes[0] << 8) |
                           (uint32_t) p_bytes[1];
 
@@ -457,7 +460,7 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
         HALVES);
     out.motion_class      = cls;
     out.b_imu_valid       = true;
-    out.b_mag_calibrated  = g_b_mag_calibrated;
+    out.b_mag_calibrated  = gb_mag_calibrated;
     out.imu_stamp         = systime_stamp();
     vehicle_state_set_imu(&out);
 }
@@ -700,9 +703,9 @@ mag_cal_step (vec3_t const * p_mag)
 {
     uint32_t idx = 0U;
 
-    if (g_b_cal_start_req)
+    if (gb_cal_start_req)
     {
-        g_b_cal_start_req  = false;
+        gb_cal_start_req  = false;
         g_ctx.b_cal_active = true;
         for (idx = 0U; idx < AXES; idx++)
         {
@@ -723,7 +726,7 @@ mag_cal_step (vec3_t const * p_mag)
         }
     }
 
-    if (g_b_cal_finish_req)
+    if (gb_cal_finish_req)
     {
         float32_t const span_x = g_ctx.cal_max.axis[AXIS_X] -
                                  g_ctx.cal_min.axis[AXIS_X];
@@ -733,7 +736,7 @@ mag_cal_step (vec3_t const * p_mag)
                                  (span_x >= MAG_CAL_MIN_SPAN_GS) &&
                                  (span_y >= MAG_CAL_MIN_SPAN_GS);
 
-        g_b_cal_finish_req = false;
+        gb_cal_finish_req = false;
         g_ctx.b_cal_active = false;
 
         if (b_ok)
@@ -742,7 +745,7 @@ mag_cal_step (vec3_t const * p_mag)
                                       g_ctx.cal_max.axis[AXIS_X]) / HALVES;
             g_mag_off.axis[AXIS_Y] = (g_ctx.cal_min.axis[AXIS_Y] +
                                       g_ctx.cal_max.axis[AXIS_Y]) / HALVES;
-            g_b_mag_calibrated     = true;
+            gb_mag_calibrated     = true;
         }
 
         /* Result code 0 or 1 fits a uint8_t. */

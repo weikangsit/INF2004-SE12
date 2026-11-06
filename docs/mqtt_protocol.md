@@ -87,7 +87,7 @@ beacon.
 | 8 | FC_ESTOP | emergency stop | latched |
 | 9 | FC_HEARTBEAT | a supervised task missed its deadline (detail = task: 0 line, 1 motion, 2 IMU, 3 ultrasonic, 4 nav, 5 comms radio) | latched |
 | 10 | FC_SENSOR | line sensor calibration failed | latched |
-| 11 | FC_NO_ROUTE | no way around an obstacle; EVENT detail 1 = scan cannot proceed safely (too few valid echoes), 2 = bypass path blocked (echo under US_OBSTACLE_CM on a bypass or return leg), 3 = obstacle too large (still detected after BYPASS_MAX_STEPS bypass steps) | latched |
+| 11 | FC_NO_ROUTE | no way around an obstacle; EVENT detail 1 = scan cannot proceed safely (no valid echo ahead, or both sides blocked), 2 = bypass path blocked (echo under US_OBSTACLE_CM on a bypass or return leg), 3 = obstacle too large (still detected after BYPASS_MAX_STEPS bypass steps) | latched |
 | 12 | FC_REACQUIRE | line not found after a bypass | latched |
 | 13 | FC_SELFTEST | power-on self-test timed out | latched |
 | 14 | FC_TELEM_LATE | telemetry task missed its deadline | warning, sent once |
@@ -107,7 +107,7 @@ fixed per kind, and the decoder rejects any other length.
 | 2 | BARCODE | slot 2, valid 1 (letter is in the table), read 1 (a letter was decoded; 0 = unreadable), edge count 6 | 2 |
 | 3 | HUMP | height 8 (0.5 mm) | 2 |
 | 4 | OBSTACLE | bearing 8 (deg), range 9 (cm, 511 = no echo), width 7 (cm) | 4 |
-| 5 | FAULT | fault code 4, detail 4, motion state 3. Detail: missing heartbeat task, or for a stall bit 0 left wheel silent, bit 1 right wheel silent, bit 2 time limit. Motion state (stall only): 1 straight, 2 reverse, 3 turn left, 4 turn right, 5 U-turn | 2 |
+| 5 | FAULT | fault code 4, detail 4, motion state 3. Detail: missing heartbeat task, or for a stall bit 0 left wheel silent, bit 1 right wheel silent, bit 2 time limit. Motion state (stall only): 1 straight, 2 unused (was reverse), 3 turn left, 4 turn right, 5 U-turn | 2 |
 | 6 | TURN_XCHECK | encoder turn 9 (deg), IMU turn 9 (deg) | 3 |
 | 7 | SUMMARY | hump peak 8 (0.5 mm), distance 14s (cm) | 4 |
 | 8 | ENC_CAL | result 3 (0 ok, bit0/bit1 encoder silent, 4 rotated), left 9s, right 9s | 4 |
