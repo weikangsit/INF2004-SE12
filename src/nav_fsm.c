@@ -21,9 +21,12 @@
  *  safely"). The bypass goes round on the BYPASS_ON_LEFT side, with
  *  BYPASS_TURN_DEG (90 deg) spot turns, step and check: turn out,
  *  step sideways, face forward and check (servo pings at PEEK_RIGHT_DEG,
- *  centre, PEEK_LEFT_DEG); still blocked -> another sideways step. Then
- *  drive along, turn toward the line and check; still blocked -> turn
- *  back and step further along. After BYPASS_MAX_STEPS either way it
+ *  centre, PEEK_LEFT_DEG); still blocked -> another sideways step; first
+ *  clear -> a margin step and check again. Then drive along in steps and
+ *  check sideways (BYPASS_SIDE_DEG) after each, without turning; side
+ *  clear -> BYPASS_PAST_CM more, turn toward the line and check ahead;
+ *  still blocked -> turn back and step along. After BYPASS_MAX_STEPS
+ *  either way it
  *  stops with FC_NO_ROUTE detail 3 ("obstacle too large"). The return
  *  leg is the measured sideways steps plus a margin. On the forward legs the
  *  centred ultrasonic sensor keeps watching ahead: something closer than
@@ -67,6 +70,9 @@
 #define DETAIL_SCAN_UNSAFE   (1)         /* FC_NO_ROUTE detail           */
 #define DETAIL_BYPASS_BLOCKED (2)        /* FC_NO_ROUTE detail           */
 #define DETAIL_BYPASS_TOO_BIG (3)        /* FC_NO_ROUTE detail           */
+#define HALF_DEG_PER_DEG     (2)         /* heading is in 0.5 deg        */
+#define FULL_TURN_HALF_DEG   (720)
+#define HALF_TURN_HALF_DEG   (360)
 
 /** Obstacle bypass steps (step-and-check, see bypass_go()). */
 typedef enum
@@ -76,19 +82,29 @@ typedef enum
     BYPASS_STEP_OUT,        /* sideways BYPASS_STEP_CM                   */
     BYPASS_FACE_FWD,        /* 90 deg back to the original heading       */
     BYPASS_PEEK_WIDTH,      /* obstacle still ahead? -> TURN_OUT again   */
-    BYPASS_ALONG,           /* along the obstacle                        */
+    BYPASS_ALONG,           /* along the obstacle, one step              */
+    BYPASS_PEEK_SIDE,       /* still beside the car? -> ALONG again      */
+    BYPASS_PAST,            /* side clear: drive BYPASS_PAST_CM more     */
     BYPASS_TURN_IN,         /* 90 deg toward the line                    */
     BYPASS_PEEK_LENGTH,     /* obstacle still there? -> TURN_PARALLEL    */
     BYPASS_TURN_PARALLEL    /* 90 deg back to the original heading       */
 } bypass_step_t;
+
+/** Dashboard calibration: compass spin, then a checked 90 deg turn. */
+typedef enum
+{
+    CAL_IDLE = 0,
+    CAL_SPIN,               /* compass calibration spin                  */
+    CAL_SETTLE_BEFORE,      /* stopped: compass settles, heading noted   */
+    CAL_TURN,               /* one BYPASS_TURN_DEG turn on the encoders  */
+    CAL_SETTLE_AFTER        /* stopped: compass settles, angle reported  */
+} cal_stage_t;
 
 /** One debounced button. */
 typedef struct
 {
     bool     b_stable;       /* debounced level, true = pressed          */
     uint8_t  count;
-    uint32_t press_ms;       /* time of the debounced press              */
-    bool     b_long_sent;
 } button_t;
 
 /** Inputs of one period. */
@@ -96,8 +112,7 @@ typedef struct
 {
     uint32_t            now;
     bool                b_start;          /* GP20 pressed                */
-    bool                b_cal_short;      /* GP21 released before long   */
-    bool                b_cal_long;       /* GP21 held BTN_LONG_PRESS_MS */
+    bool                b_cal_short;      /* GP21 released               */
     bool                b_have_bar;
     uint8_t             bar_slot;         /* 0..3 = action wire code     */
     bool                b_have_done;
@@ -130,7 +145,10 @@ typedef struct
     uint32_t        width_steps;          /* sideways steps driven       */
     bool            b_width_margin;       /* last step out was the margin */
     uint32_t        length_steps;         /* extra along steps driven    */
-    bool            b_mag_cal;
+    cal_stage_t     cal_stage;
+    uint32_t        cal_ms;               /* start of a settle wait      */
+    uint16_t        cal_hdg0;             /* heading before the turn     */
+    bool            b_cal_hdg0;           /* cal_hdg0 is usable          */
     bool            b_led_online;
     button_t        btn_start;
     button_t        btn_cal;
@@ -140,9 +158,8 @@ static ID        g_remote_q = 0;
 static nav_ctx_t g_nav;                   /* task only                   */
 
 static void    inputs_read (nav_in_t * p_in);
-static bool    button_press (button_t * p_btn, bool b_raw, uint32_t now);
-static bool    button_release_short (button_t * p_btn, bool b_raw,
-                                     uint32_t now, bool * pb_long);
+static bool    button_press (button_t * p_btn, bool b_raw);
+static bool    button_release (button_t * p_btn, bool b_raw);
 static bool    global_transitions (nav_in_t const * p_in);
 static void    state_step (nav_in_t const * p_in);
 static void    init_step (nav_in_t const * p_in);
@@ -157,6 +174,9 @@ static void    bypass_peek_result (bool b_blocked);
 static void    bypass_return (void);
 static void    reacquire_step (nav_in_t const * p_in);
 static bool    path_is_blocked (void);
+static void    cal_motion_done (uint32_t now);
+static void    cal_settle_step (uint32_t now);
+static bool    heading_read (uint16_t * p_half_deg);
 static void    reset_step (nav_in_t const * p_in);
 static bool    done_awaited (nav_in_t const * p_in, motion_result_t * p_res);
 static void    follow_begin (void);
@@ -188,7 +208,7 @@ nav_fsm_init (void)
  * @brief  Queue a validated remote command (comms.c). Never blocks; if the
  *         queue is full the command is dropped (an e-stop has already
  *         reached Safety directly).
- * @param  cmd  proto_cmd_t value, 0..5.
+ * @param  cmd  proto_cmd_t value, 0..7.
  */
 void
 nav_fsm_post_remote (uint8_t cmd)
@@ -247,11 +267,8 @@ inputs_read (nav_in_t * p_in)
     (void) memset(p_in, 0, sizeof(*p_in));
     p_in->now = systime_now_ms();
 
-    p_in->b_start      = button_press(&g_nav.btn_start, hal_btn_start_raw(),
-                                      p_in->now);
-    p_in->b_cal_short  = button_release_short(&g_nav.btn_cal,
-                                              hal_btn_cal_raw(), p_in->now,
-                                              &p_in->b_cal_long);
+    p_in->b_start      = button_press(&g_nav.btn_start, hal_btn_start_raw());
+    p_in->b_cal_short  = button_release(&g_nav.btn_cal, hal_btn_cal_raw());
     p_in->b_have_bar     = barcode_take(&p_in->bar_slot);
     p_in->b_have_done    = motion_control_done_take(&p_in->done);
     p_in->b_have_terrain = imu_terrain_event_take(&p_in->terrain);
@@ -261,7 +278,7 @@ inputs_read (nav_in_t * p_in)
 
     if (p_in->b_have_rc)
     {
-        /* comms.c queues only validated commands 0..5. */
+        /* comms.c queues only validated commands 0..7. */
         p_in->remote = (proto_cmd_t) remote;
     }
 }
@@ -270,11 +287,10 @@ inputs_read (nav_in_t * p_in)
  * @brief  Debounce a button.
  * @param  p_btn  Button state.
  * @param  b_raw  Raw level, true = pressed.
- * @param  now    Current time.
- * @return True once, on the debounced press.
+ * @return True once when the debounced button is pressed.
  */
 static bool
-button_press (button_t * p_btn, bool b_raw, uint32_t now)
+button_press (button_t * p_btn, bool b_raw)
 {
     bool b_pressed = false;
 
@@ -284,11 +300,9 @@ button_press (button_t * p_btn, bool b_raw, uint32_t now)
 
         if (p_btn->count >= BTN_STABLE_TICKS)
         {
-            p_btn->b_stable    = b_raw;
-            p_btn->count       = 0U;
-            p_btn->press_ms    = now;
-            p_btn->b_long_sent = false;
-            b_pressed          = b_raw;
+            p_btn->b_stable = b_raw;
+            p_btn->count    = 0U;
+            b_pressed       = b_raw;
         }
     }
     else
@@ -300,40 +314,19 @@ button_press (button_t * p_btn, bool b_raw, uint32_t now)
 }
 
 /*!
- * @brief  Short / long press of a button: a long press fires once while
- *         held; a short press fires on release.
- * @param  p_btn   Button state.
- * @param  b_raw   Raw level, true = pressed.
- * @param  now     Current time.
- * @param  pb_long  Output: true once when the hold reaches the long time.
- * @return True on release after a short press.
+ * @brief  Release of a button (GP21: line calibration, reset).
+ * @param  p_btn  Button state.
+ * @param  b_raw  Raw level, true = pressed.
+ * @return True once when the debounced button is released.
  */
 static bool
-button_release_short (button_t * p_btn, bool b_raw, uint32_t now,
-                      bool * pb_long)
+button_release (button_t * p_btn, bool b_raw)
 {
     bool const b_was_pressed = p_btn->b_stable;
-    bool const b_long_sent   = p_btn->b_long_sent;
-    bool       b_short       = false;
 
-    (void) button_press(p_btn, b_raw, now);
+    (void) button_press(p_btn, b_raw);
 
-    if (b_was_pressed && (!p_btn->b_stable))
-    {
-        b_short = !b_long_sent;                   /* released             */
-    }
-    else if (p_btn->b_stable && (!p_btn->b_long_sent) &&
-             ((now - p_btn->press_ms) >= BTN_LONG_PRESS_MS))
-    {
-        p_btn->b_long_sent = true;
-        *pb_long            = true;
-    }
-    else
-    {
-        /* No change. */
-    }
-
-    return (b_short);
+    return (b_was_pressed && (!p_btn->b_stable));
 }
 
 /*!
@@ -437,13 +430,10 @@ state_step (nav_in_t const * p_in)
             break;
         }
 
-        /* A completion of the awaited command that the state did not use
-         * (e.g. the bypass steps) is handled there; READY uses
-         * it to finish the magnetometer calibration. */
-        if (b_done && (NAV_READY == g_nav.state) && g_nav.b_mag_cal)
+        /* READY: a completion moves the calibration on. */
+        if (b_done && (NAV_READY == g_nav.state))
         {
-            g_nav.b_mag_cal = false;
-            imu_terrain_mag_cal_finish();
+            cal_motion_done(p_in->now);
         }
     }
 }
@@ -480,16 +470,16 @@ init_step (nav_in_t const * p_in)
 }
 
 /*!
- * @brief  READY: start, line calibration (short GP21) or magnetometer
- *         calibration (GP21 held).
+ * @brief  READY: start, line calibration (GP21) or the dashboard
+ *         calibration: compass spin, then one checked 90 deg turn.
  * @param  p_in  Inputs of this period.
  */
 static void
 ready_step (nav_in_t const * p_in)
 {
-    if (g_nav.b_mag_cal)
+    if (CAL_IDLE != g_nav.cal_stage)
     {
-        /* Spinning: wait for the turn to finish (state_step). */
+        cal_settle_step(p_in->now);               /* spins end in state_step */
     }
     else if (p_in->b_start ||
              (p_in->b_have_rc && (PROTO_CMD_START == p_in->remote)))
@@ -497,9 +487,9 @@ ready_step (nav_in_t const * p_in)
         follow_begin();
         enter(NAV_LINE_FOLLOW);
     }
-    else if (p_in->b_cal_long)
+    else if (p_in->b_have_rc && (PROTO_CMD_MAG_CAL == p_in->remote))
     {
-        g_nav.b_mag_cal = true;
+        g_nav.cal_stage = CAL_SPIN;
         imu_terrain_mag_cal_start();
         g_nav.pending_seq = motion_control_turn(true, MAG_CAL_SPEED_CMS,
                                                 MAG_CAL_SPIN_DEG, false);
@@ -680,6 +670,7 @@ obstacle_step (nav_in_t const * p_in)
         }
     }
     else if ((BYPASS_PEEK_WIDTH == g_nav.bypass) ||
+             (BYPASS_PEEK_SIDE == g_nav.bypass) ||
              (BYPASS_PEEK_LENGTH == g_nav.bypass))
     {
         /* Car stopped; only the check's answer moves it on. */
@@ -690,7 +681,8 @@ obstacle_step (nav_in_t const * p_in)
         }
     }
     else if (((BYPASS_STEP_OUT == g_nav.bypass) ||
-              (BYPASS_ALONG == g_nav.bypass)) && (!b_idle) &&
+              (BYPASS_ALONG == g_nav.bypass) ||
+              (BYPASS_PAST == g_nav.bypass)) && (!b_idle) &&
              path_is_blocked())
     {
         /* Driving a step into something, e.g. a second obstacle. */
@@ -745,8 +737,18 @@ bypass_go (bypass_step_t step)
             g_nav.pending_seq = motion_control_forward(
                 SPEED_SEARCH_CMS,
                 (0U == g_nav.length_steps) ? BYPASS_ALONG_FIRST_CM :
-                                             BYPASS_STEP_CM,
+                                             BYPASS_ALONG_STEP_CM,
                 false);
+        break;
+
+        case BYPASS_PAST:
+            g_nav.pending_seq = motion_control_forward(SPEED_SEARCH_CMS,
+                                                       BYPASS_PAST_CM,
+                                                       false);
+        break;
+
+        case BYPASS_PEEK_SIDE:
+            ultrasonic_scan_side_peek();          /* car is stopped       */
         break;
 
         case BYPASS_PEEK_WIDTH:
@@ -775,7 +777,8 @@ bypass_step_done (void)
             bypass_go(BYPASS_FACE_FWD);
         break;
         case BYPASS_FACE_FWD:      bypass_go(BYPASS_PEEK_WIDTH);  break;
-        case BYPASS_ALONG:         bypass_go(BYPASS_TURN_IN);     break;
+        case BYPASS_ALONG:         bypass_go(BYPASS_PEEK_SIDE);   break;
+        case BYPASS_PAST:          bypass_go(BYPASS_TURN_IN);     break;
         case BYPASS_TURN_IN:       bypass_go(BYPASS_PEEK_LENGTH); break;
         case BYPASS_TURN_PARALLEL: bypass_go(BYPASS_ALONG);       break;
         default:
@@ -787,11 +790,12 @@ bypass_step_done (void)
 /*!
  * @brief  Act on a bypass check. Width: still ahead -> one more step
  *         sideways; first clear -> one BYPASS_WIDTH_MARGIN_CM step and
- *         check again; clear after the margin -> drive along. Length:
- *         still beside the car's path to the line -> back to parallel
- *         for one more step along, else drive back to the line. Gives
- *         up after BYPASS_MAX_STEPS.
- * @param  b_blocked  True if the obstacle is still within BYPASS_PEEK_CM.
+ *         check again; clear after the margin -> drive along. Side:
+ *         still beside -> one more step along, clear -> BYPASS_PAST_CM
+ *         and turn toward the line. Facing the line: blocked -> back to
+ *         parallel and one more step along, else drive back to the
+ *         line. Gives up after BYPASS_MAX_STEPS.
+ * @param  b_blocked  True if the check saw the obstacle.
  */
 static void
 bypass_peek_result (bool b_blocked)
@@ -822,8 +826,25 @@ bypass_peek_result (bool b_blocked)
             bypass_go(BYPASS_TURN_OUT);
         }
     }
+    else if (BYPASS_PEEK_SIDE == g_nav.bypass)
+    {
+        if (!b_blocked)
+        {
+            bypass_go(BYPASS_PAST);               /* sensor is past it    */
+        }
+        else if (g_nav.length_steps >= BYPASS_MAX_STEPS)
+        {
+            nav_fault(FC_NO_ROUTE, true, DETAIL_BYPASS_TOO_BIG);
+        }
+        else
+        {
+            g_nav.length_steps++;
+            bypass_go(BYPASS_ALONG);
+        }
+    }
     else
     {
+        /* Facing the line after BYPASS_PAST: normally clear. */
         if (!b_blocked)
         {
             bypass_return();
@@ -933,6 +954,101 @@ reacquire_step (nav_in_t const * p_in)
 }
 
 /*!
+ * @brief  Calibration: the awaited spin or turn finished. After the
+ *         compass spin the offsets are applied; both then wait
+ *         CAL_SETTLE_MS with the motors off, so the compass reads true.
+ * @param  now  Time now, ms.
+ */
+static void
+cal_motion_done (uint32_t now)
+{
+    if (CAL_SPIN == g_nav.cal_stage)
+    {
+        imu_terrain_mag_cal_finish();
+        g_nav.cal_stage = CAL_SETTLE_BEFORE;
+        g_nav.cal_ms    = now;
+    }
+    else if (CAL_TURN == g_nav.cal_stage)
+    {
+        g_nav.cal_stage = CAL_SETTLE_AFTER;
+        g_nav.cal_ms    = now;
+    }
+    else
+    {
+        /* Not calibrating. */
+    }
+}
+
+/*!
+ * @brief  Calibration: after the settle wait, note the heading and make
+ *         one BYPASS_TURN_DEG turn on the encoders; after the next wait,
+ *         report the angle the compass saw as EV_TURN_XCHECK (encoder vs
+ *         IMU), so TURN_TRACK_WIDTH_M can be scaled by encoder / IMU.
+ * @param  now  Time now, ms.
+ */
+static void
+cal_settle_step (uint32_t now)
+{
+    uint16_t hdg = 0U;
+
+    if ((CAL_SETTLE_BEFORE == g_nav.cal_stage) &&
+        ((now - g_nav.cal_ms) >= CAL_SETTLE_MS))
+    {
+        g_nav.b_cal_hdg0  = heading_read(&g_nav.cal_hdg0);
+        g_nav.cal_stage   = CAL_TURN;
+        g_nav.pending_seq = motion_control_turn(true, SPEED_TURN_CMS,
+                                                BYPASS_TURN_DEG, false);
+    }
+    else if ((CAL_SETTLE_AFTER == g_nav.cal_stage) &&
+             ((now - g_nav.cal_ms) >= CAL_SETTLE_MS))
+    {
+        g_nav.cal_stage = CAL_IDLE;
+
+        if (g_nav.b_cal_hdg0 && heading_read(&hdg))
+        {
+            /* Headings are 0..719 half degrees: the difference wrapped
+             * to +/-360 is the angle turned; under 180 deg, so the
+             * event's 9-bit field holds it. */
+            int32_t turned = ((int32_t) hdg - (int32_t) g_nav.cal_hdg0) %
+                             FULL_TURN_HALF_DEG;
+
+            turned = (turned > HALF_TURN_HALF_DEG) ?
+                     (turned - FULL_TURN_HALF_DEG) :
+                     ((turned < -HALF_TURN_HALF_DEG) ?
+                      (turned + FULL_TURN_HALF_DEG) : turned);
+            turned = (turned < 0) ? -turned : turned;
+            /* Both values are 0..180 deg, so they fit an int16_t. */
+            telemetry_post_event(EV_TURN_XCHECK, 0U,
+                                 (int16_t) BYPASS_TURN_DEG,
+                                 (int16_t) ((turned + 1) /
+                                            HALF_DEG_PER_DEG));
+        }
+    }
+    else
+    {
+        /* Spinning, turning or settling. */
+    }
+}
+
+/*!
+ * @brief  Compass heading for the calibration check.
+ * @param  p_half_deg  Output heading, 0.5 deg (0..719).
+ * @return True if the IMU is valid and the reading no older than
+ *         IMU_MAX_AGE_MS.
+ */
+static bool
+heading_read (uint16_t * p_half_deg)
+{
+    vehicle_state_t state;
+
+    vehicle_state_read(&state);
+    *p_half_deg = state.heading_half_deg;
+
+    return (state.b_imu_valid &&
+            (systime_stamp_age(state.imu_stamp) <= IMU_MAX_AGE_MS));
+}
+
+/*!
  * @brief  Check the standby range straight ahead (servo centred after the
  *         scan) while the car drives a bypass or return leg. Every forward
  *         leg follows a 90 deg spot turn of ~0.8 s, so by then the 100 ms
@@ -966,7 +1082,7 @@ reset_step (nav_in_t const * p_in)
         g_nav.pending_slot   = NO_SLOT;
         g_nav.bypass         = BYPASS_NONE;
         g_nav.b_on_line_step = false;
-        g_nav.b_mag_cal      = false;
+        g_nav.cal_stage      = CAL_IDLE;
         enter(NAV_READY);
     }
 }

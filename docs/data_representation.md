@@ -22,7 +22,7 @@ Rules applied everywhere:
 
 ## 1. Shared vehicle state record (`vehicle_state.c`, mutex `state_mtx`)
 
-Was 52 bytes of floats and bytes (`motion_state_t`); now 132 bits =
+Was 52 bytes of floats and bytes (`motion_state_t`); now 131 bits =
 **17 bytes**, packed with `bitpack.c`, read as a whole snapshot.
 
 | Field | Writer | Range / step | Bits | Was |
@@ -37,7 +37,6 @@ Was 52 bytes of floats and bytes (`motion_state_t`); now 132 bits =
 | hump peak | IMU | 0..127.5 mm, 0.5 mm | 8 | float |
 | motion class | IMU | 0..3 | 2 | uint8 |
 | IMU valid | IMU | flag | 1 | (none) |
-| magnetometer calibrated | IMU | flag | 1 | (none) |
 | IMU time stamp | IMU | ms modulo 65536 | 16 | (none) |
 | raw line sensors | Line | 2 x black/white | 2 | int8 pos + 2 bools |
 | last barcode | Line | none / slot 0..3 of the table | 3 | char |

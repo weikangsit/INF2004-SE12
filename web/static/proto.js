@@ -53,7 +53,8 @@
   // EV_FAULT stall detail bits (motion.c): which wheel had no encoder edges, or the time limit
   const stallReason = (d) => [d & 1 ? "LEFT wheel stopped" : "", d & 2 ? "RIGHT wheel stopped" : "",
                               d & 4 ? "time limit" : ""].filter(Boolean).join(", ");
-  const CMDS = { start: 0, stop: 1, estop: 2, finish: 3, reset: 4, motor_test: 5, deadband_test: 6 };
+  const CMDS = { start: 0, stop: 1, estop: 2, finish: 3, reset: 4, motor_test: 5, deadband_test: 6,
+                 mag_cal: 7 };
   const COUNTS_PER_UNIT = 4;   // motor-test counts are sent divided by 4
   const CMD_TAG = 0x40;
   const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";

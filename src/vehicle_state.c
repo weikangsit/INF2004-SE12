@@ -24,7 +24,6 @@ typedef enum
     VS_HUMP,
     VS_CLASS,
     VS_IMU_VALID,
-    VS_MAG_CAL,
     VS_IMU_STAMP,
     VS_IR,
     VS_BARCODE,
@@ -32,7 +31,7 @@ typedef enum
     VS_FIELD_COUNT
 } vs_field_t;
 
-#define PACKED_BYTES         (17U)        /* 132 bits, rounded up        */
+#define PACKED_BYTES         (17U)        /* 131 bits, rounded up        */
 
 /** Packed layout: width and signedness of each field. */
 static bitpack_field_t const g_layout[VS_FIELD_COUNT] =
@@ -49,7 +48,6 @@ static bitpack_field_t const g_layout[VS_FIELD_COUNT] =
     { 8U,  false },   /* hump peak, 0.5 mm: 0..127.5 mm                  */
     { 2U,  false },   /* motion class 0..3                               */
     { 1U,  false },   /* IMU valid                                       */
-    { 1U,  false },   /* magnetometer calibrated                         */
     { 16U, false },   /* IMU time stamp, ms modulo 65536                 */
     { 2U,  false },   /* raw line sensors                                */
     { 3U,  false },   /* last barcode: slot 0..3 + valid                 */
@@ -106,7 +104,6 @@ vehicle_state_read (vehicle_state_t * p_out)
     p_out->hump_peak_half_mm = (uint16_t) field_get(copy, VS_HUMP);
     p_out->motion_class      = (uint8_t) field_get(copy, VS_CLASS);
     p_out->b_imu_valid       = (0 != field_get(copy, VS_IMU_VALID));
-    p_out->b_mag_calibrated  = (0 != field_get(copy, VS_MAG_CAL));
     p_out->imu_stamp         = (uint16_t) field_get(copy, VS_IMU_STAMP);
     p_out->ir_black          = (uint8_t) field_get(copy, VS_IR);
     p_out->last_barcode      = (uint8_t) field_get(copy, VS_BARCODE);
@@ -151,7 +148,6 @@ vehicle_state_set_imu (vehicle_state_t const * p_imu)
     field_put(VS_HUMP, p_imu->hump_peak_half_mm);
     field_put(VS_CLASS, p_imu->motion_class);
     field_put(VS_IMU_VALID, p_imu->b_imu_valid ? 1 : 0);
-    field_put(VS_MAG_CAL, p_imu->b_mag_calibrated ? 1 : 0);
     field_put(VS_IMU_STAMP, p_imu->imu_stamp);
     unlock();
 }

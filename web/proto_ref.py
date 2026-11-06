@@ -38,7 +38,7 @@ EVENT_LAYOUT = {
 EVENT_KIND_BITS = 4
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 CMDS = {"start": 0, "stop": 1, "estop": 2, "finish": 3, "reset": 4, "motor_test": 5,
-        "deadband_test": 6}
+        "deadband_test": 6, "mag_cal": 7}
 CMD_TAG = 0x40
 
 

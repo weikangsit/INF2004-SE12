@@ -203,6 +203,7 @@ byte or length is ignored.
 | 0x44 | reset fault | FAULT, MISSION_DONE |
 | 0x45 | bench motor test | READY, FAULT, MISSION_DONE |
 | 0x46 | bench dead-band test | READY, FAULT, MISSION_DONE |
+| 0x47 | compass calibration spin, then one 90 deg turn checked by the compass (TURN_XCHECK) | READY |
 
 On an e-stop the MQTT link sets `EVT_ESTOP` itself, before passing the
 command to the Navigation FSM. The Safety Monitor (priority 1) therefore

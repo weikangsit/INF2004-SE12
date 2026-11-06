@@ -7,7 +7,9 @@
  *  SCAN_MAX_DEG (coarse, then fine around the closest hit), builds the
  *  obstacle profile and suggests a route (obstacle_profile.h). During a
  *  bypass, PEEK pings PEEK_RIGHT_DEG, centre and PEEK_LEFT_DEG and answers
- *  whether the obstacle is still within BYPASS_PEEK_CM. The scan
+ *  whether the obstacle is still within BYPASS_PEEK_CM; SIDE pings
+ *  BYPASS_SIDE_DEG and answers whether it is still beside the car
+ *  (within BYPASS_SIDE_CM). The scan
  *  never drives the motors; the Navigation FSM acts on the suggestion
  *  (Tribunal 1 interface rule). A missing echo is invalid, never clear.
  */
@@ -24,7 +26,8 @@
 
 /** Messages for the Navigation FSM (1 byte, 3 bits). The route results
  *  take their values from obstacle_route_t, so a route converts to a
- *  result unchanged; PEEK_* answer ultrasonic_scan_peek(). */
+ *  result unchanged; PEEK_* answer ultrasonic_scan_peek() and
+ *  ultrasonic_scan_side_peek(). */
 typedef enum
 {
     US_RESULT_CONTINUE = OBSTACLE_ROUTE_CONTINUE,
@@ -44,6 +47,7 @@ void     ultrasonic_scan_abort (void);
 bool     ultrasonic_scan_result_take (us_result_t * p_result);
 uint16_t ultrasonic_scan_front_cm (void);
 void     ultrasonic_scan_peek (void);
+void     ultrasonic_scan_side_peek (void);
 bool     ultrasonic_scan_is_ok (void);
 
 #endif /* ULTRASONIC_SCAN_H */

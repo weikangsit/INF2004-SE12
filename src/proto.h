@@ -90,6 +90,7 @@ typedef enum
     PROTO_CMD_RESET,
     PROTO_CMD_MOTOR_TEST,
     PROTO_CMD_DEADBAND_TEST,
+    PROTO_CMD_MAG_CAL,
     PROTO_CMD_COUNT
 } proto_cmd_t;
 

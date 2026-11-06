@@ -30,13 +30,15 @@
 #define TENTHS               (10U)
 #define TENTHS_NO_ECHO       (5110)     /* 511 cm = no echo in EV_OBSTACLE */
 #define Q_DEPTH              (4U)
+#define ARRAY_LEN(a)         (sizeof(a) / sizeof((a)[0]))
 #define MBF_SLOT_BYTES       (8U)       /* 4-byte header + 1 byte         */
 
 typedef enum
 {
     SCAN_REQ_PROFILE = 0,
     SCAN_REQ_ABORT,
-    SCAN_REQ_PEEK               /* bypass check: is the obstacle ahead?   */
+    SCAN_REQ_PEEK,              /* bypass check: is the obstacle ahead?   */
+    SCAN_REQ_SIDE               /* bypass check: is it still beside us?   */
 } scan_req_t;
 
 static ID                g_req_q      = 0;
@@ -48,7 +50,8 @@ static uint32_t          g_servo_deg  = SERVO_CENTRE_DEG;   /* task only */
 static uint16_t         ping_cm (void);
 static uint16_t         ping_at (uint32_t angle_deg);
 static RELTIM           servo_turn (uint32_t angle_deg);
-static bool             peek_ahead (void);
+static bool             peek_rays (uint32_t const * p_angles,
+                                   uint32_t count, uint16_t reach_cm);
 static obstacle_route_t scan_and_plan (void);
 static uint32_t         sweep_coarse (obstacle_ray_t * p_rays);
 static uint32_t         sweep_fine (obstacle_ray_t * p_rays, uint32_t count,
@@ -108,8 +111,21 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
             }
             else if (SCAN_REQ_PEEK == req)
             {
-                result_post(peek_ahead() ? US_RESULT_PEEK_BLOCKED :
-                                           US_RESULT_PEEK_CLEAR);
+                static uint32_t const ahead[] =
+                {
+                    PEEK_RIGHT_DEG, SERVO_CENTRE_DEG, PEEK_LEFT_DEG
+                };
+
+                result_post(peek_rays(ahead, ARRAY_LEN(ahead), BYPASS_PEEK_CM) ?
+                            US_RESULT_PEEK_BLOCKED : US_RESULT_PEEK_CLEAR);
+                next_us = time_us_64();
+            }
+            else if (SCAN_REQ_SIDE == req)
+            {
+                static uint32_t const side[] = { BYPASS_SIDE_DEG };
+
+                result_post(peek_rays(side, ARRAY_LEN(side), BYPASS_SIDE_CM) ?
+                            US_RESULT_PEEK_BLOCKED : US_RESULT_PEEK_CLEAR);
                 next_us = time_us_64();
             }
             else
@@ -134,8 +150,22 @@ ultrasonic_scan_task (INT stacd, void * p_exinf)
 void
 ultrasonic_scan_peek (void)
 {
-    /* scan_req_t is 0..2 and the message is 1 byte. */
+    /* scan_req_t is 0..3 and the message is 1 byte. */
     uint8_t const req = (uint8_t) SCAN_REQ_PEEK;
+
+    (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
+}
+
+/*!
+ * @brief  Ask whether the obstacle is still beside the car (Navigation
+ *         FSM, car stopped while driving along it). Answers
+ *         US_RESULT_PEEK_CLEAR or US_RESULT_PEEK_BLOCKED.
+ */
+void
+ultrasonic_scan_side_peek (void)
+{
+    /* scan_req_t is 0..3 and the message is 1 byte. */
+    uint8_t const req = (uint8_t) SCAN_REQ_SIDE;
 
     (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
 }
@@ -146,7 +176,7 @@ ultrasonic_scan_peek (void)
 void
 ultrasonic_scan_request (void)
 {
-    /* scan_req_t is 0..2 and the message is 1 byte. */
+    /* scan_req_t is 0..3 and the message is 1 byte. */
     uint8_t const req = (uint8_t) SCAN_REQ_PROFILE;
 
     (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
@@ -158,7 +188,7 @@ ultrasonic_scan_request (void)
 void
 ultrasonic_scan_abort (void)
 {
-    /* scan_req_t is 0..2 and the message is 1 byte. */
+    /* scan_req_t is 0..3 and the message is 1 byte. */
     uint8_t const req = (uint8_t) SCAN_REQ_ABORT;
 
     (void) tk_snd_mbf(g_req_q, &req, (INT) sizeof(req), TMO_POL);
@@ -275,36 +305,33 @@ servo_turn (uint32_t angle_deg)
 }
 
 /*!
- * @brief  Bypass check: ping at PEEK_RIGHT_DEG, centre and PEEK_LEFT_DEG
- *         (the strip just ahead of the car's full width, not just the
- *         centre beam), then centre.
+ * @brief  Bypass check: ping each angle, then centre the servo.
  *
  *  A missing echo is pinged once more: a dropout (3.3 V supply, angled
  *  face) rarely repeats, but open space never answers. Only a second
  *  missing echo counts as no obstacle on that ray.
  *
- * @return True if any echo is nearer than BYPASS_PEEK_CM.
+ * @param  p_angles  Servo angles to ping.
+ * @param  count     Number of angles.
+ * @param  reach_cm  An echo nearer than this means blocked.
+ * @return True if any ray is blocked.
  */
 static bool
-peek_ahead (void)
+peek_rays (uint32_t const * p_angles, uint32_t count, uint16_t reach_cm)
 {
-    static uint32_t const angles[] =
-    {
-        PEEK_RIGHT_DEG, SERVO_CENTRE_DEG, PEEK_LEFT_DEG
-    };
     bool     b_blocked = false;
     uint32_t idx       = 0U;
 
-    for (idx = 0U; idx < (sizeof(angles) / sizeof(angles[0])); idx++)
+    for (idx = 0U; idx < count; idx++)
     {
-        uint16_t range = ping_at(angles[idx]);
+        uint16_t range = ping_at(p_angles[idx]);
 
         if (US_RANGE_NO_ECHO == range)
         {
-            range = ping_at(angles[idx]);         /* retry once           */
+            range = ping_at(p_angles[idx]);       /* retry once           */
         }
 
-        if ((US_RANGE_NO_ECHO != range) && (range < BYPASS_PEEK_CM))
+        if ((US_RANGE_NO_ECHO != range) && (range < reach_cm))
         {
             b_blocked = true;
         }

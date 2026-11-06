@@ -9,9 +9,9 @@
  *    acceleration jerks are not reported as humps.
  *  - Impact (collision): sudden horizontal jump of one sample.
  *  - Over-tilt: beyond OVERTILT_DEG for OVERTILT_HOLD_MS.
- *  - Hard-iron magnetometer calibration on request (GP21 held in READY):
- *    the car spins once while this task records min / max; the task keeps
- *    its 20 ms period and heartbeat throughout.
+ *  - Hard-iron magnetometer calibration on request (dashboard "Calibrate
+ *    compass" in READY): the car spins once while this task records
+ *    min / max; the task keeps its 20 ms period and heartbeat throughout.
  *
  *  NOTE: Floats are used only for the local signal processing (Tribunal 1:
  *  full precision inside a task, packed shared data).
@@ -73,9 +73,9 @@
 #define AXIS_Y               (1U)
 #define AXIS_Z               (2U)
 #define BIG                  (1.0e6f)
+#define MAG_CAL_FAILED       (1U)
 #define EVT_Q_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)         /* 4-byte header + 1 byte       */
-#define MAG_CAL_FAILED       (1U)
 
 #define CLASS_STILL          (0U)
 #define CLASS_MOVING         (1U)
@@ -114,7 +114,6 @@ static ID            g_evt_q            = 0;
 static volatile bool gb_ok             = false;
 static volatile bool gb_cal_start_req  = false;   /* Nav sets, task clears */
 static volatile bool gb_cal_finish_req = false;
-static bool          gb_mag_calibrated = false;   /* task only            */
 static vec3_t        g_mag_off;                    /* task only, gauss     */
 static imu_ctx_t     g_ctx;                        /* task only            */
 
@@ -460,7 +459,6 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
         HALVES);
     out.motion_class      = cls;
     out.b_imu_valid       = true;
-    out.b_mag_calibrated  = gb_mag_calibrated;
     out.imu_stamp         = systime_stamp();
     vehicle_state_set_imu(&out);
 }
@@ -745,7 +743,6 @@ mag_cal_step (vec3_t const * p_mag)
                                       g_ctx.cal_max.axis[AXIS_X]) / HALVES;
             g_mag_off.axis[AXIS_Y] = (g_ctx.cal_min.axis[AXIS_Y] +
                                       g_ctx.cal_max.axis[AXIS_Y]) / HALVES;
-            gb_mag_calibrated     = true;
         }
 
         /* Result code 0 or 1 fits a uint8_t. */

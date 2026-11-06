@@ -3,7 +3,7 @@
  *           writer per field group).
  *
  *  Change Requirement 1: the record is stored packed, each field in only
- *  the bits its range needs (132 bits = 17 bytes, was 52 bytes of floats).
+ *  the bits its range needs (131 bits = 17 bytes, was 52 bytes of floats).
  *  A writer packs its group and a reader unpacks a whole snapshot, both
  *  under the priority-inheritance mutex, so a read-modify-write of the
  *  shared bytes can never interleave with another task's.
@@ -45,7 +45,6 @@ typedef struct
     uint16_t hump_peak_half_mm;  /* 0.5 mm, 8 bits                        */
     uint8_t  motion_class;       /* 0 still, 1 moving, 2 turning, 3 hump  */
     bool     b_imu_valid;        /* IMU reads succeeding, 1 bit           */
-    bool     b_mag_calibrated;   /* hard-iron offsets measured, 1 bit     */
     uint16_t imu_stamp;          /* systime_stamp() of the IMU fields     */
     /* Line / Barcode */
     uint8_t  ir_black;           /* VEHICLE_IR_*, 2 bits                  */

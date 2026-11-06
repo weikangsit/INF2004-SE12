@@ -277,7 +277,7 @@ def test_firmware(cpu):
         cpu.write(RAM, [byte])
         cpu.write(RAM + 0x10, [0xEE])
         ok = cpu.call("proto_unpack_cmd", RAM, 1, RAM + 0x10) & 0xFF
-        want = (byte & 0xF8) == 0x40 and (byte & 7) <= 6
+        want = (byte & 0xF8) == 0x40 and (byte & 7) <= 7
         check(bool(ok) == want, f"cmd byte {byte:#04x}")
         if want:
             check(cpu.read(RAM + 0x10, 1)[0] == byte & 7, f"cmd id for {byte:#04x}")

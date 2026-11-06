@@ -233,7 +233,7 @@ proto_unpack_cmd (uint8_t const * p_frame, uint32_t len, proto_cmd_t * p_cmd)
     {
         uint32_t cmd_id = (uint32_t) p_frame[0] & CMD_ID_MASK;  /* byte */
 
-        /* PROTO_CMD_COUNT is 7, so the cast keeps its value. */
+        /* PROTO_CMD_COUNT is 8, so the cast keeps its value. */
         if (cmd_id < (uint32_t) PROTO_CMD_COUNT)
         {
             /* cmd_id is below PROTO_CMD_COUNT, so it is a valid enum value. */

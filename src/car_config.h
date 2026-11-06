@@ -82,9 +82,10 @@
 #define WHEEL_DIAMETER_M     (0.065f)
 #define TRACK_WIDTH_M        (0.110f)  /* wheel centre-to-centre, measured */
 /* Track width for spot turns only: the tyres scrub, so the encoders need
- * more travel per degree than TRACK_WIDTH_M gives. TUNE: command a 90 deg
- * turn on the floor and scale by 90 / the angle turned.                */
-#define TURN_TRACK_WIDTH_M   (0.165f)
+ * more travel per degree than TRACK_WIDTH_M gives. TUNE on the track:
+ * dashboard "Calibrate compass" in READY ends with one checked 90 deg
+ * turn ("turn check: encoder 90 vs IMU x"); scale this by 90 / x.      */
+#define TURN_TRACK_WIDTH_M   (0.179f)  /* 0.165 x 90 / 83 (turn check) */
 /* Initial guesses; the power-on self-test measures the real count
  * direction of each encoder and overrides them.                        */
 #define ENC_SIGN_LEFT        (-1)
@@ -152,7 +153,6 @@
  * on circles of 8-30 cm radius: 13 cm/s lost circles under ~12 cm,
  * 8 cm/s held all of them and wandered less on straights.              */
 #define SPEED_STEER_CMS      ((11U * SPEED_SCALE_PCT) / 100U)  /* 8     */
-#define MAG_CAL_SPEED_CMS    (8U)      /* slow spin while calibrating   */
 
 /* Line steering: wheel speed differential while one sensor sees black.
  * LINE_STEER_DIR +1 steers toward the black sensor, -1 away from it.   */
@@ -169,11 +169,6 @@
  * jerky curves). TUNE: longer = smoother, slower on S-bends.           */
 #define LINE_SLOW_HOLD_MS    (400U)
 #define K_DIST_EQ            (2.00f)   /* m/s per m of wheel mismatch   */
-/* Off-line straight runs hold on the wheel encoders only: the heading is
- * magnetometer-only and shifts once the motors draw current, which bent
- * the bypass return leg into an arc. Set > 0 only after checking the
- * heading with the motors running (Week 6 A4).                         */
-#define K_HEADING            (0.0f)    /* m/s per degree heading error  */
 /* Straight runs without line following: the heading / distance hold
  * may change each wheel by at most this fraction of the speed, so
  * neither wheel stops or reverses (0.5: each keeps >= half). TUNE.     */
@@ -291,7 +286,11 @@
 /* The tilt must last this long: motor jerks are shorter (measured:
  * false over-tilt trips on motor jerks). TUNE.                         */
 #define OVERTILT_HOLD_MS     (200U)
-#define MAG_CAL_SPIN_DEG     (360U)    /* one slow turn on GP21 hold    */
+/* Compass calibration spin (dashboard cmd): more than a full turn, so
+ * min / max cover the whole circle even when encoder turns come up
+ * short (measured: a 360 deg request stopped short).                   */
+#define MAG_CAL_SPIN_DEG     (450U)
+#define MAG_CAL_SPEED_CMS    (8U)      /* slow spin while calibrating   */
 #define MAG_CAL_MIN_SPAN_GS  (0.10f)   /* each axis must change by this */
 
 /* ------------------------------------------------------------------ */
@@ -320,29 +319,47 @@
 /* Rectangular bypass with 90 deg spot turns: the out-leg runs parallel
  * to the obstacle's face (the car stops ~12 cm from it).               */
 #define BYPASS_TURN_DEG      (90U)
-/* Step-and-check bypass (any obstacle size, team flow):
- *  width:  turn out, drive BYPASS_STEP_CM, turn back to the original
- *          heading and check; obstacle still ahead -> repeat.
- *  length: drive along (BYPASS_ALONG_FIRST_CM, then BYPASS_STEP_CM),
- *          turn toward the line and check; obstacle still there ->
- *          turn back to parallel and repeat.
- * A check pings at PEEK_RIGHT_DEG, centre and PEEK_LEFT_DEG; any echo
- * nearer than BYPASS_PEEK_CM means the obstacle is still in the way.
- * TUNE.                                                                */
-#define BYPASS_STEP_CM       (30U)
-#define BYPASS_ALONG_FIRST_CM (30U)    /* stop gap 12 cm + sensor-axle  */
+/* Step-and-check bypass in small steps (team flow; measured car: sensor
+ * 7.5 cm ahead of the axle, half width 7.5 cm, front corners 10.6 cm
+ * from the axle, so a spot turn swings them 3.1 cm past the side).
+ *  width:  turn out, drive BYPASS_STEP_CM, face forward and check ahead;
+ *          blocked -> repeat; clear -> one BYPASS_WIDTH_MARGIN_CM step
+ *          and check again.
+ *  length: drive along (BYPASS_ALONG_FIRST_CM, then BYPASS_ALONG_STEP_CM)
+ *          and check sideways after each step, without turning; clear
+ *          -> drive BYPASS_PAST_CM, turn toward the line, check ahead;
+ *          blocked -> turn back and continue along.
+ * Ahead checks ping PEEK_RIGHT_DEG, centre, PEEK_LEFT_DEG (blocked under
+ * BYPASS_PEEK_CM); side checks ping BYPASS_SIDE_DEG (under
+ * BYPASS_SIDE_CM). TUNE.                                               */
+#define BYPASS_STEP_CM       (20U)
 #define BYPASS_PEEK_CM       (20U)
 /* Bypass side: 1 = left (anti-clockwise runs), 0 = right (clockwise),
  * so the car goes round on the track's inside. The scan still decides
  * whether a bypass is needed and safe; its side choice is not used.   */
 #define BYPASS_ON_LEFT       (1)
-/* Once the width check reads clear, one more sideways step this long,
- * then check again. "Clear" can leave the car's side only ~2.5 cm from
- * the edge (a 60 deg ray at 20 cm reaches 10 cm out, half width 7.5),
- * and a 90 deg spot turn swings the corners ~5 cm wider than the body
- * (measured: the turn toward the line hit the obstacle). 10 cm leaves
- * >= 12.5 cm, 7.5 cm spare. TUNE: + extra if the corners swing more.  */
-#define BYPASS_WIDTH_MARGIN_CM (10U)
+/* After the first clear width check. At that check the obstacle face is
+ * 12-15 cm ahead of the sensor, where a 60 deg ray is 6.9-8.7 cm to the
+ * side, so "clear" can leave the edge 0.6 cm inside the half width. 8 cm
+ * leaves a side gap of >= 7.4 cm: the turn toward the line clears it
+ * (swing 3.1 cm), and afterwards the sensor faces the obstacle at the
+ * side gap, 7.4-27.4 cm: reliable range.                              */
+#define BYPASS_WIDTH_MARGIN_CM (8U)
+/* First drive along puts the sensor >= 5 cm past the obstacle's face
+ * (stop gap at most US_OBSTACLE_CM 15), so the first side check is
+ * already beside the obstacle; then BYPASS_ALONG_STEP_CM steps.       */
+#define BYPASS_ALONG_FIRST_CM (20U)
+#define BYPASS_ALONG_STEP_CM (20U)
+/* Side check: obstacle on the right of a left bypass (servo 15 deg, the
+ * sweep end), on the left of a right one. It sits side gap + half width
+ * = 15-35 cm from the sensor; under BYPASS_SIDE_CM means still there.  */
+#define BYPASS_SIDE_DEG ((0 != BYPASS_ON_LEFT) ? SCAN_MIN_DEG : SCAN_MAX_DEG)
+#define BYPASS_SIDE_CM       (45U)
+/* Once the side reads clear the obstacle ends at most ~1 cm ahead of the
+ * sensor (the 15 deg ray leans forward), i.e. 8.5 cm ahead of the axle.
+ * Driving 20 cm more puts it behind the car's back side once it turns
+ * toward the line (7.5 cm behind the axle), with 4 cm spare.           */
+#define BYPASS_PAST_CM       (20U)
 /* Check rays, fixed and not SCAN_MIN/MAX_DEG: at BYPASS_PEEK_CM a 60 deg
  * ray is 10 cm to the side and 17 cm ahead, just outside the car's
  * half width (7.5 cm), so the check sees the strip the body drives
@@ -351,8 +368,8 @@
 #define PEEK_RIGHT_DEG       (60U)
 #define PEEK_LEFT_DEG        (120U)
 /* Steps per side (width or length) before giving up with FC_NO_ROUTE
- * detail 3 ("obstacle too large"): 8 x 30 = 240 cm.                    */
-#define BYPASS_MAX_STEPS     (8U)
+ * detail 3 ("obstacle too large"): 10 x 20 = 200 cm.                   */
+#define BYPASS_MAX_STEPS     (10U)
 /* Return leg toward the line: the measured sideways steps plus this
  * much extra before the car gives up (FC_REACQUIRE).                   */
 #define BYPASS_RETURN_EXTRA_CM (15U)
@@ -362,9 +379,9 @@
  * TUNE: measure on the car. 0 turns as soon as the line is seen.       */
 #define LINE_SENSOR_AHEAD_CM (8U)
 /* Backstop over the longest return leg (BYPASS_MAX_STEPS x
- * BYPASS_STEP_CM + extra at SPEED_SEARCH_CMS ~15 s), the axle step and
- * the turn. TUNE.                                                      */
-#define REACQUIRE_TIMEOUT_MS (25000U)
+ * BYPASS_STEP_CM + margin + extra, ~2.2 m at SPEED_SEARCH_CMS ~25 s),
+ * the axle step and the turn. TUNE.                                    */
+#define REACQUIRE_TIMEOUT_MS (30000U)
 
 /* ------------------------------------------------------------------ */
 /* Navigation                                                           */
@@ -373,7 +390,10 @@
 #define BARCODE_TURN_DEG     (90U)
 #define BARCODE_STRAIGHT_CM  (10U)
 #define UTURN_DEG            (180U)
-#define BTN_LONG_PRESS_MS    (2000U)   /* GP21 hold in READY: mag cal   */
+/* Dashboard calibration: after the compass spin and after the 90 deg
+ * check turn the car waits this long, motors off, before reading the
+ * heading (> 10 IMU samples, offsets applied).                       */
+#define CAL_SETTLE_MS        (300U)
 
 /* ------------------------------------------------------------------ */
 /* Safety: per-task heartbeat deadlines (Week 6 feedback)               */

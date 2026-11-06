@@ -45,6 +45,7 @@
 /* Bend detector for the barcode hold: encoder yaw sampled every
  * BEND_SAMPLE_MM, so the window spans BEND_SAMPLES x BEND_SAMPLE_MM. */
 #define BEND_SAMPLES         (8U)
+#define XCHECK_MAX_DEG       (180.0f)      /* compass range of a turn     */
 #define BEND_SAMPLE_MM       (BAR_BEND_WINDOW_MM / (float32_t) BEND_SAMPLES)
 #define PCT_PER_UNIT         (100.0f)
 #define PM_PER_UNIT          (1000.0f)
@@ -717,7 +718,8 @@ targets_set (motion_in_t const * p_in)
  *
  *  On the line: steer toward the sensor that sees black and slow to
  *  SPEED_STEER_CMS while correcting. Off the line: equalise wheel
- *  distance (and hold the IMU heading if K_HEADING > 0).
+ *  distance (encoders only: the magnetometer-only heading shifts once
+ *  the motors draw current and bent the run into an arc).
  *
  * @param  p_in  Inputs of this period.
  * @return True when the commanded distance is covered.
@@ -756,12 +758,9 @@ straight_targets (motion_in_t const * p_in)
     {
         float32_t const d_err = (g_ctx.dist_l - g_ctx.dist_l0) -
                                 (g_ctx.dist_r - g_ctx.dist_r0); /* + right */
-        float32_t const h_err = (g_ctx.b_hdg0 && p_in->b_imu_fresh) ?
-                                wrap180(p_in->heading_deg - g_ctx.hdg0) :
-                                0.0f;
 
         /* The wheel that has travelled further is slowed. */
-        steer  = -((K_DIST_EQ * d_err) + (K_HEADING * h_err));
+        steer  = -(K_DIST_EQ * d_err);
         b_hold = true;
     }
 
@@ -970,7 +969,10 @@ turn_targets (motion_in_t const * p_in)
         /* Keep turning. */
     }
 
-    if (b_done && g_ctx.b_hdg0 && p_in->b_imu_fresh)
+    /* The compass shows a heading difference of at most 180 deg, so
+     * longer turns (the calibration spin) cannot be checked. */
+    if (b_done && g_ctx.b_hdg0 && p_in->b_imu_fresh &&
+        (g_ctx.angle_deg <= XCHECK_MAX_DEG))
     {
         float32_t const imu_turn = fabsf(wrap180(p_in->heading_deg -
                                                  g_ctx.hdg0));

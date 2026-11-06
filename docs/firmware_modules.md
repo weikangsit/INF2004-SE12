@@ -15,7 +15,7 @@ and no hardware headers (see `port.h`).
 | `motor_driver` | Buddy 2 | SDK side | motor PWM, encoders, Safety motor-inhibit latch | GPIO ISR |
 | `sensor_line` | Buddy 3 | Line / Barcode, prio 2 | newest 2-bit line reading (stamped), line events, black age | - |
 | `barcode`, `bar_filter`, `code39` | Buddy 3 | in the Line task / libraries | table slot (0..3) of the decoded A-Z letter (`bar_cmd_q`) | raw barcode edges (GPIO ISR) |
-| `imu_terrain` | Buddy 4 | IMU, prio 5 | attitude, heading, hump, class, valid / calibrated / stamp; hump events; collision / over-tilt to Safety | distance and speeds |
+| `imu_terrain` | Buddy 4 | IMU, prio 5 | attitude, heading, hump, class, valid / stamp; hump events; collision / over-tilt to Safety | distance and speeds |
 | `ultrasonic_scan`, `obstacle_profile` | Buddy 5 | Ultrasonic, prio 6 / library | front range (read by Nav every period), route suggestion, bypass check (never drives) | scan requests |
 | `nav_fsm` | team | Nav, prio 4 | system state, all movement commands | every module above |
 | `safety` | team | Safety, prio 1 | latch, heartbeat supervision, braking | heartbeats, fault events, radio liveness |
@@ -56,7 +56,13 @@ and no hardware headers (see `port.h`).
 * Over-tilt must last 200 ms; humps need 10 mm of real climb; speed
   set-points ramp at 0.5 m/s^2 (all to stop motor jerks reading as
   tilt / hump / impact; NFR3's 100 ms now counts from the confirmed tilt).
-* Magnetometer calibration: hold GP21 for 2 s in READY (car spins once).
+* Dashboard calibration ("Calibrate compass + check 90°", command 0x47,
+  READY only), replacing the GP21 hold: a 450 deg slow spin calibrates the
+  compass; the car then waits 300 ms (motors off), notes the heading,
+  makes one 90 deg encoder turn, waits again and logs "turn check:
+  encoder 90 vs IMU x". Scale `TURN_TRACK_WIDTH_M` by 90 / x. Turns use
+  the encoders only. GP21 is now only a short press: line calibration in
+  READY, reset in FAULT.
 * `line_pos_q` became a single stamped word (newest value only).
 * Servo mount raised, so the Version C interim (reverse 40 cm, scan
   60-120 deg) is removed: the car scans 15-165 deg where it stopped. The
@@ -66,20 +72,28 @@ and no hardware headers (see `port.h`).
 * Obstacle detection while following reads the standby range every period
   instead of a one-shot message, so an obstacle that came into view during
   a barcode turn is still caught (Week 6 feedback).
+* Step bypass: 20 cm sideways steps, an 8 cm margin, then 20 cm steps
+  along with a sideways ultrasonic check after each,
+  no turning; once the side is clear the car drives 20 cm more, turns
+  toward the line and checks ahead. Replaces 30 cm steps and the 65 cm
+  first drive, which strayed far and missed obstacles too close to the
+  sensor or beyond its 20 cm reach.
 * Margin step: after the first clear width check the car steps out
-  `BYPASS_WIDTH_MARGIN_CM` (10) more and checks again, so the spot turn
+  `BYPASS_WIDTH_MARGIN_CM` (8) more and checks again, so the spot turn
   toward the line clears the obstacle's edge (measured: it hit it).
 * Straight runs off the line (bypass legs, return leg, barcode straight)
-  hold on the wheel encoders only (`K_HEADING` 0): the magnetometer-only
+  hold on the wheel encoders only (the compass term is removed): the magnetometer-only
   heading shifted with the motors running and bent the return leg into an
   arc (measured).
 * Step-and-check bypass (any obstacle size, team flow): 90 deg spot
   turns. Width: turn out, step BYPASS_STEP_CM, face forward and check
-  (pings at PEEK_RIGHT_DEG 60, centre, PEEK_LEFT_DEG 120, hit under
-  BYPASS_PEEK_CM; a missing echo is pinged again once); blocked -> step again. Length: drive along, turn
-  toward the line and check; blocked -> turn back and step along again.
-  The return leg is the measured sideways steps plus a margin. More
-  than BYPASS_MAX_STEPS either way stops with FC_NO_ROUTE detail 3.
+  ahead (PEEK_RIGHT_DEG 60, centre, PEEK_LEFT_DEG 120, hit under
+  BYPASS_PEEK_CM; a missing echo is pinged again once); blocked -> step
+  again. Length: step along and check sideways (BYPASS_SIDE_DEG, hit
+  under BYPASS_SIDE_CM); clear -> BYPASS_PAST_CM, turn toward the line
+  and check ahead. The return leg is the measured sideways steps plus a
+  margin. More than BYPASS_MAX_STEPS either way stops with FC_NO_ROUTE
+  detail 3.
 
 ## Tuning history (moved out of `car_config.h`)
 
