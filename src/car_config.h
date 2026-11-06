@@ -259,6 +259,13 @@
  * on curves, car ran straight off) still steers. Junctions and
  * calibration use the raw reading. 30 ms = 6.6 mm at cruise. TUNE.     */
 #define LINE_BLACK_HOLD_MS   (30U)
+/* Junction = left and right raw black within this window, not only in
+ * the same 5 ms sample: the follower steers toward the first sensor to
+ * reach the cross line, so the other one can get there a little later.
+ * One junction per crossing: both must read white for the window before
+ * another is reported. 150 ms = 3.4 cm at cruise. Raise it if junctions
+ * are still missed; lower it if the car acts early on a curve. TUNE.  */
+#define JUNCTION_WINDOW_MS   (250U)
 
 /* ------------------------------------------------------------------ */
 /* IMU (Week 6 Section 3, Assumption A4)                                */
@@ -389,6 +396,12 @@
 #define INIT_TIMEOUT_MS      (15000U)
 #define BARCODE_TURN_DEG     (90U)
 #define BARCODE_STRAIGHT_CM  (10U)
+/* At a junction the line sensors reach the cross line before the axle:
+ * drive this far first so the spot turn pivots on the junction and the
+ * sensors swing onto the branch (Left, Right, U-turn). Line sensors to
+ * axle (measured 6 cm) plus about half the line width. 0 = turn at once.
+ * TUNE: turns too early -> raise; overshoots the branch -> lower.     */
+#define JUNCTION_AHEAD_CM    (LINE_SENSOR_AHEAD_CM)
 #define UTURN_DEG            (180U)
 /* Dashboard calibration: after the compass spin and after the 90 deg
  * check turn the car waits this long, motors off, before reading the

@@ -138,6 +138,8 @@ typedef struct
                                              latest barcode wins)         */
     bypass_step_t   bypass;
     bool            b_bypass_left;
+    barcode_map_action_t bar_turn;        /* turn to make once the axle
+                                             reaches the junction        */
     bool            b_on_line_step;       /* reacquire: line seen, axle
                                              being driven onto it        */
     int32_t         leg_start_mm;         /* start of a sideways step    */
@@ -415,10 +417,25 @@ state_step (nav_in_t const * p_in)
             case NAV_LINE_FOLLOW:
             case NAV_HUMP_REPORT:    follow_step(p_in);    break;
             case NAV_BARCODE_ACT:
-                if (b_done)
+                if (b_done && (BA_NONE != g_nav.bar_turn))
+                {
+                    /* Axle now on the junction: turn onto the branch. */
+                    barcode_map_action_t const turn = g_nav.bar_turn;
+
+                    g_nav.bar_turn    = BA_NONE;
+                    g_nav.pending_seq = (BA_UTURN == turn) ?
+                        motion_control_uturn() :
+                        motion_control_turn(BA_LEFT == turn, SPEED_TURN_CMS,
+                                            BARCODE_TURN_DEG, true);
+                }
+                else if (b_done)
                 {
                     follow_begin();               /* a turn ends the run  */
                     enter(NAV_LINE_FOLLOW);
+                }
+                else
+                {
+                    /* Driving onto the junction or turning. */
                 }
             break;
             case NAV_OBSTACLE_AVOID: obstacle_step(p_in);  break;
@@ -586,17 +603,26 @@ barcode_act (uint8_t slot)
     switch (action)
     {
         case BA_LEFT:
-            seq = motion_control_turn(true, SPEED_TURN_CMS, BARCODE_TURN_DEG,
-                                      true);
-        break;
-
         case BA_RIGHT:
-            seq = motion_control_turn(false, SPEED_TURN_CMS,
-                                      BARCODE_TURN_DEG, true);
-        break;
-
         case BA_UTURN:
-            seq = motion_control_uturn();
+            if (0U != JUNCTION_AHEAD_CM)
+            {
+                /* The line sensors are ahead of the axle: drive the axle
+                 * onto the junction first, so the spot turn swings the
+                 * sensors onto the branch (NAV_BARCODE_ACT turns next). */
+                g_nav.bar_turn = action;
+                seq = motion_control_forward(SPEED_SEARCH_CMS,
+                                             JUNCTION_AHEAD_CM, false);
+            }
+            else if (BA_UTURN == action)
+            {
+                seq = motion_control_uturn();
+            }
+            else
+            {
+                seq = motion_control_turn(BA_LEFT == action, SPEED_TURN_CMS,
+                                          BARCODE_TURN_DEG, true);
+            }
         break;
 
         case BA_STRAIGHT:
@@ -1080,6 +1106,7 @@ reset_step (nav_in_t const * p_in)
         ultrasonic_scan_abort();
         g_nav.pending_seq    = NO_SEQ;
         g_nav.pending_slot   = NO_SLOT;
+        g_nav.bar_turn       = BA_NONE;
         g_nav.bypass         = BYPASS_NONE;
         g_nav.b_on_line_step = false;
         g_nav.cal_stage      = CAL_IDLE;
@@ -1117,6 +1144,7 @@ static void
 follow_begin (void)
 {
     g_nav.pending_slot = NO_SLOT;         /* drop any stale barcode       */
+    g_nav.bar_turn     = BA_NONE;
     (void) motion_control_forward(SPEED_CRUISE_CMS, 0U, true);
 }
 

@@ -58,6 +58,15 @@ static volatile bool     gb_ready       = false;
 
 static black_hold_t      g_hold[2];             /* left, right          */
 
+/* Junction window (raw readings, this task only). */
+static uint32_t          g_jn_left_ms   = 0U;   /* last raw black, left */
+static uint32_t          g_jn_right_ms  = 0U;
+static bool              gb_jn_left     = false; /* seen since crossing */
+static bool              gb_jn_right    = false;
+static bool              gb_jn_latched  = false; /* reported this one   */
+
+static bool    junction_seen (uint8_t raw, uint32_t now_ms);
+
 static uint8_t sensors_read (void);
 static uint8_t black_hold (uint8_t raw, uint32_t now_ms);
 static void    reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
@@ -310,7 +319,8 @@ reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
         events |= SENSOR_LINE_EVT_REGAINED;
     }
 
-    if ((BOTH_BLACK == raw) && (BOTH_BLACK != prev_raw))
+    (void) prev_raw;                      /* windowed below instead       */
+    if (junction_seen(raw, systime_now_ms()))
     {
         events |= SENSOR_LINE_EVT_JUNCTION;
     }
@@ -324,6 +334,51 @@ reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
     {
         vehicle_state_set_line(bits);
     }
+}
+
+/*!
+ * @brief  Junction detection on the raw reading: true once when the left
+ *         and right sensors have both read black within
+ *         JUNCTION_WINDOW_MS of each other (same sample included). The
+ *         next junction needs both sensors white for the window first.
+ * @param  raw     This raw reading.
+ * @param  now_ms  Time now, ms.
+ * @return True on the sample the junction is recognised.
+ */
+static bool
+junction_seen (uint8_t raw, uint32_t now_ms)
+{
+    bool b_junction = false;
+    bool b_both     = false;
+
+    if (0U != (raw & VEHICLE_IR_LEFT))
+    {
+        g_jn_left_ms = now_ms;
+        gb_jn_left   = true;
+    }
+
+    if (0U != (raw & VEHICLE_IR_RIGHT))
+    {
+        g_jn_right_ms = now_ms;
+        gb_jn_right   = true;
+    }
+
+    /* Both sensors black within the last window. Reported once, when
+     * this becomes true; it re-arms as soon as one sensor has been
+     * white for the window (a sensor resting on black on a curve, or
+     * the follower's wobble, cannot keep it blocked). */
+    b_both = gb_jn_left && gb_jn_right &&
+             ((now_ms - g_jn_left_ms) <= JUNCTION_WINDOW_MS) &&
+             ((now_ms - g_jn_right_ms) <= JUNCTION_WINDOW_MS);
+
+    if (b_both && (!gb_jn_latched))
+    {
+        b_junction = true;
+    }
+
+    gb_jn_latched = b_both;
+
+    return (b_junction);
 }
 
 /*** end of file ***/
