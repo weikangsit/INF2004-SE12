@@ -105,6 +105,16 @@ typedef struct
     float32_t run_peak;        /* highest hump of the run                */
     uint32_t  tilt_ms;         /* time beyond OVERTILT_DEG               */
     uint32_t  fails;           /* consecutive failed reads               */
+    float32_t pitch_off;       /* mounting tilt, rad (level calibration) */
+    float32_t roll_off;
+    float32_t level_sum_p;     /* level calibration running sums, rad    */
+    float32_t level_sum_r;
+    uint32_t  level_n;         /* samples summed so far                  */
+    bool      b_level_done;
+    bool      b_roll_hump;     /* one-sided (right wheel) hump           */
+    float32_t roll_max;        /* highest right-wheel lift in it, mm     */
+    uint32_t  roll_hold;       /* samples in a row past the threshold    */
+    uint32_t  roll_ms;         /* time in the current one-sided hump     */
     vec3_t    cal_min;         /* magnetometer calibration               */
     vec3_t    cal_max;
     bool      b_cal_active;
@@ -130,6 +140,10 @@ static float32_t horizontal_jump (vec3_t const * p_now,
                                   vec3_t const * p_then);
 static bool      sample_saturated (vec3_t const * p_acc);
 static void      tilt_check (float32_t pitch_deg, float32_t roll_deg);
+static void      level_step (vec3_t const * p_acc,
+                             vehicle_state_t const * p_state);
+static void      roll_hump_track (float32_t roll, bool b_moving,
+                                  bool b_turning);
 static void      hump_track (float32_t pitch, float32_t pitch_deg,
                              int32_t dist_mm);
 static float32_t heading_compute (vec3_t const * p_mag, float32_t pitch,
@@ -409,6 +423,13 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
     }
 
     hdg = heading_compute(p_mag, pitch, roll);
+    
+    /* Heading needs the sensor's own tilt (above); everything below uses
+     * the car's tilt, so remove the mounting offset. */
+    vehicle_state_read(&state);
+    level_step(p_acc, &state);
+    pitch -= g_ctx.pitch_off;
+    roll  -= g_ctx.roll_off;
 
     hdg_step = hdg - g_ctx.prev_hdg;
     if (hdg_step > HALF_TURN_DEG)
@@ -428,24 +449,30 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
 
     tilt_check(pitch * RAD2DEG, roll * RAD2DEG);
 
-    vehicle_state_read(&state);
-    hump_track(pitch, pitch * RAD2DEG, state.dist_mm);
+    {
+        bool const b_moving  = ((abs(state.speed_l_mms) +
+                                 abs(state.speed_r_mms)) > MOVING_MMS);
+        bool const b_turning = (fabsf(g_ctx.rate) > TURNING_DPS);
 
-    if (g_ctx.b_in_hump)
-    {
-        cls = CLASS_HUMP;
-    }
-    else if (fabsf(g_ctx.rate) > TURNING_DPS)
-    {
-        cls = CLASS_TURNING;
-    }
-    else if ((abs(state.speed_l_mms) + abs(state.speed_r_mms)) > MOVING_MMS)
-    {
-        cls = CLASS_MOVING;
-    }
-    else
-    {
-        cls = CLASS_STILL;
+        hump_track(pitch, pitch * RAD2DEG, state.dist_mm);
+        roll_hump_track(roll, b_moving, b_turning);
+
+        if (g_ctx.b_in_hump || g_ctx.b_roll_hump)
+        {
+            cls = CLASS_HUMP;
+        }
+        else if (b_turning)
+        {
+            cls = CLASS_TURNING;
+        }
+        else if (b_moving)
+        {
+            cls = CLASS_MOVING;
+        }
+        else
+        {
+            cls = CLASS_STILL;
+        }
     }
 
     (void) memset(&out, 0, sizeof(out));
@@ -455,8 +482,10 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
     out.heading_half_deg  = (uint16_t) round_i(hdg * HALVES);
     out.turn_rate_dps     = (int16_t) round_i(g_ctx.rate);
     out.hump_peak_half_mm = (uint16_t) round_i(
-        fmaxf(g_ctx.run_peak, g_ctx.b_in_hump ? g_ctx.hump_max : 0.0f) *
-        HALVES);
+        fmaxf(g_ctx.run_peak,
+              fmaxf(g_ctx.b_in_hump ? g_ctx.hump_max : 0.0f,
+                    g_ctx.b_roll_hump ? g_ctx.roll_max : 0.0f)) * HALVES);
+
     out.motion_class      = cls;
     out.b_imu_valid       = true;
     out.imu_stamp         = systime_stamp();
@@ -560,6 +589,135 @@ sample_saturated (vec3_t const * p_acc)
     }
 
     return (b_saturated);
+}
+
+/*!
+ * @brief  Level calibration: average the pitch and roll of the first
+ *         IMU_LEVEL_SAMPLES samples while the wheels are still and use
+ *         them as zero, removing the IMU mounting tilt. Restarts if the
+ *         wheels move first; until it finishes the offsets stay 0.
+ * @param  p_acc    Raw acceleration, g.
+ * @param  p_state  Vehicle state (wheel speeds).
+ */
+static void
+level_step (vec3_t const * p_acc, vehicle_state_t const * p_state)
+{
+    bool const b_still = ((abs(p_state->speed_l_mms) +
+                           abs(p_state->speed_r_mms)) <= MOVING_MMS);
+
+    if (g_ctx.b_level_done)
+    {
+        /* Already calibrated. */
+    }
+    else if (!b_still)
+    {
+        g_ctx.level_n     = 0U;                 /* moved: start again    */
+        g_ctx.level_sum_p = 0.0f;
+        g_ctx.level_sum_r = 0.0f;
+    }
+    else
+    {
+        float32_t const acc_x = p_acc->axis[AXIS_X];
+        float32_t const acc_y = p_acc->axis[AXIS_Y];
+        float32_t const acc_z = p_acc->axis[AXIS_Z];
+
+        g_ctx.level_sum_p += atan2f(acc_x,
+                                    sqrtf((acc_y * acc_y) + (acc_z * acc_z)));
+        g_ctx.level_sum_r += atan2f(acc_y, acc_z);
+        g_ctx.level_n++;
+
+        if (g_ctx.level_n >= IMU_LEVEL_SAMPLES)
+        {
+            g_ctx.pitch_off    = g_ctx.level_sum_p / (float32_t) g_ctx.level_n;
+            g_ctx.roll_off     = g_ctx.level_sum_r / (float32_t) g_ctx.level_n;
+            g_ctx.b_level_done = true;
+            tm_printf((UB *) "imu: level offset pitch %d roll %d (x0.1 deg)\n",
+                      (int) round_i(g_ctx.pitch_off * RAD2DEG * TENTHS),
+                      (int) round_i(g_ctx.roll_off * RAD2DEG * TENTHS));
+        }
+    }
+}
+
+/*!
+ * @brief  One-sided hump: the ramp is under the right wheel only and the
+ *         car has two wheels and a front caster, so it rolls instead of
+ *         pitching; the right wheel's lift is HUMP_TRACK_MM x tan(roll).
+ *         Starts after HUMP_ROLL_HOLD samples beyond HUMP_ROLL_ON_DEG while
+ *         moving straight (a turn also reads as roll); ends after as many
+ *         samples back under HUMP_ROLL_OFF_DEG, or after HUMP_MAX_MS.
+ * @param  roll       Roll after the level offset, radians.
+ * @param  b_moving   The wheels are turning.
+ * @param  b_turning  The heading changes faster than TURNING_DPS.
+ */
+static void
+roll_hump_track (float32_t roll, bool b_moving, bool b_turning)
+{
+    float32_t const roll_deg = fabsf(roll) * RAD2DEG;
+    float32_t const lift_mm  = HUMP_TRACK_MM * fabsf(tanf(roll));
+
+    if (!g_ctx.b_roll_hump)
+    {
+        if (b_moving && (!b_turning) && (roll_deg > HUMP_ROLL_ON_DEG))
+        {
+            g_ctx.roll_hold++;
+        }
+        else
+        {
+            g_ctx.roll_hold = 0U;
+        }
+
+        if (g_ctx.roll_hold >= HUMP_ROLL_HOLD)
+        {
+            g_ctx.b_roll_hump = true;
+            g_ctx.roll_hold   = 0U;
+            g_ctx.roll_ms     = 0U;
+            g_ctx.roll_max    = lift_mm;
+
+            if (!g_ctx.b_in_hump)
+            {
+                event_post(IMU_EVT_HUMP_START);
+            }
+        }
+    }
+    else
+    {
+        g_ctx.roll_max = fmaxf(g_ctx.roll_max, lift_mm);
+        g_ctx.roll_ms += PERIOD_IMU_MS;
+
+        if (roll_deg < HUMP_ROLL_OFF_DEG)
+        {
+            g_ctx.roll_hold++;
+        }
+        else
+        {
+            g_ctx.roll_hold = 0U;
+        }
+
+        if ((g_ctx.roll_hold >= HUMP_ROLL_HOLD) ||
+            (g_ctx.roll_ms >= HUMP_MAX_MS))
+        {
+            if (g_ctx.roll_ms >= HUMP_MAX_MS)
+            {
+                tm_printf((UB *) "imu: hump timeout\n");
+            }
+
+            g_ctx.b_roll_hump = false;
+            g_ctx.roll_hold   = 0U;
+            g_ctx.run_peak    = fmaxf(g_ctx.run_peak, g_ctx.roll_max);
+
+            if (!g_ctx.b_in_hump)
+            {
+                event_post(IMU_EVT_HUMP_END);
+            }
+
+            /* Height in 0.1 mm, as for the pitch hump. */
+            telemetry_post_event(EV_HUMP, 0U,
+                                 (int16_t) round_i(g_ctx.roll_max * TENTHS),
+                                 0);
+            tm_printf((UB *) "imu: hump height %d (x0.1 mm)\n",
+                      (int) round_i(g_ctx.roll_max * TENTHS));
+        }
+    }
 }
 
 /*!
