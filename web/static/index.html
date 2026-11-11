@@ -1,126 +1,185 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Group 12 robot car</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-<header class="bar">
-  <h1>Group 12 robot car</h1>
-  <div class="status" role="status" aria-live="polite">
-    <span id="broker-pill" class="pill off">broker offline</span>
-    <span id="car-pill" class="pill off">car offline</span>
-  </div>
-  <details class="conn-box">
-    <summary>Connection</summary>
-    <form id="conn" class="conn" autocomplete="off">
-      <label>Broker <input id="url" size="26"></label>
-      <label>Password <input id="pw" type="password" size="10"></label>
-      <button id="connect" type="submit">Connect</button>
-    </form>
-  </details>
-</header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Group 12 robot car</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>Group 12 robot car</h1>
+      <div class="status" role="status" aria-live="polite">
+        <span id="broker-pill" class="pill off">broker offline</span>
+        <span id="car-pill" class="pill off">car offline</span>
+      </div>
+      <details class="conn-box">
+        <summary>Connection</summary>
+        <form id="conn" class="conn" autocomplete="off">
+          <label>Broker <input id="url" size="26" /></label>
+          <label>Password <input id="pw" type="password" size="10" /></label>
+          <button id="connect" type="submit">Connect</button>
+        </form>
+      </details>
+    </header>
 
-<div class="layout">
-  <aside class="rail" aria-label="Controls">
-    <div class="estop-plate">
-      <button data-cmd="estop" class="estop">Emergency stop<small>Brakes now, in any state</small></button>
+    <div class="layout">
+      <aside class="rail" aria-label="Controls">
+        <div class="estop-plate">
+          <button data-cmd="estop" class="estop">
+            Emergency stop<small>Brakes now, in any state</small>
+          </button>
+        </div>
+
+        <section aria-labelledby="h-run">
+          <h2 id="h-run">Run</h2>
+          <div class="cmds">
+            <button data-cmd="start" class="go">Start</button>
+            <button data-cmd="stop">Stop</button>
+            <button data-cmd="finish">Finish run</button>
+            <button data-cmd="reset">Reset fault</button>
+          </div>
+        </section>
+
+        <section aria-labelledby="h-bench">
+          <h2 id="h-bench">Bench tests</h2>
+          <p class="note">Lift the wheels off the ground first.</p>
+          <div class="cmds">
+            <button
+              data-cmd="motor_test"
+              title="Left wheel alone for 1 s, then right wheel alone"
+            >
+              Motor test
+            </button>
+            <button
+              data-cmd="deadband_test"
+              title="Measures each wheel's dead band and feed-forward slope (about 5 s)"
+            >
+              Dead-band test
+            </button>
+            <button
+              data-cmd="mag_cal"
+              title="In READY, on the track: spins slowly to calibrate the compass, then makes one 90 deg turn and logs the angle the compass saw (turn check)"
+            >
+              Calibrate compass + check 90°
+            </button>
+          </div>
+        </section>
+
+        <section aria-labelledby="h-cfg">
+          <h2 id="h-cfg">Barcode actions</h2>
+          <p class="note">
+            Choose the letter that triggers each action. Until you send a table
+            the car uses A left, B right, C straight, D U-turn.
+          </p>
+          <div id="letters" class="letters"></div>
+          <div class="cmds">
+            <button id="default-btn" type="button">Use A–D</button>
+            <button id="send-cfg" class="go" type="button">Send to car</button>
+          </div>
+          <p id="cfg-state" class="note" aria-live="polite"></p>
+        </section>
+      </aside>
+
+      <main class="board">
+        <section class="now" aria-labelledby="t-state">
+          <div class="headline">
+            <h2 id="t-state" class="state">Waiting for the car</h2>
+            <p class="sub">
+              <span id="t-motion"></span> <span id="tlm-age"></span>
+            </p>
+          </div>
+          <p class="health">
+            Faults: <b id="t-faults">none</b> <span id="t-flags"></span>
+          </p>
+
+          <div id="track" class="track" aria-label="Sensors over the track">
+            <div class="tape"></div>
+            <div class="sensor s-bar">
+              <span id="t-bcs" class="ir">–</span><small>Barcode</small>
+            </div>
+            <div class="sensor s-left">
+              <span id="t-ir-l" class="ir">–</span><small>Left</small>
+            </div>
+            <div class="sensor s-right">
+              <span id="t-ir-r" class="ir">–</span><small>Right</small>
+            </div>
+          </div>
+          <p class="track-caption">
+            <span id="t-line">–</span>
+            <span id="t-bcs-n" class="faint"
+              >Barcode sensor reports appear while BAR_LOG is on.</span
+            >
+          </p>
+        </section>
+
+        <section class="readouts" aria-label="Motion">
+          <div class="ro">
+            <b id="t-speed">–</b><span>Speed</span
+            ><small id="t-speed-lr"></small>
+          </div>
+          <div class="ro">
+            <b id="t-yaw">–</b><span>Heading</span><small id="t-rate"></small>
+          </div>
+          <div class="ro">
+            <b id="t-obst">–</b><span>Obstacle ahead</span>
+            <div class="meter" aria-hidden="true"><i id="t-obst-bar"></i></div>
+          </div>
+          <div class="ro">
+            <b id="t-pitch">–</b><span>Pitch</span><small id="t-roll"></small
+            ><small id="t-lift"></small>
+          </div>
+        </section>
+
+        <section class="charts" aria-label="Last 15 seconds">
+          <figure>
+            <figcaption>Speed, m/s</figcaption>
+            <canvas id="c-speed" width="360" height="110"></canvas>
+          </figure>
+          <figure>
+            <figcaption>Pitch, °</figcaption>
+            <canvas id="c-pitch" width="360" height="110"></canvas>
+          </figure>
+          <figure>
+            <figcaption>Obstacle, cm</figcaption>
+            <canvas id="c-obst" width="360" height="110"></canvas>
+          </figure>
+        </section>
+
+        <div class="lower">
+          <section aria-labelledby="h-more">
+            <h2 id="h-more">Run details</h2>
+            <dl class="facts">
+              <dt>Distance travelled</dt>
+              <dd id="t-dist">–</dd>
+              <dt>Motor duty, left / right</dt>
+              <dd id="t-duty">–</dd>
+              <dt>Last barcode</dt>
+              <dd id="t-bc">–</dd>
+              <dt>Last hump</dt>
+              <dd id="t-hump-last">–</dd>
+              <dt>Highest hump</dt>
+              <dd id="t-hump">–</dd>
+              <dt>Uptime</dt>
+              <dd id="t-up">–</dd>
+            </dl>
+            <details class="raw">
+              <summary>Raw frames</summary>
+              <p>Telemetry <code id="tlm-bits"></code></p>
+              <p>Barcode table <code id="cfg-bits"></code></p>
+            </details>
+          </section>
+
+          <section class="events" aria-labelledby="h-log">
+            <h2 id="h-log">Events</h2>
+            <ol id="log" class="log" aria-live="polite"></ol>
+          </section>
+        </div>
+      </main>
     </div>
 
-    <section aria-labelledby="h-run">
-      <h2 id="h-run">Run</h2>
-      <div class="cmds">
-        <button data-cmd="start" class="go">Start</button>
-        <button data-cmd="stop">Stop</button>
-        <button data-cmd="finish">Finish run</button>
-        <button data-cmd="reset">Reset fault</button>
-      </div>
-    </section>
-
-    <section aria-labelledby="h-bench">
-      <h2 id="h-bench">Bench tests</h2>
-      <p class="note">Lift the wheels off the ground first.</p>
-      <div class="cmds">
-        <button data-cmd="motor_test" title="Left wheel alone for 1 s, then right wheel alone">Motor test</button>
-        <button data-cmd="deadband_test" title="Measures each wheel's dead band and feed-forward slope (about 5 s)">Dead-band test</button>
-        <button data-cmd="mag_cal" title="In READY, on the track: spins slowly to calibrate the compass, then makes one 90 deg turn and logs the angle the compass saw (turn check)">Calibrate compass + check 90°</button>
-      </div>
-    </section>
-
-    <section aria-labelledby="h-cfg">
-      <h2 id="h-cfg">Barcode actions</h2>
-      <p class="note">Choose the letter that triggers each action. Until you send a table
-        the car uses A left, B right, C straight, D U-turn.</p>
-      <div id="letters" class="letters"></div>
-      <div class="cmds">
-        <button id="default-btn" type="button">Use A–D</button>
-        <button id="send-cfg" class="go" type="button">Send to car</button>
-      </div>
-      <p id="cfg-state" class="note" aria-live="polite"></p>
-    </section>
-  </aside>
-
-  <main class="board">
-    <section class="now" aria-labelledby="t-state">
-      <div class="headline">
-        <h2 id="t-state" class="state">Waiting for the car</h2>
-        <p class="sub"><span id="t-motion"></span> <span id="tlm-age"></span></p>
-      </div>
-      <p class="health">Faults: <b id="t-faults">none</b> <span id="t-flags"></span></p>
-
-      <div id="track" class="track" aria-label="Sensors over the track">
-        <div class="tape"></div>
-        <div class="sensor s-bar"><span id="t-bcs" class="ir">–</span><small>Barcode</small></div>
-        <div class="sensor s-left"><span id="t-ir-l" class="ir">–</span><small>Left</small></div>
-        <div class="sensor s-right"><span id="t-ir-r" class="ir">–</span><small>Right</small></div>
-      </div>
-      <p class="track-caption"><span id="t-line">–</span> <span id="t-bcs-n" class="faint">Barcode sensor reports appear while BAR_LOG is on.</span></p>
-    </section>
-
-    <section class="readouts" aria-label="Motion">
-      <div class="ro"><b id="t-speed">–</b><span>Speed</span><small id="t-speed-lr"></small></div>
-      <div class="ro"><b id="t-yaw">–</b><span>Heading</span><small id="t-rate"></small></div>
-      <div class="ro"><b id="t-obst">–</b><span>Obstacle ahead</span>
-        <div class="meter" aria-hidden="true"><i id="t-obst-bar"></i></div></div>
-      <div class="ro"><b id="t-pitch">–</b><span>Pitch</span><small id="t-roll"></small></div>
-    </section>
-
-    <section class="charts" aria-label="Last 15 seconds">
-      <figure><figcaption>Speed, m/s</figcaption><canvas id="c-speed" width="360" height="110"></canvas></figure>
-      <figure><figcaption>Pitch, °</figcaption><canvas id="c-pitch" width="360" height="110"></canvas></figure>
-      <figure><figcaption>Obstacle, cm</figcaption><canvas id="c-obst" width="360" height="110"></canvas></figure>
-    </section>
-
-    <div class="lower">
-      <section aria-labelledby="h-more">
-        <h2 id="h-more">Run details</h2>
-        <dl class="facts">
-          <dt>Distance travelled</dt><dd id="t-dist">–</dd>
-          <dt>Motor duty, left / right</dt><dd id="t-duty">–</dd>
-          <dt>Last barcode</dt><dd id="t-bc">–</dd>
-          <dt>Last hump</dt><dd id="t-hump-last">–</dd>
-          <dt>Highest hump</dt><dd id="t-hump">–</dd>
-          <dt>Uptime</dt><dd id="t-up">–</dd>
-        </dl>
-        <details class="raw">
-          <summary>Raw frames</summary>
-          <p>Telemetry <code id="tlm-bits"></code></p>
-          <p>Barcode table <code id="cfg-bits"></code></p>
-        </details>
-      </section>
-
-      <section class="events" aria-labelledby="h-log">
-        <h2 id="h-log">Events</h2>
-        <ol id="log" class="log" aria-live="polite"></ol>
-      </section>
-    </div>
-  </main>
-</div>
-
-<script src="proto.js"></script>
-<script src="mqtt.js"></script>
-<script src="app.js"></script>
-</body>
+    <script src="proto.js"></script>
+    <script src="mqtt.js"></script>
+    <script src="app.js"></script>
+  </body>
 </html>
