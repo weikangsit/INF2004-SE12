@@ -144,6 +144,7 @@ static void      level_step (vec3_t const * p_acc,
                              vehicle_state_t const * p_state);
 static void      roll_hump_track (float32_t roll, bool b_moving,
                                   bool b_turning);
+static void      axes_to_car (vec3_t * p_v);                                  
 static void      hump_track (float32_t pitch, float32_t pitch_deg,
                              int32_t dist_mm);
 static float32_t heading_compute (vec3_t const * p_mag, float32_t pitch,
@@ -199,7 +200,9 @@ imu_terrain_task (INT stacd, void * p_exinf)
         {
             g_ctx.fails = 0U;
             gb_ok      = true;
-            mag_cal_step(&mag);
+            mag_cal_step(&mag);       /* calibrates in the board's axes */
+            axes_to_car(&acc);
+            axes_to_car(&mag);
             sample_process(&acc, &mag);
         }
         else
@@ -485,6 +488,24 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
         fmaxf(g_ctx.run_peak,
               fmaxf(g_ctx.b_in_hump ? g_ctx.hump_max : 0.0f,
                     g_ctx.b_roll_hump ? g_ctx.roll_max : 0.0f)) * HALVES);
+    
+    
+    #if (IMU_LIVE_LIFT)
+        /* Bench check: print roll and right-wheel lift on the USB serial
+        * monitor every 0.5 s, at full precision. */
+        {
+            static uint32_t s_print_n = 0U;
+
+            s_print_n++;
+            if (s_print_n >= 25U)
+            {
+                s_print_n = 0U;
+                tm_printf((UB *) "imu: roll %d lift %d (x0.1 deg, x0.1 mm)\n",
+                        (int) round_i(roll * RAD2DEG * TENTHS),
+                        (int) round_i(HUMP_TRACK_MM * fabsf(tanf(roll)) * TENTHS));
+            }
+        }
+    #endif
 
     out.motion_class      = cls;
     out.b_imu_valid       = true;
@@ -589,6 +610,27 @@ sample_saturated (vec3_t const * p_acc)
     }
 
     return (b_saturated);
+}
+
+/*!
+ * @brief  Turn a reading from the board's axes into the car's (X forward,
+ *         Y left, Z up). With IMU_MOUNT_X_LEFT the board's X points to the
+ *         car's left and its Y to the rear, so forward = -Y and left = +X.
+ *         Accelerometer and magnetometer share the board, so both use it.
+ * @param  p_v  Reading, changed in place.
+ */
+static void
+axes_to_car (vec3_t * p_v)
+{
+#if (IMU_MOUNT_X_LEFT)
+    float32_t const board_x = p_v->axis[AXIS_X];
+    float32_t const board_y = p_v->axis[AXIS_Y];
+
+    p_v->axis[AXIS_X] = -board_y;           /* car forward = board -Y */
+    p_v->axis[AXIS_Y] = board_x;            /* car left    = board +X */
+#else
+    (void) p_v;                             /* mounted X fwd, Y left  */
+#endif
 }
 
 /*!

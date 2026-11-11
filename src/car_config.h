@@ -284,14 +284,18 @@
 /* Level calibration: the car stands still on flat ground at power-up
  * for this many IMU samples (50 x 20 ms = 1 s).                       */
 #define IMU_LEVEL_SAMPLES    (50U)
+/* IMU board mounting: 1 = board X points to the car's LEFT and board Y
+ * to the REAR (as fitted on our car); 0 = X forward, Y left.          */
+#define IMU_MOUNT_X_LEFT     (1)
 /* One-sided hump: the ramp is under the right wheel only (2 wheels +
  * front caster), so the car rolls and the right wheel's lift is
  * HUMP_TRACK_MM x tan(roll). TUNE.                                     */
-#define HUMP_TRACK_MM        (130.0f)  /* MEASURE: wheel centre to centre */
+#define HUMP_TRACK_MM        (110.0f)  /* MEASURE: wheel centre to centre */
 #define HUMP_ROLL_ON_DEG     (2.5f)    /* roll that starts a hump        */
 #define HUMP_ROLL_OFF_DEG    (1.0f)    /* roll that ends it              */
 #define HUMP_ROLL_HOLD       (3U)      /* samples in a row (60 ms)       */
 #define HUMP_MAX_MS          (5000U)   /* give up on a hump after this   */
+#define IMU_LIVE_LIFT        (0)    /* 1: print live lift on USB serial (bench check) */
 #define IMPACT_G             (1.50f)   /* horizontal jerk -> collision  */
 /* A jump only counts if the next reading is still this far from the
  * reading before it (one-sample spikes from a loose mount or I2C noise
