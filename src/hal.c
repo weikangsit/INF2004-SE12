@@ -57,6 +57,11 @@ static volatile uint32_t g_bar_dropped = 0U;     /* lost to a full ring   */
 /* The ring filled and the ISR switched the pin's interrupt off; the
  * Line task switches it back on once the ring is empty. */
 static volatile bool     gb_bar_paused = false;
+/* Core whose interrupt paused the pin. The SDK's gpio_set_irq_enabled()
+ * writes the CALLING core's enable register; with CNF_SMP the Line task
+ * can run on the other core, so a plain resume there enabled the wrong
+ * core and left the barcode pin off until the next boot. */
+static volatile uint32_t g_bar_core    = 0U;
 
 /* Ultrasonic echo: written by the ISR, read after the echo signal. */
 static volatile uint32_t g_echo_rise_us  = 0U;
@@ -69,6 +74,7 @@ static bool     gb_led_ok = false;
 
 static void     input_pin (uint32_t pin, bool b_pull_up);
 static uint32_t barcode_isr (uint32_t now_us);
+static void     bar_irq_set (uint32_t core, bool b_on);
 static uint32_t echo_isr (uint32_t now_us);
 
 /*!
@@ -160,10 +166,11 @@ hal_bar_take (uint32_t * p_buf, int32_t * p_cl, int32_t * p_cr,
 
     if (gb_bar_paused && (g_bar_tail == g_bar_head))
     {
-        /* Empty, and the paused ISR cannot add to it: resume. The SDK
-         * clears stale edge flags before enabling. */
+        /* Empty, and the paused ISR cannot add to it: resume on the core
+         * that paused it (this task may be on the other core). */
         gb_bar_paused = false;
-        gpio_set_irq_enabled(PIN_IR_BC, EDGE_BOTH, true);
+        __dmb();                                  /* flag before enable   */
+        bar_irq_set(g_bar_core, true);
     }
 
     return (count);
@@ -376,12 +383,41 @@ barcode_isr (uint32_t now_us)
         else
         {
             g_bar_dropped++;
-            gpio_set_irq_enabled(PIN_IR_BC, EDGE_BOTH, false);
+            g_bar_core = get_core_num();          /* this ISR's core      */
+            bar_irq_set(g_bar_core, false);
+            __dmb();                              /* core before flag     */
             gb_bar_paused = true;                /* hal_bar_take resumes */
         }
     }
 
     return (sig);
+}
+
+/*!
+ * @brief  Switch the barcode pin's edge interrupt on or off for one core,
+ *         whichever core calls this. gpio_set_irq_enabled() only touches
+ *         the calling core's register. Turning on clears stale edge flags
+ *         first (the flags are shared by both cores).
+ * @param  core  Core number, 0 or 1.
+ * @param  b_on  True to enable.
+ */
+static void
+bar_irq_set (uint32_t core, bool b_on)
+{
+    io_bank0_irq_ctrl_hw_t * const p_ctrl = get_core_irq_ctrl(core & 1U);
+    io_rw_32 * const               p_inte = &p_ctrl->inte[PIN_IR_BC / 8U];
+    uint32_t const                 mask   = EDGE_BOTH <<
+                                            (4U * (PIN_IR_BC % 8U));
+
+    if (b_on)
+    {
+        gpio_acknowledge_irq(PIN_IR_BC, EDGE_BOTH);
+        hw_set_bits(p_inte, mask);
+    }
+    else
+    {
+        hw_clear_bits(p_inte, mask);
+    }
 }
 
 /*!

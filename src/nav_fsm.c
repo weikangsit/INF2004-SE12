@@ -100,6 +100,17 @@ typedef enum
     CAL_SETTLE_AFTER        /* stopped: compass settles, angle reported  */
 } cal_stage_t;
 
+/** Compass-checked bypass turn (see bypass_turn()). */
+typedef enum
+{
+    TC_IDLE = 0,
+    TC_SETTLE_BEFORE,       /* stopped: compass settles, heading noted   */
+    TC_TURN,                /* the encoder turn                          */
+    TC_SETTLE_AFTER,        /* stopped: compass settles, angle measured  */
+    TC_FIX,                 /* small correction turn                     */
+    TC_PLAIN                /* no heading: encoder turn only             */
+} turn_check_t;
+
 /** One debounced button. */
 typedef struct
 {
@@ -147,6 +158,13 @@ typedef struct
     uint32_t        width_steps;          /* sideways steps driven       */
     bool            b_width_margin;       /* last step out was the margin */
     uint32_t        length_steps;         /* extra along steps driven    */
+    turn_check_t    tc_stage;             /* bypass turn compass check   */
+    bool            b_tc_left;            /* direction of the turn       */
+    uint32_t        tc_deg;               /* angle asked for             */
+    uint32_t        tc_ms;                /* start of a settle wait      */
+    uint16_t        tc_hdg0;              /* heading before, 0.5 deg     */
+    uint32_t        tc_fixes;             /* correction turns made       */
+    uint32_t        tc_repeat;            /* checked turns still to make */
     cal_stage_t     cal_stage;
     uint32_t        cal_ms;               /* start of a settle wait      */
     uint16_t        cal_hdg0;             /* heading before the turn     */
@@ -174,6 +192,10 @@ static void    bypass_go (bypass_step_t step);
 static void    bypass_step_done (void);
 static void    bypass_peek_result (bool b_blocked);
 static void    bypass_return (void);
+static void    bypass_turn (bool b_left, uint32_t angle_deg);
+static bool    bypass_turn_step (uint32_t now);
+static void    barcode_turn_start (barcode_map_action_t action);
+static int32_t heading_turned_half (uint16_t from, uint16_t to);
 static void    reacquire_step (nav_in_t const * p_in);
 static bool    path_is_blocked (void);
 static void    cal_motion_done (uint32_t now);
@@ -417,16 +439,32 @@ state_step (nav_in_t const * p_in)
             case NAV_LINE_FOLLOW:
             case NAV_HUMP_REPORT:    follow_step(p_in);    break;
             case NAV_BARCODE_ACT:
-                if (b_done && (BA_NONE != g_nav.bar_turn))
+                if (TC_IDLE != g_nav.tc_stage)
+                {
+                    /* Compass-checked barcode turn (settle waits run
+                     * with no motion pending). */
+                    if (!bypass_turn_step(p_in->now))
+                    {
+                        /* Still turning, settling or correcting. */
+                    }
+                    else if (g_nav.tc_repeat > 0U)
+                    {
+                        g_nav.tc_repeat--;        /* U-turn: second 90    */
+                        bypass_turn(g_nav.b_tc_left, BARCODE_TURN_DEG);
+                    }
+                    else
+                    {
+                        follow_begin();
+                        enter(NAV_LINE_FOLLOW);
+                    }
+                }
+                else if (b_done && (BA_NONE != g_nav.bar_turn))
                 {
                     /* Axle now on the junction: turn onto the branch. */
                     barcode_map_action_t const turn = g_nav.bar_turn;
 
-                    g_nav.bar_turn    = BA_NONE;
-                    g_nav.pending_seq = (BA_UTURN == turn) ?
-                        motion_control_uturn() :
-                        motion_control_turn(BA_LEFT == turn, SPEED_TURN_CMS,
-                                            BARCODE_TURN_DEG, true);
+                    g_nav.bar_turn = BA_NONE;
+                    barcode_turn_start(turn);
                 }
                 else if (b_done)
                 {
@@ -614,14 +652,12 @@ barcode_act (uint8_t slot)
                 seq = motion_control_forward(SPEED_SEARCH_CMS,
                                              JUNCTION_AHEAD_CM, false);
             }
-            else if (BA_UTURN == action)
-            {
-                seq = motion_control_uturn();
-            }
             else
             {
-                seq = motion_control_turn(BA_LEFT == action, SPEED_TURN_CMS,
-                                          BARCODE_TURN_DEG, true);
+                /* The turn sets pending_seq itself (none while a checked
+                 * turn settles), so enter the state here. */
+                barcode_turn_start(action);
+                enter(NAV_BARCODE_ACT);
             }
         break;
 
@@ -650,7 +686,8 @@ static void
 obstacle_begin (void)
 {
     motion_control_stop();
-    g_nav.bypass = BYPASS_NONE;
+    g_nav.bypass   = BYPASS_NONE;
+    g_nav.tc_stage = TC_IDLE;
     ultrasonic_scan_request();
     enter(NAV_OBSTACLE_AVOID);
 }
@@ -665,7 +702,16 @@ obstacle_step (nav_in_t const * p_in)
 {
     bool const b_idle = (NO_SEQ == g_nav.pending_seq);
 
-    if (p_in->b_have_us && (BYPASS_NONE == g_nav.bypass))
+    if (TC_IDLE != g_nav.tc_stage)
+    {
+        /* A bypass turn and its compass check: the step ends only when
+         * the check does (settle waits run with no motion pending). */
+        if (bypass_turn_step(p_in->now))
+        {
+            bypass_step_done();
+        }
+    }
+    else if (p_in->b_have_us && (BYPASS_NONE == g_nav.bypass))
     {
         switch (p_in->us_result)
         {
@@ -740,14 +786,12 @@ bypass_go (bypass_step_t step)
     {
         case BYPASS_TURN_OUT:
         case BYPASS_TURN_PARALLEL:
-            g_nav.pending_seq = motion_control_turn(b_out, SPEED_TURN_CMS,
-                                                    BYPASS_TURN_DEG, false);
+            bypass_turn(b_out, BYPASS_TURN_DEG);
         break;
 
         case BYPASS_FACE_FWD:
         case BYPASS_TURN_IN:
-            g_nav.pending_seq = motion_control_turn(!b_out, SPEED_TURN_CMS,
-                                                    BYPASS_TURN_DEG, false);
+            bypass_turn(!b_out, BYPASS_TURN_DEG);
         break;
 
         case BYPASS_STEP_OUT:
@@ -928,12 +972,12 @@ reacquire_step (nav_in_t const * p_in)
     {
         if (NO_SEQ == g_nav.pending_seq)
         {
-            /* Axle on the line: the spot turn puts the sensors on it. */
+            /* Axle on the line: turn until the sensors find it, which
+             * on a curve is not at 90 deg (REJOIN_MIN/MAX_DEG). */
             g_nav.b_on_line_step = false;
-            g_nav.pending_seq    = motion_control_turn(g_nav.b_bypass_left,
-                                                       SPEED_TURN_CMS,
-                                                       BYPASS_TURN_DEG,
-                                                       true);
+            g_nav.pending_seq    = motion_control_turn_search(
+                g_nav.b_bypass_left, SPEED_TURN_CMS,
+                REJOIN_MAX_DEG, REJOIN_MIN_DEG);
             enter(NAV_BARCODE_ACT);               /* wait, then follow    */
         }
         else if (b_timed)
@@ -957,9 +1001,9 @@ reacquire_step (nav_in_t const * p_in)
         }
         else
         {
-            g_nav.pending_seq = motion_control_turn(g_nav.b_bypass_left,
-                                                    SPEED_TURN_CMS,
-                                                    BYPASS_TURN_DEG, true);
+            g_nav.pending_seq = motion_control_turn_search(
+                g_nav.b_bypass_left, SPEED_TURN_CMS,
+                REJOIN_MAX_DEG, REJOIN_MIN_DEG);
             enter(NAV_BARCODE_ACT);               /* wait, then follow    */
         }
     }
@@ -1075,6 +1119,186 @@ heading_read (uint16_t * p_half_deg)
 }
 
 /*!
+ * @brief  Start a bypass spot turn at BYPASS_TURN_CMS. With a calibrated
+ *         compass it is checked (bypass_turn_step()): settle, note the
+ *         heading, turn, settle, measure, correct. Otherwise it is a plain
+ *         encoder turn, as before.
+ * @param  b_left     True for a left turn.
+ * @param  angle_deg  Angle, deg.
+ */
+static void
+bypass_turn (bool b_left, uint32_t angle_deg)
+{
+    g_nav.b_tc_left = b_left;
+    g_nav.tc_deg    = angle_deg;
+    g_nav.tc_fixes  = 0U;
+
+    if ((0U != BYPASS_TURN_CHECK) && imu_terrain_mag_is_calibrated())
+    {
+        g_nav.tc_ms       = systime_now_ms();
+        g_nav.tc_stage    = TC_SETTLE_BEFORE;
+        g_nav.pending_seq = NO_SEQ;               /* waiting, not moving  */
+    }
+    else
+    {
+        g_nav.tc_stage    = TC_PLAIN;
+        g_nav.pending_seq = motion_control_turn(b_left, BYPASS_TURN_CMS,
+                                                angle_deg, false);
+    }
+}
+
+/*!
+ * @brief  Start the spot turn of a barcode action at the junction. With a
+ *         calibrated compass it is a checked turn (bypass_turn(); a
+ *         U-turn is two checked 90 deg turns to the left, the way
+ *         motion_control_uturn() turns). Otherwise the plain encoder turn
+ *         that stops early on the branch. NAV_BARCODE_ACT runs both.
+ * @param  action  BA_LEFT, BA_RIGHT or BA_UTURN.
+ */
+static void
+barcode_turn_start (barcode_map_action_t action)
+{
+    bool const b_uturn = (BA_UTURN == action);
+
+    g_nav.tc_repeat = 0U;
+
+    if ((0U != BARCODE_TURN_CHECK) && imu_terrain_mag_is_calibrated())
+    {
+        g_nav.tc_repeat = b_uturn ? 1U : 0U;
+        bypass_turn(b_uturn || (BA_LEFT == action), BARCODE_TURN_DEG);
+    }
+    else
+    {
+        g_nav.tc_stage    = TC_IDLE;
+        g_nav.pending_seq = b_uturn ?
+            motion_control_uturn() :
+            motion_control_turn(BA_LEFT == action, SPEED_TURN_CMS,
+                                BARCODE_TURN_DEG, true);
+    }
+}
+
+/*!
+ * @brief  One period of a bypass turn. The compass is read only with the
+ *         motors stopped for BYPASS_CHECK_SETTLE_MS (the motor current
+ *         skews it), and only the change over the turn is used.
+ * @param  now  Time now, ms.
+ * @return True when the turn (and any correction) is finished.
+ */
+static bool
+bypass_turn_step (uint32_t now)
+{
+    bool     b_finished = false;
+    uint16_t hdg        = 0U;
+
+    switch (g_nav.tc_stage)
+    {
+        case TC_SETTLE_BEFORE:
+            if ((now - g_nav.tc_ms) >= BYPASS_CHECK_SETTLE_MS)
+            {
+                g_nav.tc_stage    = heading_read(&g_nav.tc_hdg0) ? TC_TURN :
+                                                                   TC_PLAIN;
+                g_nav.pending_seq = motion_control_turn(g_nav.b_tc_left,
+                                                        BYPASS_TURN_CMS,
+                                                        g_nav.tc_deg, false);
+            }
+        break;
+
+        case TC_TURN:
+        case TC_FIX:
+            if (NO_SEQ == g_nav.pending_seq)      /* motion finished      */
+            {
+                g_nav.tc_stage = TC_SETTLE_AFTER;
+                g_nav.tc_ms    = now;
+            }
+        break;
+
+        case TC_SETTLE_AFTER:
+            if ((now - g_nav.tc_ms) >= BYPASS_CHECK_SETTLE_MS)
+            {
+                g_nav.tc_stage = TC_IDLE;
+                b_finished     = true;
+
+                if (heading_read(&hdg))
+                {
+                    /* Half degrees: turned is 0..360, the angle 0..511. */
+                    int32_t const turned = heading_turned_half(g_nav.tc_hdg0,
+                                                               hdg);
+                    int32_t const err    = ((int32_t) g_nav.tc_deg *
+                                            HALF_DEG_PER_DEG) - turned;
+                    int32_t const size   = (err < 0) ? -err : err;
+
+                    if ((size >= (BYPASS_FIX_MIN_DEG * HALF_DEG_PER_DEG)) &&
+                        (size <= (BYPASS_FIX_LIMIT_DEG * HALF_DEG_PER_DEG)) &&
+                        (g_nav.tc_fixes < BYPASS_FIX_MAX))
+                    {
+                        /* Short: more the same way; past: back. size is
+                         * at most 50 half degrees, so the angle fits. */
+                        g_nav.tc_fixes++;
+                        g_nav.tc_stage    = TC_FIX;
+                        b_finished        = false;
+                        g_nav.pending_seq = motion_control_turn(
+                            (err > 0) ? g_nav.b_tc_left : !g_nav.b_tc_left,
+                            BYPASS_FIX_CMS,
+                            (uint32_t) ((size + 1) / HALF_DEG_PER_DEG),
+                            false);
+                    }
+                    else
+                    {
+                        /* Done: asked vs measured on the dashboard (turn
+                         * check). Both are 0..180 deg, so they fit. */
+                        telemetry_post_event(EV_TURN_XCHECK, 0U,
+                            (int16_t) g_nav.tc_deg,
+                            (int16_t) ((turned + 1) / HALF_DEG_PER_DEG));
+                    }
+                }
+            }
+        break;
+
+        case TC_PLAIN:
+            if (NO_SEQ == g_nav.pending_seq)
+            {
+                g_nav.tc_stage = TC_IDLE;
+                b_finished     = true;
+            }
+        break;
+
+        case TC_IDLE:
+        default:
+            b_finished = true;
+        break;
+    }
+
+    return (b_finished);
+}
+
+/*!
+ * @brief  Angle between two compass headings.
+ * @param  from  Heading, 0.5 deg (0..719).
+ * @param  to    Heading, 0.5 deg (0..719).
+ * @return Unsigned difference, 0.5 deg (0..360).
+ */
+static int32_t
+heading_turned_half (uint16_t from, uint16_t to)
+{
+    int32_t d = ((int32_t) to - (int32_t) from) % FULL_TURN_HALF_DEG;
+
+    if (d > HALF_TURN_HALF_DEG)
+    {
+        d -= FULL_TURN_HALF_DEG;
+    }
+    else if (d < -HALF_TURN_HALF_DEG)
+    {
+        d += FULL_TURN_HALF_DEG;
+    }
+    else
+    {
+        /* Already -360..360 half degrees. */
+    }
+
+    return ((d < 0) ? -d : d);
+}
+
+/*!
  * @brief  Check the standby range straight ahead (servo centred after the
  *         scan) while the car drives a bypass or return leg. Every forward
  *         leg follows a 90 deg spot turn of ~0.8 s, so by then the 100 ms
@@ -1107,6 +1331,7 @@ reset_step (nav_in_t const * p_in)
         g_nav.pending_seq    = NO_SEQ;
         g_nav.pending_slot   = NO_SLOT;
         g_nav.bar_turn       = BA_NONE;
+        g_nav.tc_stage       = TC_IDLE;
         g_nav.bypass         = BYPASS_NONE;
         g_nav.b_on_line_step = false;
         g_nav.cal_stage      = CAL_IDLE;

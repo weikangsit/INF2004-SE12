@@ -156,7 +156,9 @@ typedef struct
     bool          b_steered;     /* line steering seen in this command    */
     uint32_t      steer_ms;      /* time of the last steering correction  */
     int32_t       line_last;     /* side that last saw black: -1, 0, +1   */
+    int32_t       line_seed;     /* line_last for the next follow command */
     bool          b_bar_hold;    /* holding straight for a barcode read   */
+    bool          b_bar_skip;    /* read already under way at the start   */
     float32_t     bend_yaw[BEND_SAMPLES]; /* encoder yaw, rad, one sample
                                            * per BEND_SAMPLE_MM of travel  */
     float32_t     bend_next_m;   /* travel at which the next sample is due */
@@ -317,6 +319,25 @@ motion_control_turn (bool b_left, uint32_t speed_cms, uint32_t angle_deg,
 {
     return (cmd_send(b_left ? CMD_TURN_L : CMD_TURN_R, speed_cms, 0U,
                      angle_deg, false, b_end_on_line));
+}
+
+/*!
+ * @brief  Spin in place until a line sensor sees black, accepted once
+ *         min_deg is turned, or until max_deg (line not found).
+ * @param  b_left     True to turn left (counter-clockwise).
+ * @param  speed_cms  Wheel speed, cm/s.
+ * @param  max_deg    Longest turn, degrees (1..511).
+ * @param  min_deg    Black ignored before this, degrees (1..max_deg).
+ * @return Sequence number of the command.
+ */
+uint8_t
+motion_control_turn_search (bool b_left, uint32_t speed_cms,
+                            uint32_t max_deg, uint32_t min_deg)
+{
+    /* Turns leave the distance field unused: it carries min_deg, and
+     * turn_targets() uses it in place of TURN_EARLY_FRACTION. */
+    return (cmd_send(b_left ? CMD_TURN_L : CMD_TURN_R, speed_cms,
+                     (0U != min_deg) ? min_deg : 1U, max_deg, false, true));
 }
 
 /*!
@@ -628,8 +649,17 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.cal_r0        = p_in->count_r;
     g_ctx.test_phase    = 0U;
     g_ctx.b_steered     = false;
-    g_ctx.line_last     = 0;
+    /* A search turn that found the line hands its side to the follow
+     * command after it; any other command drops it. */
+    g_ctx.line_last     = ((CMD_FWD == g_ctx.cmd_id) && g_ctx.b_follow) ?
+                          g_ctx.line_seed : 0;
+    g_ctx.line_seed     = 0;
     g_ctx.b_bar_hold    = false;
+    /* A read already running began during the previous motion, e.g. a
+     * spot turn sweeping the barcode sensor across the line: a stray
+     * read, never a hold (it drove the car straight off a curve after
+     * the bypass rejoin turn). */
+    g_ctx.b_bar_skip    = barcode_is_reading();
     g_ctx.bend_n        = 0U;
     g_ctx.bend_idx      = 0U;
     g_ctx.sweep_stage   = SWEEP_SETTLE;
@@ -819,7 +849,14 @@ bar_hold (motion_in_t const * p_in)
     bool const      b_bend = bend_update(travel);
     bool            b_hold = false;
 
-    if (g_ctx.b_follow && barcode_is_reading())
+    bool const      b_read = barcode_is_reading();
+
+    if (!b_read)
+    {
+        g_ctx.b_bar_skip = false;                 /* stray read is over   */
+    }
+
+    if (g_ctx.b_follow && b_read && !g_ctx.b_bar_skip)
     {
         if ((!g_ctx.b_bar_hold) && (!b_bend))
         {
@@ -949,6 +986,12 @@ turn_targets (motion_in_t const * p_in)
                                    (g_ctx.dist_l - g_ctx.dist_l0)) * HALF;
     float32_t const frac   = (arc > 0.0f) ? (travel / arc) : 1.0f;
     bool const      b_left = (MS_TURN_R != g_ctx.mode);  /* U-turn: left */
+    /* A search turn carries its minimum angle in the distance field
+     * (dist_m = min_deg / CM_PER_M); other turns send 0. */
+    float32_t const gate   = ((g_ctx.dist_m > 0.0f) &&
+                              (g_ctx.angle_deg > 0.0f)) ?
+                             ((g_ctx.dist_m * CM_PER_M) / g_ctx.angle_deg) :
+                             TURN_EARLY_FRACTION;
     bool            b_done = false;
 
     ramp_base(fminf(g_ctx.speed_mps, end_speed_cap(arc - travel)));
@@ -959,10 +1002,20 @@ turn_targets (motion_in_t const * p_in)
     {
         b_done = true;
     }
-    else if (g_ctx.b_end_on_line && (frac >= TURN_EARLY_FRACTION) &&
+    else if (g_ctx.b_end_on_line && (frac >= gate) &&
              p_in->b_line_fresh && (0U != p_in->line_bits))
     {
         b_done = true;                            /* new branch found     */
+
+        /* Search turn (rejoin): it stops on the leading sensor's first
+         * black, and the spin carries the line on across the car toward
+         * the trailing side. If both sensors then read white, the
+         * follower must steer toward the trailing side (+1 right after
+         * a left turn) to catch it, not drive straight off a curve. */
+        if (g_ctx.dist_m > 0.0f)
+        {
+            g_ctx.line_seed = b_left ? 1 : -1;
+        }
     }
     else
     {

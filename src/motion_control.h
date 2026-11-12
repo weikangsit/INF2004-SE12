@@ -43,6 +43,8 @@ uint8_t motion_control_forward (uint32_t speed_cms, uint32_t dist_cm,
                                 bool b_follow_line);
 uint8_t motion_control_turn (bool b_left, uint32_t speed_cms,
                              uint32_t angle_deg, bool b_end_on_line);
+uint8_t motion_control_turn_search (bool b_left, uint32_t speed_cms,
+                                    uint32_t max_deg, uint32_t min_deg);
 uint8_t motion_control_uturn (void);
 uint8_t motion_control_self_test (void);
 uint8_t motion_control_motor_test (void);

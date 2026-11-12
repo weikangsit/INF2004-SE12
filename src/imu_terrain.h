@@ -29,6 +29,7 @@ bool imu_terrain_is_ok (void);
 bool imu_terrain_event_take (imu_terrain_event_t * p_event);
 void imu_terrain_mag_cal_start (void);
 void imu_terrain_mag_cal_finish (void);
+bool imu_terrain_mag_is_calibrated (void);
 
 #endif /* IMU_TERRAIN_H */
 

@@ -128,6 +128,7 @@ static ID            g_evt_q            = 0;
 static volatile bool gb_ok             = false;
 static volatile bool gb_cal_start_req  = false;   /* Nav sets, task clears */
 static volatile bool gb_cal_finish_req = false;
+static volatile bool gb_mag_cal_ok     = false;   /* task sets, any reads  */
 static vec3_t        g_mag_off;                    /* task only, gauss     */
 static imu_ctx_t     g_ctx;                        /* task only            */
 
@@ -268,6 +269,17 @@ void
 imu_terrain_mag_cal_finish (void)
 {
     gb_cal_finish_req = true;
+}
+
+/*!
+ * @brief  Report whether a compass calibration succeeded since boot (the
+ *         offsets are kept in RAM only). Safe from any task.
+ * @return True once calibrated.
+ */
+bool
+imu_terrain_mag_is_calibrated (void)
+{
+    return (gb_mag_cal_ok);
 }
 
 /*!
@@ -976,6 +988,7 @@ mag_cal_step (vec3_t const * p_mag)
                                       g_ctx.cal_max.axis[AXIS_X]) / HALVES;
             g_mag_off.axis[AXIS_Y] = (g_ctx.cal_min.axis[AXIS_Y] +
                                       g_ctx.cal_max.axis[AXIS_Y]) / HALVES;
+            gb_mag_cal_ok = true;
         }
 
         /* Result code 0 or 1 fits a uint8_t. */

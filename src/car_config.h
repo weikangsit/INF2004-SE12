@@ -345,6 +345,26 @@
 /* Rectangular bypass with 90 deg spot turns: the out-leg runs parallel
  * to the obstacle's face (the car stops ~12 cm from it).               */
 #define BYPASS_TURN_DEG      (90U)
+/* Bypass turns: slower than SPEED_TURN_CMS (less wheel slip, so the
+ * encoder angle repeats better), then checked on the compass with the
+ * motors off. The wheels slip ~40 % in a spot turn (TURN_TRACK_WIDTH_M
+ * 0.179 vs a 0.110 m track) and it varies run to run, so encoders alone
+ * cannot give a repeatable 90 deg. Compass check (needs a calibrated
+ * compass this power-on, else turns are encoder-only as before):
+ *  stop, wait BYPASS_CHECK_SETTLE_MS, note heading; turn; stop, wait,
+ *  read how far it really turned; off by >= BYPASS_FIX_MIN_DEG -> one
+ *  slow correction turn and check again, at most BYPASS_FIX_MAX times.
+ *  An error over BYPASS_FIX_LIMIT_DEG is not believed (bad reading).
+ * Reads only while stopped: the motor current skews the GY-511, which is
+ * what broke the earlier compass-ended turns. Only a ~90 deg change is
+ * measured, never an absolute heading. TUNE.                          */
+#define BYPASS_TURN_CMS      (SPEED_STEER_CMS)  /* 8 (turns were at 11)  */
+#define BYPASS_TURN_CHECK    (1U)               /* 0 = encoder-only      */
+#define BYPASS_CHECK_SETTLE_MS (CAL_SETTLE_MS)  /* 300                   */
+#define BYPASS_FIX_MIN_DEG   (4)                /* smaller: leave it     */
+#define BYPASS_FIX_LIMIT_DEG (25)
+#define BYPASS_FIX_MAX       (2U)
+#define BYPASS_FIX_CMS       (SPEED_STEER_CMS)
 /* Step-and-check bypass in small steps (team flow; measured car: sensor
  * 7.5 cm ahead of the axle, half width 7.5 cm, front corners 10.6 cm
  * from the axle, so a spot turn swings them 3.1 cm past the side).
@@ -370,7 +390,7 @@
  * leaves a side gap of >= 7.4 cm: the turn toward the line clears it
  * (swing 3.1 cm), and afterwards the sensor faces the obstacle at the
  * side gap, 7.4-27.4 cm: reliable range.                              */
-#define BYPASS_WIDTH_MARGIN_CM (8U)
+#define BYPASS_WIDTH_MARGIN_CM (30U)
 /* First drive along puts the sensor >= 5 cm past the obstacle's face
  * (stop gap at most US_OBSTACLE_CM 15), so the first side check is
  * already beside the obstacle; then BYPASS_ALONG_STEP_CM steps.       */
@@ -378,14 +398,19 @@
 #define BYPASS_ALONG_STEP_CM (20U)
 /* Side check: obstacle on the right of a left bypass (servo 15 deg, the
  * sweep end), on the left of a right one. It sits side gap + half width
- * = 15-35 cm from the sensor; under BYPASS_SIDE_CM means still there.  */
+ * from the sensor: with BYPASS_WIDTH_MARGIN_CM 20 that is 27-47 cm, so
+ * the limit must be above 47 or the first side check reads clear while
+ * the car is still beside the obstacle. Keep it about
+ * BYPASS_WIDTH_MARGIN_CM + 35. Under BYPASS_SIDE_CM means still there. */
 #define BYPASS_SIDE_DEG ((0 != BYPASS_ON_LEFT) ? SCAN_MIN_DEG : SCAN_MAX_DEG)
-#define BYPASS_SIDE_CM       (45U)
-/* Once the side reads clear the obstacle ends at most ~1 cm ahead of the
- * sensor (the 15 deg ray leans forward), i.e. 8.5 cm ahead of the axle.
- * Driving 20 cm more puts it behind the car's back side once it turns
- * toward the line (7.5 cm behind the axle), with 4 cm spare.           */
-#define BYPASS_PAST_CM       (20U)
+#define BYPASS_SIDE_CM       (55U)
+/* Once the side reads clear the obstacle can still end ahead of the
+ * sensor: the 15 deg ray leans forward by 0.27 x its range, 7-13 cm at
+ * 27-47 cm (margin 20), i.e. up to 20.5 cm ahead of the axle. The car's
+ * back side is 7.5 cm behind the axle and the turn swings 3.1 cm, so
+ * drive 20.5 + 7.5 + ~4 spare = 32 -> 35 cm. A wider margin needs more:
+ * roughly 0.27 x BYPASS_SIDE_CM + 15. TUNE.                           */
+#define BYPASS_PAST_CM       (25U)
 /* Check rays, fixed and not SCAN_MIN/MAX_DEG: at BYPASS_PEEK_CM a 60 deg
  * ray is 10 cm to the side and 17 cm ahead, just outside the car's
  * half width (7.5 cm), so the check sees the strip the body drives
@@ -404,6 +429,16 @@
  * otherwise the turn leaves the car parallel to, but beside, the line.
  * TUNE: measure on the car. 0 turns as soon as the line is seen.       */
 #define LINE_SENSOR_AHEAD_CM (8U)
+/* Turn onto the line after the axle step: a search turn, not a fixed
+ * BYPASS_TURN_DEG. On a curve the line meets the return path at
+ * 90 +/- the curve's bend, so the car turns until a sensor sees black,
+ * accepted from REJOIN_MIN_DEG (ignores the line just crossed) up to
+ * REJOIN_MAX_DEG (stays short of the 180 deg facing back the way it
+ * came). A plain 90 deg turn accepts black only after 54 deg and stops
+ * at 90, so it swept past a line bending one way and fell short of one
+ * bending the other. TUNE: stops on the old line -> raise MIN.        */
+#define REJOIN_MIN_DEG       (30U)
+#define REJOIN_MAX_DEG       (150U)
 /* Backstop over the longest return leg (BYPASS_MAX_STEPS x
  * BYPASS_STEP_CM + margin + extra, ~2.2 m at SPEED_SEARCH_CMS ~25 s),
  * the axle step and the turn. TUNE.                                    */
@@ -414,13 +449,21 @@
 /* ------------------------------------------------------------------ */
 #define INIT_TIMEOUT_MS      (15000U)
 #define BARCODE_TURN_DEG     (90U)
+/* Barcode Left / Right / U-turn at the junction: with a calibrated
+ * compass, checked like the bypass turns (stop, settle, encoder turn at
+ * BYPASS_TURN_CMS, settle, measure, correct; BYPASS_FIX_*). They then
+ * end on the angle, not on the first black of the branch. A U-turn is
+ * two checked 90 deg turns: the compass cannot tell 179 from 181 deg.
+ * Without a calibrated compass, or at 0, they are the plain encoder
+ * turns that stop early on the branch.                                 */
+#define BARCODE_TURN_CHECK   (1U)               /* 0 = encoder-only      */
 #define BARCODE_STRAIGHT_CM  (10U)
 /* At a junction the line sensors reach the cross line before the axle:
  * drive this far first so the spot turn pivots on the junction and the
  * sensors swing onto the branch (Left, Right, U-turn). Line sensors to
  * axle (measured 6 cm) plus about half the line width. 0 = turn at once.
  * TUNE: turns too early -> raise; overshoots the branch -> lower.     */
-#define JUNCTION_AHEAD_CM    (LINE_SENSOR_AHEAD_CM)
+#define JUNCTION_AHEAD_CM    (22U)
 #define UTURN_DEG            (180U)
 /* Dashboard calibration: after the compass spin and after the 90 deg
  * check turn the car waits this long, motors off, before reading the
