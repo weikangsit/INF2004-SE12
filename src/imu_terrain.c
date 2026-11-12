@@ -28,6 +28,7 @@
 #include "car_config.h"
 #include "i2c_drv.h"
 #include "imu_terrain.h"
+#include "nav_fsm.h"
 #include "proto.h"
 #include "safety.h"
 #include "systime.h"
@@ -115,6 +116,9 @@ typedef struct
     float32_t roll_max;        /* highest right-wheel lift in it, mm     */
     uint32_t  roll_hold;       /* samples in a row past the threshold    */
     uint32_t  roll_ms;         /* time in the current one-sided hump     */
+    uint8_t   nav_prev;        /* Nav state at the last sample           */
+    float32_t lift_hist[HUMP_PEAK_HOLD]; /* last lifts, mm          */
+    uint32_t  lift_idx;        /* next slot in lift_hist                 */
     vec3_t    cal_min;         /* magnetometer calibration               */
     vec3_t    cal_max;
     bool      b_cal_active;
@@ -431,6 +435,23 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
      * the car's tilt, so remove the mounting offset. */
     vehicle_state_read(&state);
     level_step(p_acc, &state);
+    
+        /* Reset fault (Fault -> any other state) starts a new run: clear the
+     * highest hump and any hump still in progress. */
+    if (((uint8_t) NAV_FAULT == g_ctx.nav_prev) &&
+        ((uint8_t) NAV_FAULT != state.nav_state))
+    {
+        g_ctx.run_peak    = 0.0f;
+        g_ctx.b_candidate = false;
+        g_ctx.b_in_hump   = false;
+        g_ctx.hump_h      = 0.0f;
+        g_ctx.hump_max    = 0.0f;
+        g_ctx.b_roll_hump = false;
+        g_ctx.roll_hold   = 0U;
+        g_ctx.roll_max    = 0.0f;
+        tm_printf((UB *) "imu: highest hump reset\n");
+    }
+    g_ctx.nav_prev = state.nav_state;
     pitch -= g_ctx.pitch_off;
     roll  -= g_ctx.roll_off;
 
@@ -696,6 +717,18 @@ roll_hump_track (float32_t roll, bool b_moving, bool b_turning)
 {
     float32_t const roll_deg = fabsf(roll) * RAD2DEG;
     float32_t const lift_mm  = HUMP_TRACK_MM * fabsf(tanf(roll));
+    float32_t       held_mm  = lift_mm;
+    uint32_t        idx      = 0U;
+
+    /* Lift that has lasted HUMP_PEAK_HOLD samples: the smallest of the
+     * last few. A jolt lasts one or two samples, so it cannot raise the
+     * hump height; the wheel sitting on the ramp lasts much longer. */
+    g_ctx.lift_hist[g_ctx.lift_idx] = lift_mm;
+    g_ctx.lift_idx = (g_ctx.lift_idx + 1U) % HUMP_PEAK_HOLD;
+    for (idx = 0U; idx < HUMP_PEAK_HOLD; idx++)
+    {
+        held_mm = fminf(held_mm, g_ctx.lift_hist[idx]);
+    }
 
     if (!g_ctx.b_roll_hump)
     {
@@ -713,7 +746,7 @@ roll_hump_track (float32_t roll, bool b_moving, bool b_turning)
             g_ctx.b_roll_hump = true;
             g_ctx.roll_hold   = 0U;
             g_ctx.roll_ms     = 0U;
-            g_ctx.roll_max    = lift_mm;
+            g_ctx.roll_max    = held_mm;
 
             if (!g_ctx.b_in_hump)
             {
@@ -723,7 +756,7 @@ roll_hump_track (float32_t roll, bool b_moving, bool b_turning)
     }
     else
     {
-        g_ctx.roll_max = fmaxf(g_ctx.roll_max, lift_mm);
+        g_ctx.roll_max = fmaxf(g_ctx.roll_max, held_mm);
         g_ctx.roll_ms += PERIOD_IMU_MS;
 
         if (roll_deg < HUMP_ROLL_OFF_DEG)

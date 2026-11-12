@@ -352,9 +352,6 @@
           e.fault,
         );
       else {
-        if (e.kind === "HUMP")
-          $("t-hump-last").textContent =
-            (e.fields.height / 2).toFixed(1) + " mm";
         logEvent(e.text, e.fault);
       }
     } else if (sub === "debug/barcode") {

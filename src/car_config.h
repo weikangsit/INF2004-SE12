@@ -295,6 +295,10 @@
 #define HUMP_ROLL_OFF_DEG    (1.0f)    /* roll that ends it              */
 #define HUMP_ROLL_HOLD       (3U)      /* samples in a row (60 ms)       */
 #define HUMP_MAX_MS          (5000U)   /* give up on a hump after this   */
+/* A lift only counts towards the hump height once it has lasted this
+ * many samples (5 x 20 ms = 100 ms): jolts from the ramp edge or a
+ * steering kick last only one or two samples. TUNE.                  */
+#define HUMP_PEAK_HOLD       (5U)
 #define IMU_LIVE_LIFT        (0)    /* 1: print live lift on USB serial (bench check) */
 #define IMPACT_G             (1.50f)   /* horizontal jerk -> collision  */
 /* A jump only counts if the next reading is still this far from the
