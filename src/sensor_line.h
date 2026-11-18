@@ -30,6 +30,7 @@ void     sensor_line_init (void);
 void     sensor_line_task (INT stacd, void * p_exinf);
 bool     sensor_line_read (uint8_t * p_bits);
 uint32_t sensor_line_black_age_ms (void);
+uint32_t sensor_line_both_black_ms (void);
 uint32_t sensor_line_events_take (void);
 void     sensor_line_request_calibration (void);
 bool     sensor_line_is_ready (void);

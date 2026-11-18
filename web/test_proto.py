@@ -430,7 +430,7 @@ def ref_build(rays, lim):
     scan, half, _ = lim
     prof = dict(closest=NO_ECHO, closest_deg=90, width=0, valid=0, in_path=False,
                 centre=False)
-    xs = []
+    hits = []
     left = max(range(len(rays)), key=lambda i: (rays[i][0], -i))
     right = min(range(len(rays)), key=lambda i: (rays[i][0], i))
     for ang, rng_cm in rays:
@@ -441,13 +441,22 @@ def ref_build(rays, lim):
             prof["centre"] = True
         if rng_cm < scan:
             x = cdiv(rng_cm * ref_cos(ang), 1000)
-            xs.append(x)
+            hits.append((ang, rng_cm))
             if -half <= x <= half:
                 prof["in_path"] = True
             if rng_cm < prof["closest"]:
                 prof["closest"], prof["closest_deg"] = rng_cm, ang
-    if xs:
-        prof["width"] = max(xs) - min(xs)
+    if hits:
+        # Face width from ranges: sqrt(r^2 - closest^2), nearest integer
+        # (largest s with s^2 - s < n), widest left and right of closest.
+        def off(r):
+            n, s = r * r - prof["closest"] ** 2, 0
+            while s * s + s < n:
+                s += 1
+            return s
+        cd = prof["closest_deg"]
+        prof["width"] = (max([off(r) for a, r in hits if a > cd], default=0) +
+                         max([off(r) for a, r in hits if a < cd], default=0))
     prof["left"], prof["right"] = rays[left][1], rays[right][1]
     return prof
 

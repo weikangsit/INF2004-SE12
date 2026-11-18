@@ -53,6 +53,9 @@ typedef struct
 static ID                g_evt_flg       = 0;
 static volatile uint32_t g_latest        = 0U;    /* bits | stamp << 16   */
 static volatile uint32_t g_last_black_ms = 0U;
+/* Start of the current run of both sensors raw black (lift check). */
+static volatile uint32_t g_both_since_ms = 0U;
+static volatile bool     gb_both_black   = false;
 static volatile bool     gb_cal_request = true;  /* calibrate at boot    */
 static volatile bool     gb_ready       = false;
 
@@ -182,6 +185,24 @@ uint32_t
 sensor_line_black_age_ms (void)
 {
     return (systime_now_ms() - g_last_black_ms);
+}
+
+/*!
+ * @brief  How long both sensors have read raw black without a break
+ *         (lift check: nothing reflects the IR off the ground).
+ * @return Milliseconds, 0 if either sensor reads white now.
+ */
+uint32_t
+sensor_line_both_black_ms (void)
+{
+    uint32_t result = 0U;
+
+    if (gb_both_black)
+    {
+        result = systime_now_ms() - g_both_since_ms;
+    }
+
+    return (result);
 }
 
 /*!
@@ -317,6 +338,22 @@ reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
     if ((0U != bits) && (0U == prev_bits))
     {
         events |= SENSOR_LINE_EVT_REGAINED;
+    }
+
+    /* Lift check: raw, not held. The start time is written before the
+     * flag, so a reader that sees the flag sees this run's start. */
+    if (BOTH_BLACK != raw)
+    {
+        gb_both_black = false;
+    }
+    else if (!gb_both_black)
+    {
+        g_both_since_ms = systime_now_ms();
+        gb_both_black   = true;
+    }
+    else
+    {
+        /* Still both black. */
     }
 
     (void) prev_raw;                      /* windowed below instead       */

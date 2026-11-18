@@ -37,7 +37,7 @@ typedef struct
 {
     uint16_t closest_cm;         /* OBSTACLE_NO_ECHO if nothing in range  */
     uint16_t closest_deg;
-    uint16_t width_cm;           /* lateral extent of the hits            */
+    uint16_t width_cm;           /* face width from the ranges            */
     uint16_t clear_left_cm;      /* left-edge ray; NO_ECHO = unknown      */
     uint16_t clear_right_cm;     /* right-edge ray; NO_ECHO = unknown     */
     uint8_t  valid_rays;

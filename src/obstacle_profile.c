@@ -9,10 +9,9 @@
 #define CENTRE_SPAN_DEG      (15U)
 #define BHASKARA_A           (4)
 #define BHASKARA_B           (40500)
-#define NO_HIT_MIN           (INT32_MAX)
-#define NO_HIT_MAX           (INT32_MIN)
 
 static int32_t  sin1000 (uint32_t angle_deg);
+static uint32_t face_offset_cm (uint32_t range_cm, uint32_t closest_cm);
 static uint32_t angle_distance (uint32_t angle_deg, uint32_t ref_deg);
 
 /*!
@@ -27,8 +26,6 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
                         obstacle_limits_t const * p_limits,
                         obstacle_profile_t * p_out)
 {
-    int32_t  x_min    = NO_HIT_MIN;
-    int32_t  x_max    = NO_HIT_MAX;
     uint32_t left_i   = 0U;
     uint32_t right_i  = 0U;
     uint32_t idx      = 0U;
@@ -68,9 +65,6 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
                                    obstacle_profile_cos1000(p_ray->angle_deg))
                                   / SCALE;
 
-                x_min = (lateral < x_min) ? lateral : x_min;
-                x_max = (lateral > x_max) ? lateral : x_max;
-
                 /* half_corridor_cm is a uint16_t, so it fits int32_t. */
                 if ((lateral <= (int32_t) p_limits->half_corridor_cm) &&
                     (lateral >= -(int32_t) p_limits->half_corridor_cm))
@@ -87,11 +81,48 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
         }
     }
 
-    if (x_max >= x_min)
+    if (OBSTACLE_NO_ECHO != p_out->closest_cm)
     {
-        /* Both come from ranges under scan_range_cm, so the difference
-         * is small and positive. */
-        p_out->width_cm = (uint16_t) (x_max - x_min);
+        /* Width from ranges only, not ray angles. The ~30 deg beam (and
+         * strong corner echoes, heard out to the 15 / 165 deg sweep
+         * ends) returns the nearest point anywhere in the cone, so
+         * range x cos(ray angle) put a 16 cm box's corners 14.5 cm each
+         * side (measured: read 30 cm). Every point on the face, corners
+         * included, lies sqrt(range^2 - closest^2) along it from the
+         * closest point, whichever ray heard it. Left of the closest
+         * ray (larger angle) and right of it are summed, widest each. */
+        uint32_t half_left  = 0U;
+        uint32_t half_right = 0U;
+
+        for (idx = 0U; idx < count; idx++)
+        {
+            obstacle_ray_t const * const p_ray = &p_rays[idx];
+
+            if ((OBSTACLE_NO_ECHO != p_ray->range_cm) &&
+                (p_ray->range_cm < p_limits->scan_range_cm))
+            {
+                uint32_t const off = face_offset_cm(p_ray->range_cm,
+                                                    p_out->closest_cm);
+
+                if ((p_ray->angle_deg > p_out->closest_deg) &&
+                    (off > half_left))
+                {
+                    half_left = off;
+                }
+                else if ((p_ray->angle_deg < p_out->closest_deg) &&
+                         (off > half_right))
+                {
+                    half_right = off;
+                }
+                else
+                {
+                    /* The closest ray itself, or not the widest. */
+                }
+            }
+        }
+
+        /* Each half is under scan_range_cm, so the sum fits. */
+        p_out->width_cm = (uint16_t) (half_left + half_right);
     }
 
     p_out->clear_left_cm  = p_rays[left_i].range_cm;
@@ -207,6 +238,30 @@ sin1000 (uint32_t angle_deg)
     int32_t const product = angle * ((int32_t) STRAIGHT_DEG - angle);
 
     return ((BHASKARA_A * product * SCALE) / (BHASKARA_B - product));
+}
+
+/*!
+ * @brief  Distance along the obstacle face from its closest point to a
+ *         point heard at range_cm: sqrt(range^2 - closest^2), rounded.
+ * @param  range_cm    Range of the point, cm (under the scan range).
+ * @param  closest_cm  Closest range of the sweep, cm (<= range_cm).
+ * @return Offset along the face, cm.
+ */
+static uint32_t
+face_offset_cm (uint32_t range_cm, uint32_t closest_cm)
+{
+    /* Ranges are under scan_range_cm (a few hundred cm), so the squares
+     * fit easily. */
+    uint32_t const sq = (range_cm * range_cm) - (closest_cm * closest_cm);
+    uint32_t       s  = 0U;
+
+    /* Nearest integer root: the largest s with s^2 - s < sq. */
+    while (((s * s) + s) < sq)
+    {
+        s++;
+    }
+
+    return (s);
 }
 
 /*!

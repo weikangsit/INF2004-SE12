@@ -47,7 +47,7 @@
                   "reacquire failed", "self-test", "telemetry late", "software"];
   const WARNINGS = (1 << 4) | (1 << 14);   // WiFi loss, telemetry late: reported only
   const HB_TASKS = ["line", "motion", "imu", "ultrasonic", "nav", "comms", "telemetry"];
-  const FC_STALL = 0, FC_HEARTBEAT = 9, FC_NO_ROUTE = 11;
+  const FC_STALL = 0, FC_LINE_LOST = 7, FC_HEARTBEAT = 9, FC_NO_ROUTE = 11;
   // motion.c states that can stall (EV_FAULT stall: value2)
   const MOTION_STATES = ["stopped", "driving straight", "reversing", "turning left", "turning right", "U-turning"];
   // EV_FAULT stall detail bits (motion.c): which wheel had no encoder edges, or the time limit
@@ -167,6 +167,7 @@
                 (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
       case 5: return "FAULT: " + (FAULTS[f.code] || f.code) +
                 (f.code === FC_HEARTBEAT ? " (" + (HB_TASKS[f.detail] || f.detail) + ")" : "") +
+                (f.code === FC_LINE_LOST && f.detail === 1 ? " (car lifted off the ground: both line sensors black)" : "") +
                 (f.code === FC_NO_ROUTE && f.detail === 1 ? " (scan cannot proceed safely: no valid echo ahead, or both sides blocked)" : "") +
                 (f.code === FC_NO_ROUTE && f.detail === 2 ? " (bypass path blocked)" : "") +
                 (f.code === FC_NO_ROUTE && f.detail === 3 ? " (obstacle too large: edge not found)" : "") +

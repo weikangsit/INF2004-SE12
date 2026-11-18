@@ -164,7 +164,7 @@ typedef struct
     uint32_t        tc_ms;                /* start of a settle wait      */
     uint16_t        tc_hdg0;              /* heading before, 0.5 deg     */
     uint32_t        tc_fixes;             /* correction turns made       */
-    uint32_t        tc_repeat;            /* checked turns still to make */
+    bool            b_uturn_next;         /* U-turn: search for line 2   */
     cal_stage_t     cal_stage;
     uint32_t        cal_ms;               /* start of a settle wait      */
     uint16_t        cal_hdg0;             /* heading before the turn     */
@@ -195,6 +195,7 @@ static void    bypass_return (void);
 static void    bypass_turn (bool b_left, uint32_t angle_deg);
 static bool    bypass_turn_step (uint32_t now);
 static void    barcode_turn_start (barcode_map_action_t action);
+static bool    lift_detected (void);
 static int32_t heading_turned_half (uint16_t from, uint16_t to);
 static void    reacquire_step (nav_in_t const * p_in);
 static bool    path_is_blocked (void);
@@ -432,6 +433,11 @@ state_step (nav_in_t const * p_in)
     }
     else
     {
+        if (lift_detected())
+        {
+            safety_report(SAFETY_EVT_LIFTED);     /* Safety trips         */
+        }
+
         switch (g_nav.state)
         {
             case NAV_INIT:           init_step(p_in);      break;
@@ -439,24 +445,14 @@ state_step (nav_in_t const * p_in)
             case NAV_LINE_FOLLOW:
             case NAV_HUMP_REPORT:    follow_step(p_in);    break;
             case NAV_BARCODE_ACT:
-                if (TC_IDLE != g_nav.tc_stage)
+                if (b_done && g_nav.b_uturn_next)
                 {
-                    /* Compass-checked barcode turn (settle waits run
-                     * with no motion pending). */
-                    if (!bypass_turn_step(p_in->now))
-                    {
-                        /* Still turning, settling or correcting. */
-                    }
-                    else if (g_nav.tc_repeat > 0U)
-                    {
-                        g_nav.tc_repeat--;        /* U-turn: second 90    */
-                        bypass_turn(g_nav.b_tc_left, BARCODE_TURN_DEG);
-                    }
-                    else
-                    {
-                        follow_begin();
-                        enter(NAV_LINE_FOLLOW);
-                    }
+                    /* U-turn stopped on the first line: skip it and
+                     * turn on to the next one. */
+                    g_nav.b_uturn_next = false;
+                    g_nav.pending_seq  = motion_control_turn_search(
+                        true, SPEED_TURN_CMS,
+                        UTURN_NEXT_MAX_DEG, UTURN_NEXT_MIN_DEG);
                 }
                 else if (b_done && (BA_NONE != g_nav.bar_turn))
                 {
@@ -1148,11 +1144,10 @@ bypass_turn (bool b_left, uint32_t angle_deg)
 }
 
 /*!
- * @brief  Start the spot turn of a barcode action at the junction. With a
- *         calibrated compass it is a checked turn (bypass_turn(); a
- *         U-turn is two checked 90 deg turns to the left, the way
- *         motion_control_uturn() turns). Otherwise the plain encoder turn
- *         that stops early on the branch. NAV_BARCODE_ACT runs both.
+ * @brief  Start the spot turn of a barcode action at the junction: a
+ *         search turn that stops on the branch line (Left / Right). A
+ *         U-turn turns left the same way, then NAV_BARCODE_ACT skips the
+ *         line it stopped on and searches for the next one.
  * @param  action  BA_LEFT, BA_RIGHT or BA_UTURN.
  */
 static void
@@ -1160,21 +1155,11 @@ barcode_turn_start (barcode_map_action_t action)
 {
     bool const b_uturn = (BA_UTURN == action);
 
-    g_nav.tc_repeat = 0U;
-
-    if ((0U != BARCODE_TURN_CHECK) && imu_terrain_mag_is_calibrated())
-    {
-        g_nav.tc_repeat = b_uturn ? 1U : 0U;
-        bypass_turn(b_uturn || (BA_LEFT == action), BARCODE_TURN_DEG);
-    }
-    else
-    {
-        g_nav.tc_stage    = TC_IDLE;
-        g_nav.pending_seq = b_uturn ?
-            motion_control_uturn() :
-            motion_control_turn(BA_LEFT == action, SPEED_TURN_CMS,
-                                BARCODE_TURN_DEG, true);
-    }
+    g_nav.tc_stage     = TC_IDLE;
+    g_nav.b_uturn_next = b_uturn;
+    g_nav.pending_seq  = motion_control_turn_search(
+        b_uturn || (BA_LEFT == action), SPEED_TURN_CMS,
+        JUNCTION_TURN_MAX_DEG, JUNCTION_TURN_MIN_DEG);
 }
 
 /*!
@@ -1233,13 +1218,20 @@ bypass_turn_step (uint32_t now)
                     {
                         /* Short: more the same way; past: back. size is
                          * at most 50 half degrees, so the angle fits. */
+                        /* Ask for BYPASS_FIX_GAIN_PCT of the error: small
+                         * turns overshoot. At least 1 deg. */
+                        int32_t const fix_half =
+                            (size * BYPASS_FIX_GAIN_PCT) / 100;
+                        int32_t const fix_deg  =
+                            (fix_half + 1) / HALF_DEG_PER_DEG;
+
                         g_nav.tc_fixes++;
                         g_nav.tc_stage    = TC_FIX;
                         b_finished        = false;
                         g_nav.pending_seq = motion_control_turn(
                             (err > 0) ? g_nav.b_tc_left : !g_nav.b_tc_left,
                             BYPASS_FIX_CMS,
-                            (uint32_t) ((size + 1) / HALF_DEG_PER_DEG),
+                            (uint32_t) ((fix_deg > 0) ? fix_deg : 1),
                             false);
                     }
                     else
@@ -1269,6 +1261,41 @@ bypass_turn_step (uint32_t now)
     }
 
     return (b_finished);
+}
+
+/*!
+ * @brief  Lift check: both line sensors raw black for longer than
+ *         LIFT_MS while the wheels are being driven. Line following
+ *         always drives (its command is not awaited); other states only
+ *         while a motion is pending, so a car stopped on a junction for
+ *         a scan or a settle wait does not trip.
+ * @return True if the car looks lifted off the ground.
+ */
+static bool
+lift_detected (void)
+{
+    bool b_driving = false;
+
+    switch (g_nav.state)
+    {
+        case NAV_LINE_FOLLOW:
+        case NAV_HUMP_REPORT:
+            b_driving = true;
+        break;
+
+        case NAV_BARCODE_ACT:
+        case NAV_OBSTACLE_AVOID:
+        case NAV_LINE_REACQUIRE:
+            b_driving = (NO_SEQ != g_nav.pending_seq);
+        break;
+
+        default:
+            b_driving = false;                    /* stopped or idle      */
+        break;
+    }
+
+    return ((0U != LIFT_MS) && b_driving &&
+            (sensor_line_both_black_ms() > LIFT_MS));
 }
 
 /*!
@@ -1331,6 +1358,7 @@ reset_step (nav_in_t const * p_in)
         g_nav.pending_seq    = NO_SEQ;
         g_nav.pending_slot   = NO_SLOT;
         g_nav.bar_turn       = BA_NONE;
+        g_nav.b_uturn_next   = false;
         g_nav.tc_stage       = TC_IDLE;
         g_nav.bypass         = BYPASS_NONE;
         g_nav.b_on_line_step = false;
@@ -1370,6 +1398,7 @@ follow_begin (void)
 {
     g_nav.pending_slot = NO_SLOT;         /* drop any stale barcode       */
     g_nav.bar_turn     = BA_NONE;
+    g_nav.b_uturn_next = false;
     (void) motion_control_forward(SPEED_CRUISE_CMS, 0U, true);
 }
 

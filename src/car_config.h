@@ -145,6 +145,18 @@
 /* Speeds in cm/s, scaled by SPEED_SCALE_PCT (75 % since the IR sensor
  * commit; Week 6 NFR1 cruise is 30 cm/s, see Tribunal change log).     */
 #define SPEED_SCALE_PCT      (75U)
+/* One speed for every operation: straights, curves, humps, searches,
+ * turns, bypass legs and corrections. 8 cm/s is the speed the line
+ * steering (K_LINE_STEER_MPS) and barcode reads are tuned at. Set to 0
+ * to go back to the separate speeds below. TUNE.                      */
+#define SPEED_ALL_CMS        (8U)
+#if (SPEED_ALL_CMS > 0U)
+#define SPEED_CRUISE_CMS     (SPEED_ALL_CMS)   /* was 22                */
+#define SPEED_HUMP_CMS       (SPEED_ALL_CMS)   /* was 11                */
+#define SPEED_SEARCH_CMS     (SPEED_ALL_CMS)   /* was 9                 */
+#define SPEED_TURN_CMS       (SPEED_ALL_CMS)   /* was 11                */
+#define SPEED_STEER_CMS      (SPEED_ALL_CMS)   /* was 8                 */
+#else
 #define SPEED_CRUISE_CMS     ((30U * SPEED_SCALE_PCT) / 100U)  /* 22    */
 #define SPEED_HUMP_CMS       ((15U * SPEED_SCALE_PCT) / 100U)  /* 11    */
 #define SPEED_SEARCH_CMS     ((12U * SPEED_SCALE_PCT) / 100U)  /* 9     */
@@ -153,6 +165,7 @@
  * on circles of 8-30 cm radius: 13 cm/s lost circles under ~12 cm,
  * 8 cm/s held all of them and wandered less on straights.              */
 #define SPEED_STEER_CMS      ((11U * SPEED_SCALE_PCT) / 100U)  /* 8     */
+#endif
 
 /* Line steering: wheel speed differential while one sensor sees black.
  * LINE_STEER_DIR +1 steers toward the black sensor, -1 away from it.   */
@@ -237,7 +250,15 @@
 /* Two straddling sensors cannot tell "centred" from "lost": the line
  * counts as lost when neither sensor has seen black for this long
  * while line following (Week 6: 3 s). TUNE on long straights.          */
-#define LINE_LOST_MS         (3000U)
+#define LINE_LOST_MS         (10000U)
+/* Lifted off the ground: nothing reflects the IR, so both line sensors
+ * read raw black. A junction passes in ~80 ms at cruise, ~250 ms at
+ * 8 cm/s; both black for longer than this while the car is driving
+ * trips a safety stop (FC_LINE_LOST, "car lifted off the ground").
+ * Not checked while stopped (READY, scans, settle waits), where the car
+ * may rest on a junction. 0 = off. TUNE: false trips on wide black
+ * areas or humps -> raise.                                            */
+#define LIFT_MS              (2500U)
 /* During a read the car stops line steering and drives straight at
  * SPEED_STEER_CMS: steering pivots the barcode sensor (far out in front)
  * over the bars and spoils the read. The hold starts on the first edge
@@ -316,7 +337,7 @@
  * min / max cover the whole circle even when encoder turns come up
  * short (measured: a 360 deg request stopped short).                   */
 #define MAG_CAL_SPIN_DEG     (450U)
-#define MAG_CAL_SPEED_CMS    (8U)      /* slow spin while calibrating   */
+#define MAG_CAL_SPEED_CMS    ((SPEED_ALL_CMS > 0U) ? SPEED_ALL_CMS : 8U)
 #define MAG_CAL_MIN_SPAN_GS  (0.10f)   /* each axis must change by this */
 
 /* ------------------------------------------------------------------ */
@@ -334,7 +355,7 @@
 #define SERVO_MS_PER_DEG     (4U)
 #define SERVO_CENTRE_DEG     (90U)
 /* Sweep limits (Week 6 requirement; the servo mount is fixed).        */
-#define SCAN_MIN_DEG         (15U)
+#define SCAN_MIN_DEG         (25U)
 #define SCAN_MAX_DEG         (165U)
 #define SCAN_COARSE_RAYS     (5U)
 #define SERVO_FINE_STEP_DEG  (5U)
@@ -365,6 +386,12 @@
 #define BYPASS_FIX_LIMIT_DEG (25)
 #define BYPASS_FIX_MAX       (2U)
 #define BYPASS_FIX_CMS       (SPEED_STEER_CMS)
+/* A correction turn asks for this share of the measured error. A turn
+ * of a few degrees overshoots (the start kick past the motor dead band,
+ * then coasting; TURN_TRACK_WIDTH_M is tuned on 90 deg turns), measured
+ * on every correction. The next check fixes any shortfall. TUNE: still
+ * overshoots -> lower; corrections come up short -> raise (100 = all). */
+#define BYPASS_FIX_GAIN_PCT  (70)
 /* Step-and-check bypass in small steps (team flow; measured car: sensor
  * 7.5 cm ahead of the axle, half width 7.5 cm, front corners 10.6 cm
  * from the axle, so a spot turn swings them 3.1 cm past the side).
@@ -449,21 +476,27 @@
 /* ------------------------------------------------------------------ */
 #define INIT_TIMEOUT_MS      (15000U)
 #define BARCODE_TURN_DEG     (90U)
-/* Barcode Left / Right / U-turn at the junction: with a calibrated
- * compass, checked like the bypass turns (stop, settle, encoder turn at
- * BYPASS_TURN_CMS, settle, measure, correct; BYPASS_FIX_*). They then
- * end on the angle, not on the first black of the branch. A U-turn is
- * two checked 90 deg turns: the compass cannot tell 179 from 181 deg.
- * Without a calibrated compass, or at 0, they are the plain encoder
- * turns that stop early on the branch.                                 */
-#define BARCODE_TURN_CHECK   (1U)               /* 0 = encoder-only      */
+/* Barcode Left / Right at the junction: a search turn that stops when a
+ * line sensor sees the branch, black accepted from JUNCTION_TURN_MIN_DEG
+ * (ignores the line the car came along, which the sensors straddle at
+ * the start) up to JUNCTION_TURN_MAX_DEG (no branch found: stops there).
+ * U-turn (left): the same search turn stops on the first line, which is
+ * skipped; a second search from there (UTURN_NEXT_MIN/MAX_DEG) stops on
+ * the next line, normally the one the car came along. With no left
+ * branch the first search ends at JUNCTION_TURN_MAX_DEG (135) and the
+ * second still finds the line behind 45 deg later. TUNE: stops on the
+ * line it started on -> raise the MIN.                                 */
+#define JUNCTION_TURN_MIN_DEG (45U)
+#define JUNCTION_TURN_MAX_DEG (135U)
+#define UTURN_NEXT_MIN_DEG   (30U)
+#define UTURN_NEXT_MAX_DEG   (150U)
 #define BARCODE_STRAIGHT_CM  (10U)
 /* At a junction the line sensors reach the cross line before the axle:
  * drive this far first so the spot turn pivots on the junction and the
  * sensors swing onto the branch (Left, Right, U-turn). Line sensors to
  * axle (measured 6 cm) plus about half the line width. 0 = turn at once.
  * TUNE: turns too early -> raise; overshoots the branch -> lower.     */
-#define JUNCTION_AHEAD_CM    (22U)
+#define JUNCTION_AHEAD_CM    (24U)
 #define UTURN_DEG            (180U)
 /* Dashboard calibration: after the compass spin and after the 90 deg
  * check turn the car waits this long, motors off, before reading the

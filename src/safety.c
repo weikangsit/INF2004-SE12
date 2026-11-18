@@ -31,7 +31,8 @@
 #include "telemetry.h"
 
 #define ALL_EVENTS           (SAFETY_EVT_COLLISION | SAFETY_EVT_OVERTILT |  \
-                              SAFETY_EVT_LINE_LOST | SAFETY_EVT_ESTOP)
+                              SAFETY_EVT_LINE_LOST | SAFETY_EVT_ESTOP |     \
+                              SAFETY_EVT_LIFTED)
 #define ALL_HEARTBEATS       (0x7FU)
 #define TASK_COUNT           (7U)
 
@@ -194,6 +195,11 @@ events_handle (uint32_t events)
     if (0U != (events & SAFETY_EVT_LINE_LOST))
     {
         trip(FC_LINE_LOST, 0U);
+    }
+
+    if (0U != (events & SAFETY_EVT_LIFTED))
+    {
+        trip(FC_LINE_LOST, SAFETY_DETAIL_LIFTED);
     }
 }
 

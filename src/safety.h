@@ -30,6 +30,12 @@
 #define SAFETY_EVT_OVERTILT  (1U << 1)
 #define SAFETY_EVT_LINE_LOST (1U << 2)
 #define SAFETY_EVT_ESTOP     (1U << 3)
+#define SAFETY_EVT_LIFTED    (1U << 4)   /* trips FC_LINE_LOST, detail 1 */
+
+/* EV_FAULT detail of FC_LINE_LOST: the car was lifted off the ground
+ * (both line sensors black for LIFT_MS while driving). All 16 fault
+ * codes are in use, so the lift shares the line-lost code.            */
+#define SAFETY_DETAIL_LIFTED (1U)
 
 void safety_init (void);
 void safety_task (INT stacd, void * p_exinf);
