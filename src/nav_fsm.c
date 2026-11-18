@@ -1218,20 +1218,13 @@ bypass_turn_step (uint32_t now)
                     {
                         /* Short: more the same way; past: back. size is
                          * at most 50 half degrees, so the angle fits. */
-                        /* Ask for BYPASS_FIX_GAIN_PCT of the error: small
-                         * turns overshoot. At least 1 deg. */
-                        int32_t const fix_half =
-                            (size * BYPASS_FIX_GAIN_PCT) / 100;
-                        int32_t const fix_deg  =
-                            (fix_half + 1) / HALF_DEG_PER_DEG;
-
                         g_nav.tc_fixes++;
                         g_nav.tc_stage    = TC_FIX;
                         b_finished        = false;
                         g_nav.pending_seq = motion_control_turn(
                             (err > 0) ? g_nav.b_tc_left : !g_nav.b_tc_left,
                             BYPASS_FIX_CMS,
-                            (uint32_t) ((fix_deg > 0) ? fix_deg : 1),
+                            (uint32_t) ((size + 1) / HALF_DEG_PER_DEG),
                             false);
                     }
                     else

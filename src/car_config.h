@@ -386,12 +386,6 @@
 #define BYPASS_FIX_LIMIT_DEG (25)
 #define BYPASS_FIX_MAX       (2U)
 #define BYPASS_FIX_CMS       (SPEED_STEER_CMS)
-/* A correction turn asks for this share of the measured error. A turn
- * of a few degrees overshoots (the start kick past the motor dead band,
- * then coasting; TURN_TRACK_WIDTH_M is tuned on 90 deg turns), measured
- * on every correction. The next check fixes any shortfall. TUNE: still
- * overshoots -> lower; corrections come up short -> raise (100 = all). */
-#define BYPASS_FIX_GAIN_PCT  (70)
 /* Step-and-check bypass in small steps (team flow; measured car: sensor
  * 7.5 cm ahead of the axle, half width 7.5 cm, front corners 10.6 cm
  * from the axle, so a spot turn swings them 3.1 cm past the side).
