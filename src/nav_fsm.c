@@ -26,15 +26,15 @@
  *  check sideways (BYPASS_SIDE_DEG) after each, without turning; side
  *  clear -> BYPASS_PAST_CM more, turn toward the line and check ahead;
  *  still blocked -> turn back and step along. After BYPASS_MAX_STEPS
- *  either way it
- *  stops with FC_NO_ROUTE detail 3 ("obstacle too large"). The return
- *  leg is the measured sideways steps plus a margin. On the forward legs the
- *  centred ultrasonic sensor keeps watching ahead: something closer than
- *  US_OBSTACLE_CM stops the car with FC_NO_ROUTE detail 2 ("bypass path
- *  blocked") instead of driving into it. Reacquire: when a sensor sees
- *  the line the car drives LINE_SENSOR_AHEAD_CM more so its axle is on
- *  the line, turns back to its original heading and follows again; it
- *  faults (FC_REACQUIRE) if the return drive ends without the line.
+ *  either way it stops with FC_NO_ROUTE detail 3 ("obstacle too large").
+ *  The return leg is the measured sideways steps plus a margin. On the
+ *  forward legs the centred ultrasonic sensor keeps watching ahead:
+ *  something closer than US_OBSTACLE_CM stops the car with FC_NO_ROUTE
+ *  detail 2 ("bypass path blocked") instead of driving into it.
+ *  Reacquire: when a sensor sees the line the car drives
+ *  LINE_SENSOR_AHEAD_CM more so its axle is on the line, turns back to
+ *  its original heading and follows again; it faults (FC_REACQUIRE) if
+ *  the return drive ends without the line.
  *
  *  Faults already reported by Safety or Motion Control are not reported
  *  again here; the FSM just enters FAULT.
@@ -47,6 +47,7 @@
 
 #include "barcode.h"
 #include "barcode_map.h"
+#include "calc.h"
 #include "car_config.h"
 #include "comms.h"
 #include "fault.h"
@@ -71,8 +72,7 @@
 #define DETAIL_BYPASS_BLOCKED (2)        /* FC_NO_ROUTE detail           */
 #define DETAIL_BYPASS_TOO_BIG (3)        /* FC_NO_ROUTE detail           */
 #define HALF_DEG_PER_DEG     (2)         /* heading is in 0.5 deg        */
-#define FULL_TURN_HALF_DEG   (720)
-#define HALF_TURN_HALF_DEG   (360)
+#define TENTHS_PER_HALF_MM   (5U)        /* 0.5 mm -> 0.1 mm             */
 
 /** Obstacle bypass steps (step-and-check, see bypass_go()). */
 typedef enum
@@ -94,7 +94,8 @@ typedef enum
 typedef enum
 {
     CAL_IDLE = 0,
-    CAL_SPIN,               /* compass calibration spin                  */
+    CAL_SPIN,               /* one MAG_CAL_STEP_DEG step of the spin     */
+    CAL_SPIN_PAUSE,         /* stopped between steps: compass recorded   */
     CAL_SETTLE_BEFORE,      /* stopped: compass settles, heading noted   */
     CAL_TURN,               /* one BYPASS_TURN_DEG turn on the encoders  */
     CAL_SETTLE_AFTER        /* stopped: compass settles, angle reported  */
@@ -166,6 +167,7 @@ typedef struct
     uint32_t        tc_fixes;             /* correction turns made       */
     bool            b_uturn_next;         /* U-turn: search for line 2   */
     cal_stage_t     cal_stage;
+    uint32_t        cal_steps;            /* spin steps made             */
     uint32_t        cal_ms;               /* start of a settle wait      */
     uint16_t        cal_hdg0;             /* heading before the turn     */
     bool            b_cal_hdg0;           /* cal_hdg0 is usable          */
@@ -196,7 +198,6 @@ static void    bypass_turn (bool b_left, uint32_t angle_deg);
 static bool    bypass_turn_step (uint32_t now);
 static void    barcode_turn_start (barcode_map_action_t action);
 static bool    lift_detected (void);
-static int32_t heading_turned_half (uint16_t from, uint16_t to);
 static void    reacquire_step (nav_in_t const * p_in);
 static bool    path_is_blocked (void);
 static void    cal_motion_done (uint32_t now);
@@ -292,8 +293,10 @@ inputs_read (nav_in_t * p_in)
     (void) memset(p_in, 0, sizeof(*p_in));
     p_in->now = systime_now_ms();
 
-    p_in->b_start      = button_press(&g_nav.btn_start, hal_btn_start_raw());
-    p_in->b_cal_short  = button_release(&g_nav.btn_cal, hal_btn_cal_raw());
+    p_in->b_start        = button_press(&g_nav.btn_start,
+                                        hal_btn_start_raw());
+    p_in->b_cal_short    = button_release(&g_nav.btn_cal,
+                                          hal_btn_cal_raw());
     p_in->b_have_bar     = barcode_take(&p_in->bar_slot);
     p_in->b_have_done    = motion_control_done_take(&p_in->done);
     p_in->b_have_terrain = imu_terrain_event_take(&p_in->terrain);
@@ -383,7 +386,8 @@ global_transitions (nav_in_t const * p_in)
         vehicle_state_read(&state);
         /* Hump in 0.1 mm and distance in cm both fit an int16_t. */
         telemetry_post_event(EV_SUMMARY, 0U,
-                             (int16_t) (state.hump_peak_half_mm * 5U),
+                             (int16_t) (state.hump_peak_half_mm *
+                                         TENTHS_PER_HALF_MM),
                              (int16_t) (state.dist_mm / MM_PER_CM));
     }
     else if (b_driving && p_in->b_have_rc && (PROTO_CMD_STOP == p_in->remote))
@@ -398,6 +402,10 @@ global_transitions (nav_in_t const * p_in)
               (NAV_MISSION_DONE == g_nav.state)))
     {
         safety_clear();                           /* bench, wheels up     */
+        /* The test replaces a calibration spin or turn, whose
+         * completion then never comes: end the calibration. */
+        g_nav.cal_stage   = CAL_IDLE;
+        g_nav.pending_seq = NO_SEQ;
 
         if (PROTO_CMD_MOTOR_TEST == p_in->remote)
         {
@@ -540,10 +548,11 @@ ready_step (nav_in_t const * p_in)
     }
     else if (p_in->b_have_rc && (PROTO_CMD_MAG_CAL == p_in->remote))
     {
-        g_nav.cal_stage = CAL_SPIN;
+        g_nav.cal_stage   = CAL_SPIN;
+        g_nav.cal_steps   = 0U;
         imu_terrain_mag_cal_start();
         g_nav.pending_seq = motion_control_turn(true, MAG_CAL_SPEED_CMS,
-                                                MAG_CAL_SPIN_DEG, false);
+                                                MAG_CAL_STEP_DEG, false);
     }
     else if (p_in->b_cal_short)
     {
@@ -724,7 +733,7 @@ obstacle_step (nav_in_t const * p_in)
                 g_nav.offset_mm      = 0;
                 g_nav.width_steps    = 0U;
                 g_nav.b_width_margin = false;
-                g_nav.length_steps  = 0U;
+                g_nav.length_steps   = 0U;
                 bypass_go(BYPASS_TURN_OUT);
             break;
 
@@ -1020,9 +1029,9 @@ reacquire_step (nav_in_t const * p_in)
 }
 
 /*!
- * @brief  Calibration: the awaited spin or turn finished. After the
- *         compass spin the offsets are applied; both then wait
- *         CAL_SETTLE_MS with the motors off, so the compass reads true.
+ * @brief  Calibration: the awaited spin step or turn finished. Both
+ *         then wait CAL_SETTLE_MS with the motors off: the compass is
+ *         recorded (spin) or read (turn) only then.
  * @param  now  Time now, ms.
  */
 static void
@@ -1030,8 +1039,8 @@ cal_motion_done (uint32_t now)
 {
     if (CAL_SPIN == g_nav.cal_stage)
     {
-        imu_terrain_mag_cal_finish();
-        g_nav.cal_stage = CAL_SETTLE_BEFORE;
+        g_nav.cal_steps++;
+        g_nav.cal_stage = CAL_SPIN_PAUSE;
         g_nav.cal_ms    = now;
     }
     else if (CAL_TURN == g_nav.cal_stage)
@@ -1046,10 +1055,12 @@ cal_motion_done (uint32_t now)
 }
 
 /*!
- * @brief  Calibration: after the settle wait, note the heading and make
- *         one BYPASS_TURN_DEG turn on the encoders; after the next wait,
- *         report the angle the compass saw as EV_TURN_XCHECK (encoder vs
- *         IMU), so TURN_TRACK_WIDTH_M can be scaled by encoder / IMU.
+ * @brief  Calibration waits. Between spin steps: the next step, or after
+ *         MAG_CAL_SPIN_DEG the offsets. Then, with a calibrated
+ *         compass, note the heading and make one BYPASS_TURN_DEG turn on
+ *         the encoders; after the next wait, report the angle the
+ *         compass saw as EV_TURN_XCHECK (encoder vs IMU), so
+ *         TURN_TRACK_WIDTH_M can be scaled by encoder / IMU.
  * @param  now  Time now, ms.
  */
 static void
@@ -1057,13 +1068,41 @@ cal_settle_step (uint32_t now)
 {
     uint16_t hdg = 0U;
 
-    if ((CAL_SETTLE_BEFORE == g_nav.cal_stage) &&
+    if ((CAL_SPIN_PAUSE == g_nav.cal_stage) &&
         ((now - g_nav.cal_ms) >= CAL_SETTLE_MS))
     {
-        g_nav.b_cal_hdg0  = heading_read(&g_nav.cal_hdg0);
-        g_nav.cal_stage   = CAL_TURN;
-        g_nav.pending_seq = motion_control_turn(true, SPEED_TURN_CMS,
-                                                BYPASS_TURN_DEG, false);
+        if ((g_nav.cal_steps * MAG_CAL_STEP_DEG) < MAG_CAL_SPIN_DEG)
+        {
+            g_nav.cal_stage   = CAL_SPIN;
+            g_nav.pending_seq = motion_control_turn(true,
+                                                    MAG_CAL_SPEED_CMS,
+                                                    MAG_CAL_STEP_DEG,
+                                                    false);
+        }
+        else
+        {
+            imu_terrain_mag_cal_finish();
+            g_nav.cal_stage = CAL_SETTLE_BEFORE;
+            g_nav.cal_ms    = now;
+        }
+    }
+    else if ((CAL_SETTLE_BEFORE == g_nav.cal_stage) &&
+             ((now - g_nav.cal_ms) >= CAL_SETTLE_MS))
+    {
+        if (imu_terrain_mag_is_calibrated())
+        {
+            g_nav.b_cal_hdg0  = heading_read(&g_nav.cal_hdg0);
+            g_nav.cal_stage   = CAL_TURN;
+            g_nav.pending_seq = motion_control_turn(true, SPEED_TURN_CMS,
+                                                    BYPASS_TURN_DEG,
+                                                    false);
+        }
+        else
+        {
+            /* No offsets yet (EV_MAG_CAL reported the failure): a
+             * check on the raw compass would mislead the tuning. */
+            g_nav.cal_stage = CAL_IDLE;
+        }
     }
     else if ((CAL_SETTLE_AFTER == g_nav.cal_stage) &&
              ((now - g_nav.cal_ms) >= CAL_SETTLE_MS))
@@ -1072,17 +1111,8 @@ cal_settle_step (uint32_t now)
 
         if (g_nav.b_cal_hdg0 && heading_read(&hdg))
         {
-            /* Headings are 0..719 half degrees: the difference wrapped
-             * to +/-360 is the angle turned; under 180 deg, so the
-             * event's 9-bit field holds it. */
-            int32_t turned = ((int32_t) hdg - (int32_t) g_nav.cal_hdg0) %
-                             FULL_TURN_HALF_DEG;
+            int32_t const turned = calc_heading_diff_half(g_nav.cal_hdg0, hdg);
 
-            turned = (turned > HALF_TURN_HALF_DEG) ?
-                     (turned - FULL_TURN_HALF_DEG) :
-                     ((turned < -HALF_TURN_HALF_DEG) ?
-                      (turned + FULL_TURN_HALF_DEG) : turned);
-            turned = (turned < 0) ? -turned : turned;
             /* Both values are 0..180 deg, so they fit an int16_t. */
             telemetry_post_event(EV_TURN_XCHECK, 0U,
                                  (int16_t) BYPASS_TURN_DEG,
@@ -1118,7 +1148,7 @@ heading_read (uint16_t * p_half_deg)
  * @brief  Start a bypass spot turn at BYPASS_TURN_CMS. With a calibrated
  *         compass it is checked (bypass_turn_step()): settle, note the
  *         heading, turn, settle, measure, correct. Otherwise it is a plain
- *         encoder turn, as before.
+ *         encoder turn.
  * @param  b_left     True for a left turn.
  * @param  angle_deg  Angle, deg.
  */
@@ -1206,8 +1236,8 @@ bypass_turn_step (uint32_t now)
                 if (heading_read(&hdg))
                 {
                     /* Half degrees: turned is 0..360, the angle 0..511. */
-                    int32_t const turned = heading_turned_half(g_nav.tc_hdg0,
-                                                               hdg);
+                    int32_t const turned =
+                        calc_heading_diff_half(g_nav.tc_hdg0, hdg);
                     int32_t const err    = ((int32_t) g_nav.tc_deg *
                                             HALF_DEG_PER_DEG) - turned;
                     int32_t const size   = (err < 0) ? -err : err;
@@ -1289,33 +1319,6 @@ lift_detected (void)
 
     return ((0U != LIFT_MS) && b_driving &&
             (sensor_line_both_black_ms() > LIFT_MS));
-}
-
-/*!
- * @brief  Angle between two compass headings.
- * @param  from  Heading, 0.5 deg (0..719).
- * @param  to    Heading, 0.5 deg (0..719).
- * @return Unsigned difference, 0.5 deg (0..360).
- */
-static int32_t
-heading_turned_half (uint16_t from, uint16_t to)
-{
-    int32_t d = ((int32_t) to - (int32_t) from) % FULL_TURN_HALF_DEG;
-
-    if (d > HALF_TURN_HALF_DEG)
-    {
-        d -= FULL_TURN_HALF_DEG;
-    }
-    else if (d < -HALF_TURN_HALF_DEG)
-    {
-        d += FULL_TURN_HALF_DEG;
-    }
-    else
-    {
-        /* Already -360..360 half degrees. */
-    }
-
-    return ((d < 0) ? -d : d);
 }
 
 /*!

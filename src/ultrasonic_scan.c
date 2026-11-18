@@ -2,7 +2,7 @@
  *  @brief   Ultrasonic Scan task (Buddy 5), see ultrasonic_scan.h.
  *
  *  STANDBY -> COARSE_SCAN -> FINE_SCAN -> PROFILE -> PLAN (Week 6 6.3).
- *  The task reports its heartbeat after every ping, so a scan (12 rays,
+ *  The task reports its heartbeat after every ping, so a scan (13 rays,
  *  about 2 s with travel-based settling) never looks like a stalled
  *  task to the Safety Monitor.
  *
@@ -26,7 +26,7 @@
 #define ECHO_WAIT_MS         ((US_ECHO_TIMEOUT_US / 1000U) + 1U)
 #define FINE_MAX             (((2U * SERVO_FINE_SPAN_DEG) /                \
                                SERVO_FINE_STEP_DEG) + 1U)
-#define RAY_MAX              (SCAN_COARSE_RAYS + FINE_MAX)
+#define RAY_MAX              (SCAN_COARSE_RAYS + FINE_MAX + 1U)  /* + ahead */
 #define TENTHS               (10U)
 #define TENTHS_NO_ECHO       (5110)     /* 511 cm = no echo in EV_OBSTACLE */
 #define Q_DEPTH              (4U)
@@ -44,7 +44,7 @@ typedef enum
 static ID                g_req_q      = 0;
 static ID                g_result_q   = 0;
 static volatile uint16_t g_front_cm   = US_RANGE_NO_ECHO;
-static volatile bool     gb_ever_ok  = false;
+static volatile bool     gb_ever_ok   = false;
 static uint32_t          g_servo_deg  = SERVO_CENTRE_DEG;   /* task only */
 
 static uint16_t         ping_cm (void);
@@ -56,8 +56,12 @@ static obstacle_route_t scan_and_plan (void);
 static uint32_t         sweep_coarse (obstacle_ray_t * p_rays);
 static uint32_t         sweep_fine (obstacle_ray_t * p_rays, uint32_t count,
                                     uint32_t centre_deg);
+static uint32_t         ray_ahead_add (obstacle_ray_t * p_rays,
+                                       uint32_t count);
 static void             result_post (us_result_t result);
 static void             profile_report (obstacle_profile_t const * p_prof);
+static void             check_report (uint32_t angle_deg, uint16_t range_cm);
+static int32_t          range_x10 (uint16_t range_cm);
 
 /*!
  * @brief  Create the request and result queues. Call from usermain()
@@ -252,7 +256,7 @@ ping_cm (void)
         (echo_us < US_ECHO_TIMEOUT_US))
     {
         /* echo_us < 30000, so the range is under 520 cm. */
-        range       = (uint16_t) (echo_us / US_PER_CM);
+        range      = (uint16_t) (echo_us / US_PER_CM);
         gb_ever_ok = true;
     }
 
@@ -331,6 +335,8 @@ peek_rays (uint32_t const * p_angles, uint32_t count, uint16_t reach_cm)
             range = ping_at(p_angles[idx]);       /* retry once           */
         }
 
+        check_report(p_angles[idx], range);
+
         if ((US_RANGE_NO_ECHO != range) && (range < reach_cm))
         {
             b_blocked = true;
@@ -344,7 +350,7 @@ peek_rays (uint32_t const * p_angles, uint32_t count, uint16_t reach_cm)
 }
 
 /*!
- * @brief  Full coarse + fine sweep, profile and plan.
+ * @brief  Full coarse + fine sweep and one ray ahead, profile and plan.
  * @return Suggested route.
  */
 static obstacle_route_t
@@ -364,6 +370,7 @@ scan_and_plan (void)
     count = sweep_coarse(rays);
     obstacle_profile_build(rays, count, &limits, &coarse);
     count = sweep_fine(rays, count, coarse.closest_deg);
+    count = ray_ahead_add(rays, count);
     (void) tk_dly_tsk(servo_turn(SERVO_CENTRE_DEG));
     safety_heartbeat(SAFETY_HB_US);
 
@@ -416,7 +423,7 @@ sweep_fine (obstacle_ray_t * p_rays, uint32_t count, uint32_t centre_deg)
     uint32_t const low    = ((centre - SCAN_MIN_DEG) > SERVO_FINE_SPAN_DEG) ?
                             (centre - SERVO_FINE_SPAN_DEG) : SCAN_MIN_DEG;
     uint32_t       angle  = 0U;
-    uint32_t       total = count;
+    uint32_t       total  = count;
 
     for (angle = low;
          (angle <= (centre + SERVO_FINE_SPAN_DEG)) &&
@@ -430,6 +437,34 @@ sweep_fine (obstacle_ray_t * p_rays, uint32_t count, uint32_t centre_deg)
     }
 
     return (total);
+}
+
+/*!
+ * @brief  Add one ray straight ahead (SERVO_CENTRE_DEG), where the
+ *         standby ping saw the obstacle. The coarse rays miss 90 deg and
+ *         the fine rays follow the closest hit, so without this ray a
+ *         slanted face that turns the 95 deg ping away leaves nothing
+ *         ahead and the plan is UNSAFE. No echo is re-pinged once, as in
+ *         peek_rays().
+ * @param  p_rays  Rays so far (room for one more: RAY_MAX).
+ * @param  count   Number of rays so far.
+ * @return New number of rays.
+ */
+static uint32_t
+ray_ahead_add (obstacle_ray_t * p_rays, uint32_t count)
+{
+    uint16_t range = ping_at(SERVO_CENTRE_DEG);
+
+    if (US_RANGE_NO_ECHO == range)
+    {
+        range = ping_at(SERVO_CENTRE_DEG);        /* retry once           */
+    }
+
+    /* SERVO_CENTRE_DEG is 90, so it fits a uint16_t. */
+    p_rays[count].angle_deg = (uint16_t) SERVO_CENTRE_DEG;
+    p_rays[count].range_cm  = range;
+
+    return (count + 1U);
 }
 
 /*!
@@ -453,16 +488,41 @@ result_post (us_result_t result)
 static void
 profile_report (obstacle_profile_t const * p_prof)
 {
-    /* closest_cm < US_SCAN_RANGE_CM, so x 10 fits easily. */
-    int32_t const range_x10 =
-        (OBSTACLE_NO_ECHO == p_prof->closest_cm) ? TENTHS_NO_ECHO :
-        ((int32_t) p_prof->closest_cm * (int32_t) TENTHS);
-
     /* Angle <= 180 fits a byte; range and width are under 3277 cm. */
     telemetry_post_event(EV_OBSTACLE, (uint8_t) p_prof->closest_deg,
-                         (int16_t) range_x10,
+                         (int16_t) range_x10(p_prof->closest_cm),
                          (int16_t) ((int32_t) p_prof->width_cm *
                                     (int32_t) TENTHS));
+}
+
+/*!
+ * @brief  Report one ray of a bypass check as EV_OBSTACLE with the
+ *         PROTO_OBST_CHECK_CM width, so the dashboard log shows what
+ *         each check measured.
+ * @param  angle_deg  Servo angle of the ray, deg.
+ * @param  range_cm   Its range, or US_RANGE_NO_ECHO.
+ */
+static void
+check_report (uint32_t angle_deg, uint16_t range_cm)
+{
+    /* Angle <= 180 fits a byte; range is under 3277 cm. */
+    telemetry_post_event(EV_OBSTACLE, (uint8_t) angle_deg,
+                         (int16_t) range_x10(range_cm),
+                         (int16_t) (PROTO_OBST_CHECK_CM *
+                                    (int32_t) TENTHS));
+}
+
+/*!
+ * @brief  A range in EV_OBSTACLE units.
+ * @param  range_cm  Range, or US_RANGE_NO_ECHO (= OBSTACLE_NO_ECHO).
+ * @return Range x0.1 cm; TENTHS_NO_ECHO for no echo.
+ */
+static int32_t
+range_x10 (uint16_t range_cm)
+{
+    return ((US_RANGE_NO_ECHO == range_cm) ? TENTHS_NO_ECHO :
+                                             ((int32_t) range_cm *
+                                              (int32_t) TENTHS));
 }
 
 /*** end of file ***/

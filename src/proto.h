@@ -34,6 +34,11 @@
 #define PROTO_CMD_LEN         (1U)
 #define PROTO_MSG_MAX_LEN     (PROTO_TELEM_LEN)
 
+/* EV_OBSTACLE width that marks one ray of a bypass check, not a scan:
+ * the 7-bit field's top value. A scan's width is the sum of two
+ * offsets under US_SCAN_RANGE_CM (40), so it never reaches it.       */
+#define PROTO_OBST_CHECK_CM   (127)
+
 /* Barcode actions on the wire; also the entry index in the CONFIG word. */
 #define PROTO_ACT_STRAIGHT    (0U)
 #define PROTO_ACT_LEFT        (1U)
@@ -103,7 +108,8 @@ typedef enum
                         or PROTO_BAR_EV_UNREADABLE; value2 = edge count  */
     EV_HUMP,         /* value1 = height x0.1 mm                           */
     EV_OBSTACLE,     /* code = bearing deg, value1 = range x0.1 cm,
-                        value2 = width x0.1 cm                            */
+                        value2 = width x0.1 cm, or PROTO_OBST_CHECK_CM
+                        x 10 for one ray of a bypass check           */
     EV_FAULT,        /* code = fault_code_t, value1 = detail (stall: bit0
                         left, bit1 right wheel silent, bit2 time limit;
                         heartbeat: task bit), value2 = motion state 0..7 */

@@ -78,17 +78,17 @@ typedef struct
     uint32_t sent_ms;
 } bar_stats_t;
 
-static ID          g_slot_q    = 0;
-static uint32_t    g_edges[BAR_EDGE_BUF_LEN];          /* task only        */
-static int32_t     g_cl[BAR_EDGE_BUF_LEN];   /* encoder counts per edge    */
-static int32_t     g_cr[BAR_EDGE_BUF_LEN];
-static uint32_t    g_pos[BAR_EDGE_BUF_LEN];  /* travel, decoder format     */
-static uint32_t    g_n_edges   = 0U;                   /* 0 = waiting      */
+static ID            g_slot_q   = 0;
+static uint32_t      g_edges[BAR_EDGE_BUF_LEN];         /* task only        */
+static int32_t       g_cl[BAR_EDGE_BUF_LEN];  /* encoder counts per edge    */
+static int32_t       g_cr[BAR_EDGE_BUF_LEN];
+static uint32_t      g_pos[BAR_EDGE_BUF_LEN]; /* travel, decoder format     */
+static uint32_t      g_n_edges  = 0U;                   /* 0 = waiting      */
 /* A read is in progress (set by the task, read by Motion Control). */
 static volatile bool gb_reading = false;
-static uint32_t    g_dropped0  = 0U;   /* ring drops when the read began   */
-static uint8_t     g_dbg_seq   = 0U;                   /* task only        */
-static bar_stats_t g_stats;                            /* task only        */
+static uint32_t      g_dropped0 = 0U;   /* ring drops when the read began */
+static uint8_t       g_dbg_seq  = 0U;                   /* task only        */
+static bar_stats_t   g_stats;                           /* task only        */
 
 static void     edges_collect (void);
 static bool     capture_is_done (void);
@@ -430,7 +430,7 @@ capture_send (uint8_t letter, bool b_distance)
     dbg.seq        = g_dbg_seq;
     dbg.b_distance = b_distance;
     dbg.b_letter   = (CODE39_NONE != letter);
-    dbg.letter   = dbg.b_letter ? letter : 0U;
+    dbg.letter     = dbg.b_letter ? letter : 0U;
 
     do
     {
@@ -495,7 +495,7 @@ status_send (void)
                                                                       0U;
     uint32_t const lost    = (dropped != g_stats.sent_dropped) ? 1U : 0U;
     /* Unsigned differences of running totals wrap cleanly. */
-    uint32_t const reads   = g_stats.reads - g_stats.sent_reads;
+    uint32_t const reads     = g_stats.reads - g_stats.sent_reads;
     uint32_t const reads_sat = (reads > STATUS_READS_MAX) ? STATUS_READS_MAX :
                                                             reads;
 

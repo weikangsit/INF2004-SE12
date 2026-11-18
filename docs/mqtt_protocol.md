@@ -32,9 +32,11 @@ value is ignored. On the
 first attempt after boot it waits up to 3 s for a beacon. If none is heard
 it uses the compiled-in `MQTT_BROKER_IP` (CMake `-DMQTT_BROKER_IP=`). A
 beacon from a new address aborts a connect attempt still waiting for its
-CONNACK. An established session is kept; the new address is used on the
-next reconnect. `--mqtt-host 127.0.0.1` keeps the broker local and sends no
-beacon.
+CONNACK. Once a broker has accepted the car (subscribed, ONLINE) every
+later beacon is ignored until the car reboots: otherwise any device on the
+network could send the tag, move the car to its own broker and drive it. A
+laptop that changes address therefore needs a car reboot.
+`--mqtt-host 127.0.0.1` keeps the broker local and sends no beacon.
 
 ## Topics
 
@@ -106,8 +108,8 @@ fixed per kind, and the decoder rejects any other length.
 | 1 | STATE | state 4 | 1 |
 | 2 | BARCODE | slot 2, valid 1 (letter is in the table), read 1 (a letter was decoded; 0 = unreadable), edge count 6 | 2 |
 | 3 | HUMP | height 8 (0.5 mm) | 2 |
-| 4 | OBSTACLE | bearing 8 (deg), range 9 (cm, 511 = no echo), width 7 (cm) | 4 |
-| 5 | FAULT | fault code 4, detail 4, motion state 3. Detail: missing heartbeat task, or for a stall bit 0 left wheel silent, bit 1 right wheel silent, bit 2 time limit. Motion state (stall only): 1 straight, 2 unused (was reverse), 3 turn left, 4 turn right, 5 U-turn | 2 |
+| 4 | OBSTACLE | bearing 8 (deg), range 9 (cm, 511 = no echo), width 7 (cm). Sent once per scan (closest hit and width), and once per ray of a bypass check with width 127 (`PROTO_OBST_CHECK_CM`; a scan width never reaches it): bearing = servo angle, range = what that ray measured | 4 |
+| 5 | FAULT | fault code 4, detail 4, motion state 3. Detail: missing heartbeat task, or for a stall bit 0 left wheel silent, bit 1 right wheel silent, bit 2 time limit. Motion state (stall only): 1 straight, 2 unused (was reverse), 3 turn left, 4 turn right, 5 unused (was U-turn) | 2 |
 | 6 | TURN_XCHECK | encoder turn 9 (deg), IMU turn 9 (deg) | 3 |
 | 7 | SUMMARY | hump peak 8 (0.5 mm), distance 14s (cm) | 4 |
 | 8 | ENC_CAL | result 3 (0 ok, bit0/bit1 encoder silent, 4 rotated), left 9s, right 9s | 4 |

@@ -29,7 +29,7 @@ static int8_t const g_quad_table[QUAD_STATES] =
 };
 
 static uint16_t          g_pwm_top     = 0U;
-static volatile bool     gb_inhibit   = false;
+static volatile bool     gb_inhibit    = false;
 static volatile int32_t  g_count_l     = 0;
 static volatile int32_t  g_count_r     = 0;
 static volatile uint32_t g_edge_ms_l   = 0U;

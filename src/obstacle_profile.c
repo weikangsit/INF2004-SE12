@@ -11,6 +11,9 @@
 #define BHASKARA_B           (40500)
 
 static int32_t  sin1000 (uint32_t angle_deg);
+static uint16_t width_measure (obstacle_ray_t const * p_rays, uint32_t count,
+                               obstacle_limits_t const * p_limits,
+                               obstacle_profile_t const * p_prof);
 static uint32_t face_offset_cm (uint32_t range_cm, uint32_t closest_cm);
 static uint32_t angle_distance (uint32_t angle_deg, uint32_t ref_deg);
 
@@ -83,46 +86,7 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
 
     if (OBSTACLE_NO_ECHO != p_out->closest_cm)
     {
-        /* Width from ranges only, not ray angles. The ~30 deg beam (and
-         * strong corner echoes, heard out to the 15 / 165 deg sweep
-         * ends) returns the nearest point anywhere in the cone, so
-         * range x cos(ray angle) put a 16 cm box's corners 14.5 cm each
-         * side (measured: read 30 cm). Every point on the face, corners
-         * included, lies sqrt(range^2 - closest^2) along it from the
-         * closest point, whichever ray heard it. Left of the closest
-         * ray (larger angle) and right of it are summed, widest each. */
-        uint32_t half_left  = 0U;
-        uint32_t half_right = 0U;
-
-        for (idx = 0U; idx < count; idx++)
-        {
-            obstacle_ray_t const * const p_ray = &p_rays[idx];
-
-            if ((OBSTACLE_NO_ECHO != p_ray->range_cm) &&
-                (p_ray->range_cm < p_limits->scan_range_cm))
-            {
-                uint32_t const off = face_offset_cm(p_ray->range_cm,
-                                                    p_out->closest_cm);
-
-                if ((p_ray->angle_deg > p_out->closest_deg) &&
-                    (off > half_left))
-                {
-                    half_left = off;
-                }
-                else if ((p_ray->angle_deg < p_out->closest_deg) &&
-                         (off > half_right))
-                {
-                    half_right = off;
-                }
-                else
-                {
-                    /* The closest ray itself, or not the widest. */
-                }
-            }
-        }
-
-        /* Each half is under scan_range_cm, so the sum fits. */
-        p_out->width_cm = (uint16_t) (half_left + half_right);
+        p_out->width_cm = width_measure(p_rays, count, p_limits, p_out);
     }
 
     p_out->clear_left_cm  = p_rays[left_i].range_cm;
@@ -133,8 +97,9 @@ obstacle_profile_build (obstacle_ray_t const * p_rays, uint32_t count,
  * @brief  Choose a route from a profile.
  *
  *  No valid echo at all, or a free path with no valid ray ahead, cannot be
- *  trusted: UNSAFE. A blocked path checks each side's edge ray (15 / 165
- *  deg, which pass beside the obstacle's face from the stop point):
+ *  trusted: UNSAFE. A blocked path checks each side's edge ray (the
+ *  sweep's end rays, which pass beside the obstacle's face from the stop
+ *  point):
  *   - known and under min_side_clear_cm: that side is blocked;
  *   - known and at least min_side_clear_cm: that side is clear;
  *   - no echo: unknown. Open space beside the car often gives no echo
@@ -208,8 +173,8 @@ obstacle_profile_plan (obstacle_profile_t const * p_prof,
 int32_t
 obstacle_profile_cos1000 (uint32_t angle_deg)
 {
-    uint32_t const angle = (angle_deg > STRAIGHT_DEG) ? STRAIGHT_DEG :
-                                                        angle_deg;
+    uint32_t const angle  = (angle_deg > STRAIGHT_DEG) ? STRAIGHT_DEG :
+                                                         angle_deg;
     int32_t        result = 0;
 
     if (angle <= AHEAD_DEG)
@@ -241,6 +206,63 @@ sin1000 (uint32_t angle_deg)
 }
 
 /*!
+ * @brief  Width of the obstacle face, from ranges only, not ray angles.
+ *
+ *  The ~30 deg beam (and strong corner echoes, heard out to the sweep's
+ *  end rays) returns the nearest point anywhere in the cone, so
+ *  range x cos(ray angle) put a 16 cm box's corners 14.5 cm each side
+ *  (measured: read 30 cm). Every point on the face, corners included,
+ *  lies sqrt(range^2 - closest^2) along it from the closest point,
+ *  whichever ray heard it. Left of the closest ray (larger angle) and
+ *  right of it are summed, widest each.
+ *
+ * @param  p_rays    Rays of the sweep, in any order.
+ * @param  count     Number of rays.
+ * @param  p_limits  Planning limits.
+ * @param  p_prof    Profile with a valid closest_cm and closest_deg.
+ * @return Width, cm.
+ */
+static uint16_t
+width_measure (obstacle_ray_t const * p_rays, uint32_t count,
+               obstacle_limits_t const * p_limits,
+               obstacle_profile_t const * p_prof)
+{
+    uint32_t half_left  = 0U;
+    uint32_t half_right = 0U;
+    uint32_t idx        = 0U;
+
+    for (idx = 0U; idx < count; idx++)
+    {
+        obstacle_ray_t const * const p_ray = &p_rays[idx];
+
+        if ((OBSTACLE_NO_ECHO != p_ray->range_cm) &&
+            (p_ray->range_cm < p_limits->scan_range_cm))
+        {
+            uint32_t const off = face_offset_cm(p_ray->range_cm,
+                                                p_prof->closest_cm);
+
+            if ((p_ray->angle_deg > p_prof->closest_deg) &&
+                (off > half_left))
+            {
+                half_left = off;
+            }
+            else if ((p_ray->angle_deg < p_prof->closest_deg) &&
+                     (off > half_right))
+            {
+                half_right = off;
+            }
+            else
+            {
+                /* The closest ray itself, or not the widest. */
+            }
+        }
+    }
+
+    /* Each half is under scan_range_cm, so the sum fits. */
+    return ((uint16_t) (half_left + half_right));
+}
+
+/*!
  * @brief  Distance along the obstacle face from its closest point to a
  *         point heard at range_cm: sqrt(range^2 - closest^2), rounded.
  * @param  range_cm    Range of the point, cm (under the scan range).
@@ -252,16 +274,18 @@ face_offset_cm (uint32_t range_cm, uint32_t closest_cm)
 {
     /* Ranges are under scan_range_cm (a few hundred cm), so the squares
      * fit easily. */
-    uint32_t const sq = (range_cm * range_cm) - (closest_cm * closest_cm);
-    uint32_t       s  = 0U;
+    uint32_t const diff_sq = (range_cm * range_cm) -
+                             (closest_cm * closest_cm);
+    uint32_t       root    = 0U;
 
-    /* Nearest integer root: the largest s with s^2 - s < sq. */
-    while (((s * s) + s) < sq)
+    /* Nearest integer root: the largest root with root^2 - root <
+     * diff_sq. */
+    while (((root * root) + root) < diff_sq)
     {
-        s++;
+        root++;
     }
 
-    return (s);
+    return (root);
 }
 
 /*!

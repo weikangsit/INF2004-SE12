@@ -20,7 +20,7 @@ and no hardware headers (see `port.h`).
 | `nav_fsm` | team | Nav, prio 4 | system state, all movement commands | every module above |
 | `safety` | team | Safety, prio 1 | latch, heartbeat supervision, braking | heartbeats, fault events, radio liveness |
 | `vehicle_state` | team | library | packed shared record (`state_mtx`) | - |
-| `fault`, `systime`, `bitpack` | team | library | fault mask, time helpers, bit packing | - |
+| `fault`, `systime`, `bitpack`, `calc` | team | library | fault mask, time helpers, bit packing, rounding and heading difference | - |
 | `hal`, `hal_irq`, `i2c_drv`, `port` | team | SDK side / kernel side | GPIO ISR dispatcher, servo, LED, buttons, I2C | - |
 
 ## Tribunal 1 decisions implemented

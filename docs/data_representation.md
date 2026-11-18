@@ -69,7 +69,7 @@ Motion command word (`motion_control.c`):
 
 | Bits | Field | Range |
 |---|---|---|
-| 0-2 | command | stop, forward, backward, turn L, turn R, U-turn, self-test, motor test |
+| 0-2 | command | stop, forward, turn L, turn R, self-test, motor test |
 | 3-5 | sequence | 1..7 (0 = STOP, no completion) |
 | 6 | follow line | flag |
 | 7 | end turn on line | flag |

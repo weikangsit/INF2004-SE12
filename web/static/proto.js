@@ -48,8 +48,10 @@
   const WARNINGS = (1 << 4) | (1 << 14);   // WiFi loss, telemetry late: reported only
   const HB_TASKS = ["line", "motion", "imu", "ultrasonic", "nav", "comms", "telemetry"];
   const FC_STALL = 0, FC_LINE_LOST = 7, FC_HEARTBEAT = 9, FC_NO_ROUTE = 11;
-  // motion.c states that can stall (EV_FAULT stall: value2)
-  const MOTION_STATES = ["stopped", "driving straight", "reversing", "turning left", "turning right", "U-turning"];
+  // motion_control.c motion_mode_t 0..7 (EV_FAULT stall: value2); 2 and 5
+  // are the removed reverse run and U-turn command, kept free on the wire
+  const MOTION_STATES = ["stopped", "driving straight", "state 2", "turning left", "turning right",
+                         "state 5", "encoder self-test", "motor test"];
   // EV_FAULT stall detail bits (motion.c): which wheel had no encoder edges, or the time limit
   const stallReason = (d) => [d & 1 ? "LEFT wheel stopped" : "", d & 2 ? "RIGHT wheel stopped" : "",
                               d & 4 ? "time limit" : ""].filter(Boolean).join(", ");
@@ -62,6 +64,7 @@
   // action code (index into ACTIONS) -> letter
   const DEFAULT_TABLE = { 0: "C", 1: "A", 2: "B", 3: "D" };
   const RANGE_NO_ECHO = 511;
+  const OBST_CHECK = 127; // OBSTACLE width: one bypass-check ray (PROTO_OBST_CHECK_CM)
   const ST_LATCHED = 1, ST_CFG_MQTT = 2, LINE_LEFT = 1, LINE_RIGHT = 2, BAR_VALID = 4;
 
   /** Read `width` bits at bit `pos`, LSB first; two's complement if signed. */
@@ -163,8 +166,11 @@
                 : f.read ? "barcode letter not in the table (the car's USB console shows which)"
                 : "barcode unreadable (" + f.edges + " edges)";
       case 3: return "hump height " + (f.height / 2).toFixed(1) + " mm";
-      case 4: return "obstacle at " + f.bearing + "\u00b0, " +
-                (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
+      case 4: return f.width === OBST_CHECK
+                ? "bypass check " + f.bearing + "\u00b0: " +
+                  (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm")
+                : "obstacle at " + f.bearing + "\u00b0, " +
+                  (f.range === RANGE_NO_ECHO ? "no echo" : f.range + " cm") + ", width " + f.width + " cm";
       case 5: return "FAULT: " + (FAULTS[f.code] || f.code) +
                 (f.code === FC_HEARTBEAT ? " (" + (HB_TASKS[f.detail] || f.detail) + ")" : "") +
                 (f.code === FC_LINE_LOST && f.detail === 1 ? " (car lifted off the ground: both line sensors black)" : "") +

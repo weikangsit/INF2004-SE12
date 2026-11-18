@@ -25,6 +25,7 @@
 
 #include "port.h"
 
+#include "calc.h"
 #include "car_config.h"
 #include "i2c_drv.h"
 #include "imu_terrain.h"
@@ -77,6 +78,7 @@
 #define MAG_CAL_FAILED       (1U)
 #define EVT_Q_DEPTH          (4U)
 #define MBF_SLOT_BYTES       (8U)         /* 4-byte header + 1 byte       */
+#define LIFT_PRINT_SAMPLES   (25U)        /* 25 x 20 ms = 0.5 s           */
 
 #define CLASS_STILL          (0U)
 #define CLASS_MOVING         (1U)
@@ -140,6 +142,9 @@ static bool      mag_read (vec3_t * p_mag);
 static int16_t   le16 (uint8_t const * p_bytes);
 static int16_t   be16 (uint8_t const * p_bytes);
 static void      sample_process (vec3_t const * p_acc, vec3_t const * p_mag);
+static void      run_reset_check (uint8_t nav_state);
+static void      rate_update (float32_t hdg);
+static void      live_lift_print (float32_t roll);
 static void      impact_check (vec3_t const * p_acc);
 static float32_t horizontal_jump (vec3_t const * p_now,
                                   vec3_t const * p_then);
@@ -149,14 +154,14 @@ static void      level_step (vec3_t const * p_acc,
                              vehicle_state_t const * p_state);
 static void      roll_hump_track (float32_t roll, bool b_moving,
                                   bool b_turning);
-static void      axes_to_car (vec3_t * p_v);                                  
+static void      axes_to_car (vec3_t * p_v);
 static void      hump_track (float32_t pitch, float32_t pitch_deg,
                              int32_t dist_mm);
 static float32_t heading_compute (vec3_t const * p_mag, float32_t pitch,
                                   float32_t roll);
 static void      mag_cal_step (vec3_t const * p_mag);
+static bool      motors_are_off (void);
 static void      event_post (imu_terrain_event_t event);
-static int32_t   round_i (float32_t value);
 
 /*!
  * @brief  Create the terrain event queue. Call from usermain() before the
@@ -204,7 +209,7 @@ imu_terrain_task (INT stacd, void * p_exinf)
         if (acc_read(&acc) && mag_read(&mag))
         {
             g_ctx.fails = 0U;
-            gb_ok      = true;
+            gb_ok       = true;
             mag_cal_step(&mag);       /* calibrates in the board's axes */
             axes_to_car(&acc);
             axes_to_car(&mag);
@@ -419,7 +424,6 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
     float32_t       pitch = 0.0f;
     float32_t       roll  = 0.0f;
     float32_t       hdg   = 0.0f;
-    float32_t       hdg_step    = 0.0f;
     uint32_t        idx   = 0U;
     uint8_t         cls   = CLASS_STILL;
 
@@ -442,46 +446,15 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
     }
 
     hdg = heading_compute(p_mag, pitch, roll);
-    
+
     /* Heading needs the sensor's own tilt (above); everything below uses
      * the car's tilt, so remove the mounting offset. */
     vehicle_state_read(&state);
     level_step(p_acc, &state);
-    
-        /* Reset fault (Fault -> any other state) starts a new run: clear the
-     * highest hump and any hump still in progress. */
-    if (((uint8_t) NAV_FAULT == g_ctx.nav_prev) &&
-        ((uint8_t) NAV_FAULT != state.nav_state))
-    {
-        g_ctx.run_peak    = 0.0f;
-        g_ctx.b_candidate = false;
-        g_ctx.b_in_hump   = false;
-        g_ctx.hump_h      = 0.0f;
-        g_ctx.hump_max    = 0.0f;
-        g_ctx.b_roll_hump = false;
-        g_ctx.roll_hold   = 0U;
-        g_ctx.roll_max    = 0.0f;
-        tm_printf((UB *) "imu: highest hump reset\n");
-    }
-    g_ctx.nav_prev = state.nav_state;
+    run_reset_check(state.nav_state);
     pitch -= g_ctx.pitch_off;
     roll  -= g_ctx.roll_off;
-
-    hdg_step = hdg - g_ctx.prev_hdg;
-    if (hdg_step > HALF_TURN_DEG)
-    {
-        hdg_step -= FULL_TURN_DEG;
-    }
-    else if (hdg_step < -HALF_TURN_DEG)
-    {
-        hdg_step += FULL_TURN_DEG;
-    }
-    else
-    {
-        /* No wrap. */
-    }
-    g_ctx.rate    += RATE_ALPHA * ((hdg_step / DT_S) - g_ctx.rate);
-    g_ctx.prev_hdg = hdg;
+    rate_update(hdg);
 
     tilt_check(pitch * RAD2DEG, roll * RAD2DEG);
 
@@ -513,37 +486,98 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
 
     (void) memset(&out, 0, sizeof(out));
     /* Each value is clamped again to its packed width by vehicle_state. */
-    out.pitch_half_deg    = (int16_t) round_i(pitch * RAD2DEG * HALVES);
-    out.roll_deg          = (int16_t) round_i(roll * RAD2DEG);
-    out.heading_half_deg  = (uint16_t) round_i(hdg * HALVES);
-    out.turn_rate_dps     = (int16_t) round_i(g_ctx.rate);
-    out.hump_peak_half_mm = (uint16_t) round_i(
+    out.pitch_half_deg    = (int16_t) calc_round(pitch * RAD2DEG * HALVES);
+    out.roll_deg          = (int16_t) calc_round(roll * RAD2DEG);
+    out.heading_half_deg  = (uint16_t) calc_round(hdg * HALVES);
+    out.turn_rate_dps     = (int16_t) calc_round(g_ctx.rate);
+    out.hump_peak_half_mm = (uint16_t) calc_round(
         fmaxf(g_ctx.run_peak,
               fmaxf(g_ctx.b_in_hump ? g_ctx.hump_max : 0.0f,
                     g_ctx.b_roll_hump ? g_ctx.roll_max : 0.0f)) * HALVES);
-    
-    
-    #if (IMU_LIVE_LIFT)
-        /* Bench check: print roll and right-wheel lift on the USB serial
-        * monitor every 0.5 s, at full precision. */
-        {
-            static uint32_t s_print_n = 0U;
-
-            s_print_n++;
-            if (s_print_n >= 25U)
-            {
-                s_print_n = 0U;
-                tm_printf((UB *) "imu: roll %d lift %d (x0.1 deg, x0.1 mm)\n",
-                        (int) round_i(roll * RAD2DEG * TENTHS),
-                        (int) round_i(HUMP_TRACK_MM * fabsf(tanf(roll)) * TENTHS));
-            }
-        }
-    #endif
-
     out.motion_class      = cls;
     out.b_imu_valid       = true;
     out.imu_stamp         = systime_stamp();
     vehicle_state_set_imu(&out);
+
+    live_lift_print(roll);
+}
+
+/*!
+ * @brief  A Reset fault (FAULT -> any other state) starts a new run:
+ *         clear the highest hump and any hump still in progress.
+ * @param  nav_state  Nav state now (nav_fsm_state_t as a uint8_t).
+ */
+static void
+run_reset_check (uint8_t nav_state)
+{
+    if (((uint8_t) NAV_FAULT == g_ctx.nav_prev) &&
+        ((uint8_t) NAV_FAULT != nav_state))
+    {
+        g_ctx.run_peak    = 0.0f;
+        g_ctx.b_candidate = false;
+        g_ctx.b_in_hump   = false;
+        g_ctx.hump_h      = 0.0f;
+        g_ctx.hump_max    = 0.0f;
+        g_ctx.b_roll_hump = false;
+        g_ctx.roll_hold   = 0U;
+        g_ctx.roll_max    = 0.0f;
+        tm_printf((UB *) "imu: highest hump reset\n");
+    }
+
+    g_ctx.nav_prev = nav_state;
+}
+
+/*!
+ * @brief  Turn rate from the heading change since the last sample,
+ *         wrapped to +/-180 deg and low-pass filtered (RATE_ALPHA).
+ * @param  hdg  Heading now, deg.
+ */
+static void
+rate_update (float32_t hdg)
+{
+    float32_t step = hdg - g_ctx.prev_hdg;
+
+    if (step > HALF_TURN_DEG)
+    {
+        step -= FULL_TURN_DEG;
+    }
+    else if (step < -HALF_TURN_DEG)
+    {
+        step += FULL_TURN_DEG;
+    }
+    else
+    {
+        /* No wrap. */
+    }
+
+    g_ctx.rate    += RATE_ALPHA * ((step / DT_S) - g_ctx.rate);
+    g_ctx.prev_hdg = hdg;
+}
+
+/*!
+ * @brief  Bench check (IMU_LIVE_LIFT): print roll and right-wheel lift
+ *         on the USB serial monitor every LIFT_PRINT_SAMPLES samples
+ *         (0.5 s), at full precision. Does nothing when switched off.
+ * @param  roll  Roll after the level offset, radians.
+ */
+static void
+live_lift_print (float32_t roll)
+{
+#if (IMU_LIVE_LIFT)
+    static uint32_t s_print_n = 0U;
+
+    s_print_n++;
+    if (s_print_n >= LIFT_PRINT_SAMPLES)
+    {
+        s_print_n = 0U;
+        tm_printf((UB *) "imu: roll %d lift %d (x0.1 deg, x0.1 mm)\n",
+                  (int) calc_round(roll * RAD2DEG * TENTHS),
+                  (int) calc_round(HUMP_TRACK_MM * fabsf(tanf(roll)) *
+                                   TENTHS));
+    }
+#else
+    (void) roll;
+#endif
 }
 
 /*!
@@ -566,8 +600,8 @@ impact_check (vec3_t const * p_acc)
     if (sample_saturated(p_acc))
     {
         tm_printf((UB *) "imu: saturated sample ignored (x %d y %d mg)\n",
-                  (int) round_i(p_acc->axis[AXIS_X] * MILLI_G),
-                  (int) round_i(p_acc->axis[AXIS_Y] * MILLI_G));
+                  (int) calc_round(p_acc->axis[AXIS_X] * MILLI_G),
+                  (int) calc_round(p_acc->axis[AXIS_Y] * MILLI_G));
     }
     else
     {
@@ -591,10 +625,10 @@ impact_check (vec3_t const * p_acc)
             g_ctx.b_impact_pending = true;
             g_ctx.acc_ref          = g_ctx.acc_prev;
             tm_printf((UB *) "imu: impact? x %d -> %d, y %d -> %d (mg)\n",
-                      (int) round_i(g_ctx.acc_prev.axis[AXIS_X] * MILLI_G),
-                      (int) round_i(p_acc->axis[AXIS_X] * MILLI_G),
-                      (int) round_i(g_ctx.acc_prev.axis[AXIS_Y] * MILLI_G),
-                      (int) round_i(p_acc->axis[AXIS_Y] * MILLI_G));
+                      (int) calc_round(g_ctx.acc_prev.axis[AXIS_X] * MILLI_G),
+                      (int) calc_round(p_acc->axis[AXIS_X] * MILLI_G),
+                      (int) calc_round(g_ctx.acc_prev.axis[AXIS_Y] * MILLI_G),
+                      (int) calc_round(p_acc->axis[AXIS_Y] * MILLI_G));
         }
         else
         {
@@ -707,8 +741,8 @@ level_step (vec3_t const * p_acc, vehicle_state_t const * p_state)
             g_ctx.roll_off     = g_ctx.level_sum_r / (float32_t) g_ctx.level_n;
             g_ctx.b_level_done = true;
             tm_printf((UB *) "imu: level offset pitch %d roll %d (x0.1 deg)\n",
-                      (int) round_i(g_ctx.pitch_off * RAD2DEG * TENTHS),
-                      (int) round_i(g_ctx.roll_off * RAD2DEG * TENTHS));
+                      (int) calc_round(g_ctx.pitch_off * RAD2DEG * TENTHS),
+                      (int) calc_round(g_ctx.roll_off * RAD2DEG * TENTHS));
         }
     }
 }
@@ -736,7 +770,8 @@ roll_hump_track (float32_t roll, bool b_moving, bool b_turning)
      * last few. A jolt lasts one or two samples, so it cannot raise the
      * hump height; the wheel sitting on the ramp lasts much longer. */
     g_ctx.lift_hist[g_ctx.lift_idx] = lift_mm;
-    g_ctx.lift_idx = (g_ctx.lift_idx + 1U) % HUMP_PEAK_HOLD;
+    g_ctx.lift_idx                  = (g_ctx.lift_idx + 1U) %
+                                      HUMP_PEAK_HOLD;
     for (idx = 0U; idx < HUMP_PEAK_HOLD; idx++)
     {
         held_mm = fminf(held_mm, g_ctx.lift_hist[idx]);
@@ -799,10 +834,10 @@ roll_hump_track (float32_t roll, bool b_moving, bool b_turning)
 
             /* Height in 0.1 mm, as for the pitch hump. */
             telemetry_post_event(EV_HUMP, 0U,
-                                 (int16_t) round_i(g_ctx.roll_max * TENTHS),
+                                 (int16_t) calc_round(g_ctx.roll_max * TENTHS),
                                  0);
             tm_printf((UB *) "imu: hump height %d (x0.1 mm)\n",
-                      (int) round_i(g_ctx.roll_max * TENTHS));
+                      (int) calc_round(g_ctx.roll_max * TENTHS));
         }
     }
 }
@@ -826,8 +861,8 @@ tilt_check (float32_t pitch_deg, float32_t roll_deg)
             {
                 /* Once per tilt: the angles that tripped it. */
                 tm_printf((UB *) "imu: over-tilt pitch %d roll %d (x0.1)\n",
-                          (int) round_i(pitch_deg * TENTHS),
-                          (int) round_i(roll_deg * TENTHS));
+                          (int) calc_round(pitch_deg * TENTHS),
+                          (int) calc_round(roll_deg * TENTHS));
             }
 
             safety_report(SAFETY_EVT_OVERTILT);
@@ -896,7 +931,7 @@ hump_track (float32_t pitch, float32_t pitch_deg, int32_t dist_mm)
             event_post(IMU_EVT_HUMP_END);
             /* Height in 0.1 mm; humps are well under 3 m, so it fits. */
             telemetry_post_event(EV_HUMP, 0U,
-                                 (int16_t) round_i(g_ctx.hump_max * TENTHS),
+                                 (int16_t) calc_round(g_ctx.hump_max * TENTHS),
                                  0);
         }
     }
@@ -916,16 +951,16 @@ hump_track (float32_t pitch, float32_t pitch_deg, int32_t dist_mm)
 static float32_t
 heading_compute (vec3_t const * p_mag, float32_t pitch, float32_t roll)
 {
-    float32_t const cos_p  = cosf(pitch);
-    float32_t const sin_p  = sinf(pitch);
-    float32_t const cos_r  = cosf(roll);
-    float32_t const sin_r  = sinf(roll);
-    float32_t const horiz_x  = (p_mag->axis[AXIS_X] * cos_p) +
-                          (p_mag->axis[AXIS_Z] * sin_p);
-    float32_t const horiz_y  = (p_mag->axis[AXIS_X] * sin_r * sin_p) +
-                          (p_mag->axis[AXIS_Y] * cos_r) -
-                          (p_mag->axis[AXIS_Z] * sin_r * cos_p);
-    float32_t       hdg = atan2f(-horiz_y, horiz_x) * RAD2DEG;
+    float32_t const cos_p   = cosf(pitch);
+    float32_t const sin_p   = sinf(pitch);
+    float32_t const cos_r   = cosf(roll);
+    float32_t const sin_r   = sinf(roll);
+    float32_t const horiz_x = (p_mag->axis[AXIS_X] * cos_p) +
+                              (p_mag->axis[AXIS_Z] * sin_p);
+    float32_t const horiz_y = (p_mag->axis[AXIS_X] * sin_r * sin_p) +
+                              (p_mag->axis[AXIS_Y] * cos_r) -
+                              (p_mag->axis[AXIS_Z] * sin_r * cos_p);
+    float32_t       hdg     = atan2f(-horiz_y, horiz_x) * RAD2DEG;
 
     if (hdg < 0.0f)
     {
@@ -936,9 +971,11 @@ heading_compute (vec3_t const * p_mag, float32_t pitch, float32_t roll)
 }
 
 /*!
- * @brief  Magnetometer calibration: record min / max while requested,
- *         then set the hard-iron offsets of X and Y (a flat spin does not
- *         turn the Z axis, so its offset is left unchanged).
+ * @brief  Magnetometer calibration: record min / max while requested
+ *         and both motors are off (the motor current adds its own
+ *         field), then set the hard-iron offsets of X and Y (a flat
+ *         spin does not turn the Z axis, so its offset is left
+ *         unchanged).
  * @param  p_mag  Field with the current offsets removed, gauss.
  */
 static void
@@ -948,7 +985,7 @@ mag_cal_step (vec3_t const * p_mag)
 
     if (gb_cal_start_req)
     {
-        gb_cal_start_req  = false;
+        gb_cal_start_req   = false;
         g_ctx.b_cal_active = true;
         for (idx = 0U; idx < AXES; idx++)
         {
@@ -957,7 +994,7 @@ mag_cal_step (vec3_t const * p_mag)
         }
     }
 
-    if (g_ctx.b_cal_active)
+    if (g_ctx.b_cal_active && motors_are_off())
     {
         for (idx = 0U; idx < AXES; idx++)
         {
@@ -979,7 +1016,7 @@ mag_cal_step (vec3_t const * p_mag)
                                  (span_x >= MAG_CAL_MIN_SPAN_GS) &&
                                  (span_y >= MAG_CAL_MIN_SPAN_GS);
 
-        gb_cal_finish_req = false;
+        gb_cal_finish_req  = false;
         g_ctx.b_cal_active = false;
 
         if (b_ok)
@@ -998,6 +1035,20 @@ mag_cal_step (vec3_t const * p_mag)
 }
 
 /*!
+ * @brief  Report whether Motion Control drives neither motor.
+ * @return True if both duties in the shared state are 0.
+ */
+static bool
+motors_are_off (void)
+{
+    vehicle_state_t state;
+
+    vehicle_state_read(&state);
+
+    return ((0 == state.duty_l_pct) && (0 == state.duty_r_pct));
+}
+
+/*!
  * @brief  Queue a terrain event for the Navigation FSM (1 byte).
  * @param  event  Event.
  */
@@ -1008,25 +1059,6 @@ event_post (imu_terrain_event_t event)
     uint8_t const msg = (uint8_t) event;
 
     (void) tk_snd_mbf(g_evt_q, &msg, (INT) sizeof(msg), TMO_POL);
-}
-
-/*!
- * @brief  Round to the nearest integer; 0 for NaN or infinity (Barr-C
- *         5.4.b.v), limited to +/-1e6.
- * @return Rounded value.
- */
-static int32_t
-round_i (float32_t value)
-{
-    int32_t result = 0;
-
-    if (isfinite(value))
-    {
-        /* Clamped to +/-1e6 first, so lroundf() fits an int32_t. */
-        result = (int32_t) lroundf(fmaxf(fminf(value, BIG), -BIG));
-    }
-
-    return (result);
 }
 
 /*** end of file ***/

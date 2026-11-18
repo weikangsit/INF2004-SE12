@@ -50,11 +50,18 @@
       this._send(pkt(0x82, [id >> 8, id & 255, ...str(filter), 0]));
     }
 
+    /** @returns true if the frame went out, false while not connected. */
     publish(topic, bytes, retain = false) {
-      this._send(pkt(0x30 | (retain ? 1 : 0), [...str(topic), ...bytes]));
+      return this._send(pkt(0x30 | (retain ? 1 : 0), [...str(topic), ...bytes]));
     }
 
-    _send(u8) { if (this.ws && this.ws.readyState === 1) this.ws.send(u8); }
+    get isOpen() { return !!this.ws && this.ws.readyState === 1; }
+
+    _send(u8) {
+      if (!this.isOpen) return false;
+      this.ws.send(u8);
+      return true;
+    }
 
     _feed(chunk) {
       const b = new Uint8Array(this.buf.length + chunk.length);

@@ -57,7 +57,7 @@ compiler (Barr-C 5.5).
 | Backoff delay | `uint32_t` ms | 2-bit step (500 ms << step) | CYW43 task only | not shared |
 | Heartbeat sequence | `uint32_t` | `uint8_t` | CYW43 task only | not shared |
 | Barcode table | 26 B + `uint32_t` mask + `bool` | one `uint16_t` (12-bit table + "from MQTT" bit) | comms writes, Nav and telemetry read | a halfword store is one access, so a reader never sees half a table |
-| Broker discovery (added later, see below) | - | 1-byte bit-field `discover_status_t` (4 flags), `ip_addr_t` (4 B, the broker), `uint16_t` wait timer, UDP socket pointer; the beacon itself is 1 byte (8 bits) | CYW43 task only (hook and lwIP UDP callback) | not shared |
+| Broker discovery (added later, see below) | - | 1-byte bit-field `discover_status_t` (5 flags), `ip_addr_t` (4 B, the broker), `uint16_t` wait timer, UDP socket pointer; the beacon itself is 1 byte (8 bits) | CYW43 task only (hook and lwIP UDP callback) | not shared |
 
 ## 2. RAM usage comparison
 

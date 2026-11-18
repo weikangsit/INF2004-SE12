@@ -61,7 +61,7 @@ i2c_drv_init (uint32_t pin_sda, uint32_t pin_scl, uint32_t baud)
                     I2C_IC_SDA_HOLD_IC_SDA_TX_HOLD_LSB,
                     I2C_IC_SDA_HOLD_IC_SDA_TX_HOLD_BITS);
     I2C_HW->enable      = 1U;
-    gb_restart_next    = false;
+    gb_restart_next     = false;
 
     gpio_set_function(pin_sda, GPIO_FUNC_I2C);
     gpio_set_function(pin_scl, GPIO_FUNC_I2C);

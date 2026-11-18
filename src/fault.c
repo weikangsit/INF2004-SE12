@@ -33,7 +33,7 @@ fault_init (void)
     (void) memset(&create, 0, sizeof(create));
     create.flgatr  = TA_TFIFO | TA_WMUL;
     create.iflgptn = 0U;
-    g_fault_flg = tk_cre_flg(&create);
+    g_fault_flg    = tk_cre_flg(&create);
 }
 
 /*!

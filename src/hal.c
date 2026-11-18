@@ -66,10 +66,10 @@ static volatile uint32_t g_bar_core    = 0U;
 /* Ultrasonic echo: written by the ISR, read after the echo signal. */
 static volatile uint32_t g_echo_rise_us  = 0U;
 static volatile uint32_t g_echo_width_us = 0U;
-static volatile bool     gb_echo_valid  = false;
+static volatile bool     gb_echo_valid   = false;
 
-static PIO      g_led_pio  = NULL;
-static uint32_t g_led_sm   = 0U;
+static PIO      g_led_pio = NULL;
+static uint32_t g_led_sm  = 0U;
 static bool     gb_led_ok = false;
 
 static void     input_pin (uint32_t pin, bool b_pull_up);
@@ -332,9 +332,9 @@ input_pin (uint32_t pin, bool b_pull_up)
 /*!
  * @brief  Barcode part of the interrupt: time-stamp the edge with the
  *         level after it and the encoder counts (distance stamp). Every
- *         edge is stored; chatter is filtered in the
- *         task (bar_filter.c). A full ring drops the edge and counts it,
- *         and the read it belonged to is rejected.
+ *         edge is stored; chatter is filtered in the task
+ *         (bar_filter.c). A full ring drops the edge and counts it, and
+ *         the read it belonged to is rejected.
  *
  *  A full ring also switches the pin's interrupt off until hal_bar_take()
  *  has emptied it. An IR comparator without hysteresis resting on a line
@@ -356,8 +356,8 @@ input_pin (uint32_t pin, bool b_pull_up)
 static uint32_t
 barcode_isr (uint32_t now_us)
 {
-    uint32_t const events  = gpio_get_irq_event_mask(PIN_IR_BC);
-    uint32_t       sig = 0U;
+    uint32_t const events = gpio_get_irq_event_mask(PIN_IR_BC);
+    uint32_t       sig    = 0U;
 
     if (0U != events)
     {
@@ -386,7 +386,7 @@ barcode_isr (uint32_t now_us)
             g_bar_core = get_core_num();          /* this ISR's core      */
             bar_irq_set(g_bar_core, false);
             __dmb();                              /* core before flag     */
-            gb_bar_paused = true;                /* hal_bar_take resumes */
+            gb_bar_paused = true;                 /* hal_bar_take resumes */
         }
     }
 
@@ -428,8 +428,8 @@ bar_irq_set (uint32_t core, bool b_on)
 static uint32_t
 echo_isr (uint32_t now_us)
 {
-    uint32_t const events  = gpio_get_irq_event_mask(PIN_US_ECHO);
-    uint32_t       sig = 0U;
+    uint32_t const events = gpio_get_irq_event_mask(PIN_US_ECHO);
+    uint32_t       sig    = 0U;
 
     if (0U != events)
     {
@@ -443,7 +443,7 @@ echo_isr (uint32_t now_us)
         if (0U != (events & GPIO_IRQ_EDGE_FALL))
         {
             g_echo_width_us = now_us - g_echo_rise_us;
-            gb_echo_valid  = true;
+            gb_echo_valid   = true;
             sig             = HAL_SIG_ECHO;
         }
     }

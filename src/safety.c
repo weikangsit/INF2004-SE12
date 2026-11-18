@@ -55,8 +55,8 @@ static hb_rule_t const g_rules[TASK_COUNT] =
     { SAFETY_HB_TELEM,  HB_DEADLINE_TELEM_MS,  true  }
 };
 
-static ID            g_evt_flg   = 0;
-static ID            g_hb_flg    = 0;
+static ID            g_evt_flg  = 0;
+static ID            g_hb_flg   = 0;
 static volatile bool gb_latched = false;
 
 static void events_handle (uint32_t events);

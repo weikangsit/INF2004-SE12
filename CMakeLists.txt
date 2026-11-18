@@ -267,6 +267,7 @@ set(APP_SOURCES
     src/port.c           # SDK side: timer and GPIO services
     src/systime.c
     src/bitpack.c        # minimum-bit packing (Change Requirement 1)
+    src/calc.c           # shared rounding and heading difference
     src/vehicle_state.c  # packed shared state record (state_mtx)
     src/fault.c          # shared fault bitmask
     src/safety.c

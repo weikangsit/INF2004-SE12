@@ -9,7 +9,8 @@ packed payload (Change Requirement 1).
    values (clamping included).
 3. Other pure firmware modules run the same way: the Code 39 decoder
    (src/code39.c) on synthetic barcode edges, and the obstacle profile and
-   route planner (src/obstacle_profile.c) against a Python reference.
+   route planner (src/obstacle_profile.c) against a Python reference, and
+   the shared rounding and heading difference (src/calc.c).
 
 Run:  python test_proto.py
 Part 2 needs arm-none-eabi-gcc (PATH, ARM_GCC, or the Pico toolchains) and
@@ -154,8 +155,9 @@ class Cpu:
                         "-Wl,--entry=proto_pack_telem"] +
                        [str(SRC / f) for f in ("proto.c", "bitpack.c", "code39.c",
                                                "obstacle_profile.c", "barcode_map.c",
-                                               "bar_filter.c")] +
-                       [str(workdir / "harness.c"), "-lgcc", "-o", str(elf)], check=True)
+                                               "bar_filter.c", "calc.c")] +
+                       [str(workdir / "harness.c"), "-lm", "-lgcc", "-o", str(elf)],
+                       check=True)
         binary = workdir / "proto_test.bin"
         subprocess.run([tool("objcopy"), "-O", "binary", "-R", ".data", "-R", ".bss",
                         str(elf), str(binary)], check=True)
@@ -771,6 +773,47 @@ def test_bar_debug(cpu):
     report(start, f"proto_pack_bar_debug: {len(cases)} frames (limits, clamping, random)")
 
 
+def f32_bits(value):
+    """A float as the 32-bit register pattern of the soft-float ABI."""
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def s32(value):
+    """An r0 return value as a signed 32-bit integer."""
+    return struct.unpack("<i", struct.pack("<I", value & 0xFFFFFFFF))[0]
+
+
+def ref_round(value):
+    """lroundf() (halves away from zero), limited to +/-1e6; 0 if not finite."""
+    if not math.isfinite(value):
+        return 0
+    value = max(-1.0e6, min(1.0e6, value))
+    return int(math.copysign(math.floor(abs(value) + 0.5), value))
+
+
+def test_calc(cpu):
+    """calc_round and calc_heading_diff_half (src/calc.c)."""
+    start = len(failures)
+    edges = [0.0, 0.49, 0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 359.5, 1.0e6, 1.0e7, -1.0e7,
+             float("nan"), float("inf"), float("-inf")]
+    rng = random.Random(21)
+    values = edges + [rng.uniform(-2.0e6, 2.0e6) for _ in range(300)] +         [rng.uniform(-1000.0, 1000.0) for _ in range(300)]
+    for value in values:
+        value = struct.unpack("<f", struct.pack("<f", value))[0]   # as float32
+        got = s32(cpu.call("calc_round", f32_bits(value)))
+        check(got == ref_round(value), f"calc_round({value}): {got} != {ref_round(value)}")
+    pairs = [(0, 0), (0, 719), (719, 0), (0, 360), (360, 0), (100, 460), (460, 100),
+             (719, 359), (359, 719), (1, 361), (361, 1), (180, 540)]
+    pairs += [(rng.randint(0, 719), rng.randint(0, 719)) for _ in range(2000)]
+    for from_hdg, to_hdg in pairs:
+        diff = abs(to_hdg - from_hdg)
+        want = min(diff, 720 - diff)
+        got = s32(cpu.call("calc_heading_diff_half", from_hdg, to_hdg))
+        check(got == want, f"calc_heading_diff_half({from_hdg}, {to_hdg}): {got} != {want}")
+    report(start, f"calc: calc_round on {len(values)} values (halves, +/-1e6 limit, "
+                  f"NaN/inf), calc_heading_diff_half on {len(pairs)} pairs (0/719 wrap)")
+
+
 def test_barcode_map(cpu):
     """barcode_map_get: which action a letter triggers, for the built-in
     table and for tables built by the reference encoder."""
@@ -816,6 +859,7 @@ def main():
             test_bar_filter(cpu)
             test_bar_distance(cpu)
             test_bar_end(cpu)
+            test_calc(cpu)
     print("FAILED" if failures else "ALL PASS", f"({len(failures)} failures)")
     sys.exit(1 if failures else 0)
 

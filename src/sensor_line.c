@@ -56,8 +56,8 @@ static volatile uint32_t g_last_black_ms = 0U;
 /* Start of the current run of both sensors raw black (lift check). */
 static volatile uint32_t g_both_since_ms = 0U;
 static volatile bool     gb_both_black   = false;
-static volatile bool     gb_cal_request = true;  /* calibrate at boot    */
-static volatile bool     gb_ready       = false;
+static volatile bool     gb_cal_request  = true;  /* calibrate at boot   */
+static volatile bool     gb_ready        = false;
 
 static black_hold_t      g_hold[2];             /* left, right          */
 
@@ -129,9 +129,9 @@ sensor_line_task (INT stacd, void * p_exinf)
         {
             gb_cal_request = false;
             gb_ready       = false;
-            cal_seen        = 0U;
-            cal_start       = systime_now_ms();
-            state           = LS_CALIBRATE;
+            cal_seen       = 0U;
+            cal_start      = systime_now_ms();
+            state          = LS_CALIBRATE;
         }
 
         if (LS_CALIBRATE == state)
@@ -142,7 +142,7 @@ sensor_line_task (INT stacd, void * p_exinf)
             if ((BOTH_BLACK == cal_seen) && (0U == raw))
             {
                 gb_ready = true;                 /* both seen, now white */
-                state     = LS_FOLLOW;
+                state    = LS_FOLLOW;
             }
             else if ((systime_now_ms() - cal_start) > CAL_WINDOW_MS)
             {
@@ -323,7 +323,7 @@ static void
 reading_publish (uint8_t bits, uint8_t raw, uint8_t prev_raw,
                  uint8_t prev_bits)
 {
-    uint32_t const stamp = systime_stamp();
+    uint32_t const stamp  = systime_stamp();
     UINT           events = 0U;
 
     /* bits is a byte; the mask keeps 2 bits. */

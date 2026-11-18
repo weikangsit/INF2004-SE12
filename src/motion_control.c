@@ -26,6 +26,7 @@
 
 #include "port.h"
 
+#include "calc.h"
 #include "car_config.h"
 #include "fault.h"
 #include "barcode.h"
@@ -102,22 +103,21 @@ typedef enum
     CMD_FWD,
     CMD_TURN_L,
     CMD_TURN_R,
-    CMD_UTURN,
     CMD_ENC_CAL,
     CMD_MOTOR_TEST
 } cmd_id_t;
 
 /** Task states. The numbers 0..5 are also the stall "motion state"
- *  reported in EV_FAULT (web/static/proto.js MOTION_STATES); 2 was the
- *  removed reverse run and stays free so those numbers hold. */
+ *  reported in EV_FAULT (web/static/proto.js MOTION_STATES); 2 (the
+ *  removed reverse run) and 5 (the removed U-turn command) stay free so
+ *  those numbers hold. */
 typedef enum
 {
     MS_STOPPED = 0,
     MS_STRAIGHT,
     MS_TURN_L = 3,
     MS_TURN_R,
-    MS_UTURN,
-    MS_ENC_CAL,
+    MS_ENC_CAL = 6,
     MS_MOTOR_TEST,
     MS_SAFE_STOP,
     MS_FAULT,
@@ -219,12 +219,12 @@ typedef struct
     bool      b_imu_fresh;
 } motion_in_t;
 
-static ID           g_cmd_q        = 0;
-static ID           g_done_q       = 0;
-static uint8_t      g_next_seq     = 1U;     /* Nav only, see header     */
-static volatile bool gb_open_loop = false;
-static int32_t      g_sign_l       = ENC_SIGN_LEFT;
-static int32_t      g_sign_r       = ENC_SIGN_RIGHT;
+static ID            g_cmd_q        = 0;
+static ID            g_done_q       = 0;
+static uint8_t       g_next_seq     = 1U;    /* Nav only, see header     */
+static volatile bool gb_open_loop   = false;
+static int32_t       g_sign_l       = ENC_SIGN_LEFT;
+static int32_t       g_sign_r       = ENC_SIGN_RIGHT;
 
 static wheel_ff_t const g_ff_l = { MOTOR_DEADBAND_L, PID_KFF_L };
 static wheel_ff_t const g_ff_r = { MOTOR_DEADBAND_R, PID_KFF_R };
@@ -265,7 +265,6 @@ static float32_t pid_step (wheel_pid_t * p_pid, float32_t target,
 static void      pid_reset (wheel_pid_t * p_pid);
 static float32_t clamp_f (float32_t value, float32_t low, float32_t high);
 static float32_t wrap180 (float32_t deg);
-static int32_t   round_i (float32_t value);
 static void      state_publish (void);
 
 /*!
@@ -338,16 +337,6 @@ motion_control_turn_search (bool b_left, uint32_t speed_cms,
      * turn_targets() uses it in place of TURN_EARLY_FRACTION. */
     return (cmd_send(b_left ? CMD_TURN_L : CMD_TURN_R, speed_cms,
                      (0U != min_deg) ? min_deg : 1U, max_deg, false, true));
-}
-
-/*!
- * @brief  U-turn: 180 degrees to the left, ending on the line.
- * @return Sequence number of the command.
- */
-uint8_t
-motion_control_uturn (void)
-{
-    return (cmd_send(CMD_UTURN, SPEED_TURN_CMS, 0U, UTURN_DEG, false, true));
 }
 
 /*!
@@ -539,8 +528,8 @@ inputs_read (motion_in_t * p_in)
     vehicle_state_read(&state);
 
     p_in->now_ms       = systime_now_ms();
-    p_in->count_l           = motor_driver_count_left();
-    p_in->count_r           = motor_driver_count_right();
+    p_in->count_l      = motor_driver_count_left();
+    p_in->count_r      = motor_driver_count_right();
     p_in->b_line_fresh = sensor_line_read(&p_in->line_bits);
     p_in->heading_deg  = state.heading_half_deg / HALF_DEG;
     p_in->b_imu_fresh  = state.b_imu_valid &&
@@ -580,7 +569,8 @@ speed_update (motion_in_t const * p_in)
     {
         g_ctx.hist_l[g_ctx.hist_idx] = delta_l;
         g_ctx.hist_r[g_ctx.hist_idx] = delta_r;
-        g_ctx.hist_idx = (g_ctx.hist_idx + 1U) % SPEED_AVG_PERIODS;
+        g_ctx.hist_idx               = (g_ctx.hist_idx + 1U) %
+                                       SPEED_AVG_PERIODS;
 
         for (idx = 0U; idx < SPEED_AVG_PERIODS; idx++)
         {
@@ -631,7 +621,7 @@ command_start (uint32_t word, motion_in_t const * p_in)
     float32_t           arc = 0.0f;
 
     /* Each field is masked to its width, so the casts keep the value. */
-    g_ctx.cmd_id            = (cmd_id_t) ((word >> CMD_ID_SHIFT) & CMD_ID_MASK);
+    g_ctx.cmd_id        = (cmd_id_t) ((word >> CMD_ID_SHIFT) & CMD_ID_MASK);
     g_ctx.seq           = (uint8_t) ((word >> CMD_SEQ_SHIFT) & CMD_SEQ_MASK);
     g_ctx.b_follow      = (0U != (word & CMD_FOLLOW_BIT));
     g_ctx.b_end_on_line = (0U != (word & CMD_END_LINE_BIT));
@@ -640,8 +630,8 @@ command_start (uint32_t word, motion_in_t const * p_in)
     g_ctx.dist_m        = ((word >> CMD_DIST_SHIFT) & CMD_DIST_MASK) /
                           CM_PER_M;
     g_ctx.angle_deg     = (word >> CMD_ANGLE_SHIFT) & CMD_ANGLE_MASK;
-    g_ctx.dist_l0           = g_ctx.dist_l;
-    g_ctx.dist_r0           = g_ctx.dist_r;
+    g_ctx.dist_l0       = g_ctx.dist_l;
+    g_ctx.dist_r0       = g_ctx.dist_r;
     g_ctx.hdg0          = p_in->heading_deg;
     g_ctx.b_hdg0        = p_in->b_imu_fresh;
     g_ctx.start_ms      = p_in->now_ms;
@@ -672,7 +662,6 @@ command_start (uint32_t word, motion_in_t const * p_in)
         case CMD_FWD:        g_ctx.mode = MS_STRAIGHT;   break;
         case CMD_TURN_L:     g_ctx.mode = MS_TURN_L;     break;
         case CMD_TURN_R:     g_ctx.mode = MS_TURN_R;     break;
-        case CMD_UTURN:      g_ctx.mode = MS_UTURN;      break;
         case CMD_ENC_CAL:    g_ctx.mode = MS_ENC_CAL;    break;
         case CMD_MOTOR_TEST:
             g_ctx.mode = g_ctx.b_follow ? MS_DEADBAND : MS_MOTOR_TEST;
@@ -697,8 +686,7 @@ command_start (uint32_t word, motion_in_t const * p_in)
                          fmaxf(g_ctx.speed_mps, MIN_LIMIT_SPEED_MPS)) +
                          LIMIT_EXTRA_MS;
     }
-    else if ((MS_TURN_L == g_ctx.mode) || (MS_TURN_R == g_ctx.mode) ||
-             (MS_UTURN == g_ctx.mode))
+    else if ((MS_TURN_L == g_ctx.mode) || (MS_TURN_R == g_ctx.mode))
     {
         arc = (g_ctx.angle_deg / DEG_PER_RAD) * (TURN_TRACK_WIDTH_M * HALF);
         g_ctx.limit_ms = (uint32_t) ((LIMIT_FACTOR * arc) /
@@ -729,7 +717,6 @@ targets_set (motion_in_t const * p_in)
 
         case MS_TURN_L:
         case MS_TURN_R:
-        case MS_UTURN:
             b_done = turn_targets(p_in);
         break;
 
@@ -1035,8 +1022,8 @@ turn_targets (motion_in_t const * p_in)
         {
             /* Turns are at most 511 deg, so both fit an int16_t. */
             telemetry_post_event(EV_TURN_XCHECK, 0U,
-                                 (int16_t) round_i(enc_turn),
-                                 (int16_t) round_i(imu_turn));
+                                 (int16_t) calc_round(enc_turn),
+                                 (int16_t) calc_round(imu_turn));
         }
     }
 
@@ -1255,7 +1242,7 @@ deadband_step (motion_in_t const * p_in)
                                                          0.0f;
 
                 sweep_wheel_done(p_in, g_ctx.sweep_db_pm / PCT_PER_PM,
-                                 round_i(kff * KFF_X100));
+                                 calc_round(kff * KFF_X100));
             }
         break;
     }
@@ -1337,13 +1324,13 @@ self_test_step (motion_in_t const * p_in)
         brake_to(MS_FAULT);
         /* spin is a heading difference, 0..180 deg. */
         telemetry_post_event(EV_ENC_CAL, ENC_CAL_ROTATED,
-                             (int16_t) round_i(spin), 0);
+                             (int16_t) calc_round(spin), 0);
         done_post(MOTION_RESULT_FAULT);
     }
     else if (b_ok_l && b_ok_r)
     {
-        g_sign_l      = (raw_l > 0) ? 1 : -1;
-        g_sign_r      = (raw_r > 0) ? 1 : -1;
+        g_sign_l     = (raw_l > 0) ? 1 : -1;
+        g_sign_r     = (raw_r > 0) ? 1 : -1;
         gb_open_loop = false;
         brake_to(MS_STOPPED);
         /* Signs are +/-1. */
@@ -1379,7 +1366,7 @@ self_test_step (motion_in_t const * p_in)
 static void
 closed_loop_drive (motion_in_t const * p_in)
 {
-    uint32_t const now      = p_in->now_ms;
+    uint32_t const now    = p_in->now_ms;
     uint32_t       edge_l = motor_driver_edge_ms_left();
     uint32_t       edge_r = motor_driver_edge_ms_right();
     uint32_t       why    = 0U;
@@ -1436,8 +1423,8 @@ closed_loop_drive (motion_in_t const * p_in)
     }
     else
     {
-        motor_driver_set(round_i(g_ctx.duty_l * PM_PER_UNIT),
-                         round_i(g_ctx.duty_r * PM_PER_UNIT));
+        motor_driver_set(calc_round(g_ctx.duty_l * PM_PER_UNIT),
+                         calc_round(g_ctx.duty_r * PM_PER_UNIT));
     }
 }
 
@@ -1646,36 +1633,17 @@ wrap180 (float32_t deg)
 }
 
 /*!
- * @brief  Round to the nearest integer; 0 for NaN or infinity (Barr-C
- *         5.4.b.v), limited to +/-1e6.
- * @return Rounded value.
- */
-static int32_t
-round_i (float32_t value)
-{
-    int32_t result = 0;
-
-    if (isfinite(value))
-    {
-        /* Clamped to +/-1e6 first, so lroundf() fits an int32_t. */
-        result = (int32_t) lroundf(clamp_f(value, -1.0e6f, 1.0e6f));
-    }
-
-    return (result);
-}
-
-/*!
  * @brief  Publish speed, duty and distance to the shared state record.
  */
 static void
 state_publish (void)
 {
-    vehicle_state_set_motion(round_i(g_ctx.speed_l * MM_PER_M),
-                             round_i(g_ctx.speed_r * MM_PER_M),
-                             round_i(g_ctx.duty_l * PCT_PER_UNIT),
-                             round_i(g_ctx.duty_r * PCT_PER_UNIT),
-                             round_i((g_ctx.dist_l + g_ctx.dist_r) * HALF *
-                                     MM_PER_M));
+    vehicle_state_set_motion(calc_round(g_ctx.speed_l * MM_PER_M),
+                             calc_round(g_ctx.speed_r * MM_PER_M),
+                             calc_round(g_ctx.duty_l * PCT_PER_UNIT),
+                             calc_round(g_ctx.duty_r * PCT_PER_UNIT),
+                             calc_round((g_ctx.dist_l + g_ctx.dist_r) * HALF *
+                                        MM_PER_M));
 }
 
 /*** end of file ***/

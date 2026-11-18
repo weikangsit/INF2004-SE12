@@ -139,7 +139,7 @@ typedef struct
     bool    b_overflow : 1;      /* longer than any valid frame           */
 } rx_status_t;
 
-static char const * const g_pub_topics[COMMS_TOPIC_COUNT] =
+static char const * const gp_pub_topics[COMMS_TOPIC_COUNT] =
 {
     MQTT_TOPIC_ROOT "/telemetry",
     MQTT_TOPIC_ROOT "/event",
@@ -171,12 +171,14 @@ typedef struct
     bool b_seen      : 1;        /* a beacon has named a broker           */
     bool b_new       : 1;        /* its address is not tried yet          */
     bool b_wait_over : 1;        /* first-attempt wait for a beacon done  */
+    bool b_locked    : 1;        /* a broker accepted the car: later      */
+                                 /* beacons are ignored until reboot      */
 } discover_status_t;
 
 static struct udp_pcb *         gp_beacon       = NULL;
 static ip_addr_t                g_beacon_addr;          /* last sender    */
 static discover_status_t        g_disc          =
-    { false, false, false, false };
+    { false, false, false, false, false };
 static uint16_t                 g_discover_ms   = 0U;
 
 static volatile uint32_t        g_last_hook_ms  = 0U;
@@ -202,8 +204,6 @@ static void     boot_event_post (void);
 static int32_t  digits_read (char const * p_text);
 static void     rx_handle_cmd (void);
 static void     rx_handle_config (void);
-static uint16_t stamp_now (void);
-static uint32_t stamp_elapsed (uint16_t stamp);
 static void     on_connection (mqtt_client_t * p_client, void * p_arg,
                                mqtt_connection_status_t status);
 static void     on_incoming_publish (void * p_arg, char const * p_topic,
@@ -385,14 +385,15 @@ static void
 link_idle (void)
 {
     bool const b_waiting = (!g_disc.b_seen) && (!g_disc.b_wait_over) &&
-                           (stamp_elapsed(g_discover_ms) < DISCOVER_WAIT_MS);
+                           (systime_stamp_age(g_discover_ms) <
+                            DISCOVER_WAIT_MS);
 
     if (!b_waiting)
     {
         g_disc.b_wait_over = true;
         link_connect();
         g_link.state = LINK_CONNECTING;
-        g_state_ms   = stamp_now();
+        g_state_ms   = systime_stamp();
     }
 }
 
@@ -410,7 +411,7 @@ link_connecting (void)
     {
         link_go_online();
     }
-    else if (b_failed || (stamp_elapsed(g_state_ms) > CONNECT_TIMEOUT_MS))
+    else if (b_failed || (systime_stamp_age(g_state_ms) > CONNECT_TIMEOUT_MS))
     {
         uint32_t const step = g_link.backoff_step;
 
@@ -452,6 +453,7 @@ link_go_online (void)
 
         g_link.b_connected   = true;
         g_link.backoff_step  = 0U;
+        g_disc.b_locked      = true;
         /* An 8-bit running count: wrapping past 255 is fine. */
         g_drop_reported      = (uint8_t) (g_drop_reported + dropped);
         tm_printf((UB *) "mqtt: connected, %d frames dropped while offline\n",
@@ -459,8 +461,8 @@ link_go_online (void)
 
         /* The retained CONFIG frame arrives after the subscribe. */
         boot_event_post();
-        g_hb_ms      = stamp_now();
-        g_cfg_req_ms = stamp_now();
+        g_hb_ms      = systime_stamp();
+        g_cfg_req_ms = systime_stamp();
         g_link.state = LINK_ONLINE;
     }
     else
@@ -498,7 +500,7 @@ link_backoff (void)
     uint32_t const step     = g_link.backoff_step;
     uint32_t const delay_ms = BACKOFF_BASE_MS << step;
 
-    if (stamp_elapsed(g_state_ms) >= delay_ms)
+    if (systime_stamp_age(g_state_ms) >= delay_ms)
     {
         if (step < BACKOFF_STEP_MAX)
         {
@@ -517,7 +519,7 @@ static void
 link_start_backoff (void)
 {
     g_link.state = LINK_BACKOFF;
-    g_state_ms   = stamp_now();
+    g_state_ms   = systime_stamp();
 }
 
 /*!
@@ -610,8 +612,8 @@ beacon_start (void)
     if (!g_disc.b_tried)
     {
         g_disc.b_tried = true;
-        g_discover_ms    = stamp_now();
-        gp_beacon        = udp_new_ip_type(IPADDR_TYPE_V4);
+        g_discover_ms  = systime_stamp();
+        gp_beacon      = udp_new_ip_type(IPADDR_TYPE_V4);
 
         if (NULL != gp_beacon)
         {
@@ -635,7 +637,8 @@ beacon_start (void)
 
 /*!
  * @brief  lwIP UDP callback: a beacon names the broker's address (its
- *         sender). Anything but the 1-byte tag is ignored.
+ *         sender). Anything but the 1-byte tag is ignored, and so is
+ *         every beacon once a broker has accepted the car.
  */
 static void
 on_beacon (void * p_arg, struct udp_pcb * p_pcb, struct pbuf * p_buf,
@@ -649,7 +652,10 @@ on_beacon (void * p_arg, struct udp_pcb * p_pcb, struct pbuf * p_buf,
 
     if (NULL != p_buf)
     {
-        if ((NULL != p_addr) && IP_IS_V4(p_addr) &&
+        /* Only before the first session: afterwards any device on the
+         * network could send the tag and move the car to its own
+         * broker, then drive it. */
+        if ((!g_disc.b_locked) && (NULL != p_addr) && IP_IS_V4(p_addr) &&
             (BEACON_LEN == p_buf->tot_len) &&
             (BEACON_LEN == pbuf_copy_partial(p_buf, frame, BEACON_LEN, 0U)) &&
             (BEACON_TAG == frame[0]))
@@ -739,7 +745,7 @@ queue_drain (void)
 
             /* COMMS_TOPIC_COUNT is 3, so the cast keeps its value. */
             if ((topic >= (uint32_t) COMMS_TOPIC_COUNT) ||
-                frame_publish(g_pub_topics[topic], &g_pending[PUB_HEADER_LEN],
+                frame_publish(gp_pub_topics[topic], &g_pending[PUB_HEADER_LEN],
                               data_len))
             {
                 g_link.b_has_pending = false;     /* sent, or unknown: drop */
@@ -758,18 +764,18 @@ queue_drain (void)
 static void
 housekeeping_send (void)
 {
-    if (stamp_elapsed(g_hb_ms) >= HEARTBEAT_MS)
+    if (systime_stamp_age(g_hb_ms) >= HEARTBEAT_MS)
     {
-        g_hb_ms = stamp_now();
+        g_hb_ms = systime_stamp();
         g_hb_seq++;                               /* 8-bit, wraps          */
         (void) frame_publish(TOPIC_HEARTBEAT, &g_hb_seq, PROTO_HB_LEN);
     }
 
     /* Still on the built-in table: ask the web app for one. */
     if ((!barcode_map_is_loaded()) &&
-        (stamp_elapsed(g_cfg_req_ms) >= CFG_RETRY_MS))
+        (systime_stamp_age(g_cfg_req_ms) >= CFG_RETRY_MS))
     {
-        g_cfg_req_ms = stamp_now();
+        g_cfg_req_ms = systime_stamp();
         (void) frame_publish(TOPIC_CFG_GET, NULL, 0U);
     }
 
@@ -839,9 +845,8 @@ digits_read (char const * p_text)
 static void
 rx_handle_cmd (void)
 {
-    proto_cmd_t cmd = PROTO_CMD_STOP;
-
     uint32_t const len = g_rx.len;
+    proto_cmd_t    cmd = PROTO_CMD_STOP;
 
     if (proto_unpack_cmd(g_rx_buf, len, &cmd))
     {
@@ -865,9 +870,8 @@ rx_handle_cmd (void)
 static void
 rx_handle_config (void)
 {
-    uint32_t table = 0U;
-
-    uint32_t const len = g_rx.len;
+    uint32_t const len   = g_rx.len;
+    uint32_t       table = 0U;
 
     if (proto_unpack_config(g_rx_buf, len, &table))
     {
@@ -876,29 +880,6 @@ rx_handle_config (void)
         tm_printf((UB *) "mqtt: barcode table received (0x%x)\n",
                   (int) table);
     }
-}
-
-/*!
- * @brief  Time stamp: the low 16 bits of the millisecond clock.
- * @return Milliseconds, modulo 65536.
- */
-static uint16_t
-stamp_now (void)
-{
-    /* Deliberate truncation: only differences of stamps are used. */
-    return (systime_stamp());
-}
-
-/*!
- * @brief  Milliseconds since a stamp_now() value.
- * @param  stamp  Earlier stamp.
- * @return Elapsed time; correct for intervals under 65.5 s.
- */
-static uint32_t
-stamp_elapsed (uint16_t stamp)
-{
-    /* Modular 16-bit difference, widened for unsigned comparisons. */
-    return ((uint32_t) (uint16_t) (stamp_now() - stamp));
 }
 
 /* ---------------- lwIP callbacks (run on the CYW43 task) -------------- */
