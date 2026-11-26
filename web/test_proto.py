@@ -429,7 +429,7 @@ NO_ECHO = 0xFFFF
 
 def ref_build(rays, lim):
     """Python reference of obstacle_profile_build()."""
-    scan, half, _, depth = lim
+    scan, half, _, jump = lim
     prof = dict(closest=NO_ECHO, closest_deg=90, width=0, valid=0, in_path=False,
                 centre=False)
     hits = []
@@ -456,10 +456,20 @@ def ref_build(rays, lim):
             while s * s + s < n:
                 s += 1
             return s
-        cd = prof["closest_deg"]
-        face = [(a, r) for a, r in hits if r <= prof["closest"] + depth]   # not background
-        prof["width"] = (max([off(r) for a, r in face if a > cd], default=0) +
-                         max([off(r) for a, r in face if a < cd], default=0))
+        # Walk out from the closest ray on each side (next angle, first of
+        # ties) while the range changes by at most `jump`: past it is the edge.
+        for left_side in (True, False):
+            ang, prev, best = prof["closest_deg"], prof["closest"], 0
+            while True:
+                out = [i for i, (a, _) in enumerate(rays) if (a > ang if left_side else a < ang)]
+                if not out:
+                    break
+                nxt = min(out, key=lambda i: (rays[i][0] if left_side else -rays[i][0], i))
+                a, r = rays[nxt]
+                if r == NO_ECHO or r >= scan or abs(r - prev) > jump:
+                    break
+                best, prev, ang = max(best, off(r)), r, a
+            prof["width"] += best
     prof["left"], prof["right"] = rays[left][1], rays[right][1]
     return prof
 
@@ -504,13 +514,29 @@ def test_obstacle(cpu):
     rng = random.Random(9)
     lim = (40, 12, 30, 6)
     cpu.write(RAM + 0x400, struct.pack("<HHHH", *lim))
-    # 16 cm box at 15 cm (corners heard at 17 cm) with a wall at 35 cm off
-    # to the left: the wall is background, not a corner (width 16, not 40).
-    box = [(90, 15), (60, 17), (120, 17), (165, 35)]
-    cpu.write(RAM, b"".join(struct.pack("<HH", a, r) for a, r in box))
-    cpu.call("obstacle_profile_build", RAM, len(box), RAM + 0x400, RAM + 0x500)
-    width = struct.unpack("<H", cpu.read(RAM + 0x504, 2))[0]
-    check(width == 16, f"box in front of a wall: width {width}, want 16")
+    # Whole sweeps as ultrasonic_scan.c takes them (coarse 25..165, fine
+    # +/-60 deg at 5 deg round the closest coarse ray, one ray ahead) over
+    # a flat face square to the car, with an optional wall behind it.
+    def sweep(dist, width, wall):
+        def ping(a):
+            off = math.radians(a - 90)
+            if abs(dist * math.tan(off)) <= width / 2:
+                return round(dist / math.cos(off))
+            return round(wall / math.cos(off)) if wall else NO_ECHO
+        rays = [(25 + i * 35, ping(25 + i * 35)) for i in range(5)]
+        centre = min(rays, key=lambda ar: ar[1])[0]
+        a = centre - 60 if centre - 25 > 60 else 25
+        while a <= min(centre + 60, 165):
+            rays.append((a, ping(a)))
+            a += 5
+        return rays + [(90, ping(90))]
+    for dist, width, wall in ((15, 16, None), (15, 30, None), (10, 30, None),
+                              (20, 40, None), (15, 16, 25), (15, 30, 32)):
+        rays = sweep(dist, width, wall)
+        cpu.write(RAM, b"".join(struct.pack("<HH", a, r) for a, r in rays))
+        cpu.call("obstacle_profile_build", RAM, len(rays), RAM + 0x400, RAM + 0x500)
+        got = struct.unpack("<H", cpu.read(RAM + 0x504, 2))[0]
+        check(abs(got - width) <= 3, f"{width} cm face at {dist} cm, wall {wall}: width {got}")
     count = 0
     for trial in range(400):
         n = rng.randint(1, 12)

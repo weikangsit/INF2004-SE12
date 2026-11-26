@@ -30,8 +30,8 @@ typedef struct
     uint16_t scan_range_cm;      /* hits beyond this are clear            */
     uint16_t half_corridor_cm;   /* half robot width + margin             */
     uint16_t min_side_clear_cm;  /* free distance needed beside it        */
-    uint16_t face_depth_cm;      /* width: echoes at most this far behind
-                                    the closest point are the same face   */
+    uint16_t edge_jump_cm;       /* width: a larger range change between
+                                    neighbouring rays is the face's edge  */
 } obstacle_limits_t;
 
 /** Result of one sweep. */

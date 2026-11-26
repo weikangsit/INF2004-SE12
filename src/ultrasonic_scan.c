@@ -361,7 +361,7 @@ scan_and_plan (void)
         US_SCAN_RANGE_CM,
         (ROBOT_WIDTH_CM / 2U) + CLEAR_MARGIN_CM,
         MIN_SIDE_CLEAR_CM,
-        OBSTACLE_FACE_DEPTH_CM
+        OBSTACLE_EDGE_JUMP_CM
     };
     obstacle_ray_t     rays[RAY_MAX];
     obstacle_profile_t coarse;

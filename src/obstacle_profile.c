@@ -9,11 +9,17 @@
 #define CENTRE_SPAN_DEG      (15U)
 #define BHASKARA_A           (4)
 #define BHASKARA_B           (40500)
+#define SIDES                (2U)
+#define SIDE_LEFT            (0U)
+#define NO_RAY               (0xFFFFFFFFU)
 
 static int32_t  sin1000 (uint32_t angle_deg);
 static uint16_t width_measure (obstacle_ray_t const * p_rays, uint32_t count,
                                obstacle_limits_t const * p_limits,
                                obstacle_profile_t const * p_prof);
+static uint32_t next_ray (obstacle_ray_t const * p_rays, uint32_t count,
+                          uint32_t angle_deg, bool b_left);
+static uint32_t range_step (uint32_t range_cm, uint32_t prev_cm);
 static uint32_t face_offset_cm (uint32_t range_cm, uint32_t closest_cm);
 static uint32_t angle_distance (uint32_t angle_deg, uint32_t ref_deg);
 
@@ -213,11 +219,14 @@ sin1000 (uint32_t angle_deg)
  *  range x cos(ray angle) put a 16 cm box's corners 14.5 cm each side
  *  (measured: read 30 cm). Every point on the face, corners included,
  *  lies sqrt(range^2 - closest^2) along it from the closest point,
- *  whichever ray heard it. Left of the closest ray (larger angle) and
- *  right of it are summed, widest each. Only echoes at most
- *  face_depth_cm behind the closest point count: anything deeper is
- *  background (a wall, another object) heard by the wide sweep, and
- *  counted as a corner it made the width far too wide (measured).
+ *  whichever ray heard it. Which echoes are the face is found by angle
+ *  order: from the closest ray, step to the next ray outwards on each
+ *  side while the range changes by at most edge_jump_cm. Along a face it
+ *  changes smoothly; past the edge it jumps to the background (a wall,
+ *  another object) or to no echo. Counting every echo in range made the
+ *  width far too wide, and a fixed depth behind the closest point cut a
+ *  wide obstacle's own edges (measured both). The widest offset reached
+ *  on each side is summed.
  *
  * @param  p_rays    Rays of the sweep, in any order.
  * @param  count     Number of rays.
@@ -230,42 +239,86 @@ width_measure (obstacle_ray_t const * p_rays, uint32_t count,
                obstacle_limits_t const * p_limits,
                obstacle_profile_t const * p_prof)
 {
-    uint32_t half_left  = 0U;
-    uint32_t half_right = 0U;
-    uint32_t idx        = 0U;
+    uint32_t width = 0U;
+    uint32_t side  = 0U;
 
-    for (idx = 0U; idx < count; idx++)
+    for (side = 0U; side < SIDES; side++)
     {
-        obstacle_ray_t const * const p_ray = &p_rays[idx];
+        bool const b_left = (SIDE_LEFT == side);   /* left = larger angle */
+        uint32_t   range  = p_prof->closest_cm;
+        uint32_t   half   = 0U;
+        uint32_t   next   = next_ray(p_rays, count, p_prof->closest_deg,
+                                     b_left);
 
-        /* Both are uint16_t, so the sum fits a uint32_t. */
-        if ((OBSTACLE_NO_ECHO != p_ray->range_cm) &&
-            (p_ray->range_cm < p_limits->scan_range_cm) &&
-            ((uint32_t) p_ray->range_cm <=
-             ((uint32_t) p_prof->closest_cm + p_limits->face_depth_cm)))
+        /* Each step moves to a strictly larger (smaller) angle, so the
+         * walk visits each ray at most once. */
+        while ((NO_RAY != next) &&
+               (OBSTACLE_NO_ECHO != p_rays[next].range_cm) &&
+               (p_rays[next].range_cm < p_limits->scan_range_cm) &&
+               (range_step(p_rays[next].range_cm, range) <=
+                p_limits->edge_jump_cm))
         {
-            uint32_t const off = face_offset_cm(p_ray->range_cm,
+            uint32_t const off = face_offset_cm(p_rays[next].range_cm,
                                                 p_prof->closest_cm);
 
-            if ((p_ray->angle_deg > p_prof->closest_deg) &&
-                (off > half_left))
-            {
-                half_left = off;
-            }
-            else if ((p_ray->angle_deg < p_prof->closest_deg) &&
-                     (off > half_right))
-            {
-                half_right = off;
-            }
-            else
-            {
-                /* The closest ray itself, or not the widest. */
-            }
+            half  = (off > half) ? off : half;
+            range = p_rays[next].range_cm;
+            next  = next_ray(p_rays, count, p_rays[next].angle_deg, b_left);
         }
+
+        width += half;
     }
 
     /* Each half is under scan_range_cm, so the sum fits. */
-    return ((uint16_t) (half_left + half_right));
+    return ((uint16_t) width);
+}
+
+/*!
+ * @brief  The ray next to an angle, outwards on one side.
+ * @param  p_rays     Rays, in any order.
+ * @param  count      Number of rays.
+ * @param  angle_deg  Angle to step from.
+ * @param  b_left     True: the smallest angle above it; false: the
+ *                    largest angle below it.
+ * @return Index of that ray (the first one if several share the angle),
+ *         or NO_RAY.
+ */
+static uint32_t
+next_ray (obstacle_ray_t const * p_rays, uint32_t count, uint32_t angle_deg,
+          bool b_left)
+{
+    uint32_t best = NO_RAY;
+    uint32_t idx  = 0U;
+
+    for (idx = 0U; idx < count; idx++)
+    {
+        uint32_t const angle = p_rays[idx].angle_deg;
+        bool const     b_out = b_left ? (angle > angle_deg) :
+                                        (angle < angle_deg);
+
+        if (b_out &&
+            ((NO_RAY == best) ||
+             (b_left ? (angle < p_rays[best].angle_deg) :
+                       (angle > p_rays[best].angle_deg))))
+        {
+            best = idx;
+        }
+    }
+
+    return (best);
+}
+
+/*!
+ * @brief  Size of the range change between two neighbouring rays.
+ * @param  range_cm  Range of the new ray, cm.
+ * @param  prev_cm   Range of the ray before it, cm.
+ * @return |range - prev|, cm.
+ */
+static uint32_t
+range_step (uint32_t range_cm, uint32_t prev_cm)
+{
+    return ((range_cm > prev_cm) ? (range_cm - prev_cm) :
+                                   (prev_cm - range_cm));
 }
 
 /*!
