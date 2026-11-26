@@ -39,7 +39,8 @@
  *  Faults already reported by Safety or Motion Control are not reported
  *  again here; the FSM just enters FAULT.
  *
- *  NOTE: (void) casts mark return values that are deliberately ignored.
+ *  NOTE: (void) casts mark return values that are deliberately ignored;
+ *  (INT) sizeof casts give message sizes of a few bytes, which fit INT.
  */
 #include <string.h>
 

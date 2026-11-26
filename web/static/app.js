@@ -277,9 +277,9 @@
 
   // ------------------------------------------------------------------ charts
   const css = getComputedStyle(document.documentElement);
-  const INK = css.getPropertyValue("--ink").trim() || "#1a1e21";
-  const FAINT = css.getPropertyValue("--faint").trim() || "#5b6468";
-  const RULE = css.getPropertyValue("--rule-soft").trim() || "#e4e8e5";
+  const INK = css.getPropertyValue("--ink").trim();
+  const FAINT = css.getPropertyValue("--faint").trim();
+  const RULE = css.getPropertyValue("--rule-soft").trim();
 
   function chart(id, data) {
     const c = $(id);

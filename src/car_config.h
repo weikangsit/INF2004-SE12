@@ -527,25 +527,11 @@
 /* ------------------------------------------------------------------ */
 /* WiFi / MQTT (Week 6 Section 1, A1)                                   */
 /* ------------------------------------------------------------------ */
-/* Set in wifi_secrets.h, which CMake generates from -DWIFI_SSID=...,
- * -DWIFI_PASSWORD=... and -DMQTT_BROKER_IP=... (the same file the
- * template's radio task reads). Defaults only as a fallback.           */
+/* WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER_IP (used only if no broker
+ * beacon is heard), MQTT_BROKER_PORT and MQTT_CLIENT_ID: in
+ * wifi_secrets.h, which CMake always generates from -DWIFI_SSID=... etc.
+ * (the same file the template's radio task reads).                     */
 #include "wifi_secrets.h"
-#ifndef WIFI_SSID
-# define WIFI_SSID           "Kuro"
-#endif
-#ifndef WIFI_PASSWORD
-# define WIFI_PASSWORD       "change-me"
-#endif
-#ifndef MQTT_BROKER_IP
-# define MQTT_BROKER_IP      "172.20.10.6"   /* fallback: beacon wins    */
-#endif
-#ifndef MQTT_BROKER_PORT
-# define MQTT_BROKER_PORT    (1883U)
-#endif
-#ifndef MQTT_CLIENT_ID
-# define MQTT_CLIENT_ID      "robocar-g12"
-#endif
 #define MQTT_TOPIC_ROOT      "robot/12"
 /* MQTT_PASSWORD (in wifi_secrets.h) must match the broker's --password;
  * leave it undefined for an open broker.                               */

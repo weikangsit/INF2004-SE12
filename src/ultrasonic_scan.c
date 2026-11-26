@@ -6,7 +6,8 @@
  *  about 2 s with travel-based settling) never looks like a stalled
  *  task to the Safety Monitor.
  *
- *  NOTE: (void) casts mark return values that are deliberately ignored.
+ *  NOTE: (void) casts mark return values that are deliberately ignored;
+ *  (INT) sizeof casts give message sizes of a few bytes, which fit INT.
  */
 #include <string.h>
 
@@ -521,6 +522,8 @@ check_report (uint32_t angle_deg, uint16_t range_cm)
 static int32_t
 range_x10 (uint16_t range_cm)
 {
+    /* A uint16_t range widens to int32_t exactly; x10 stays far below
+     * INT32_MAX (at most 655350). */
     return ((US_RANGE_NO_ECHO == range_cm) ? TENTHS_NO_ECHO :
                                              ((int32_t) range_cm *
                                               (int32_t) TENTHS));

@@ -15,7 +15,8 @@
  *
  *  NOTE: Floats are used only for the local signal processing (Tribunal 1:
  *  full precision inside a task, packed shared data).
- *  NOTE: (void) casts mark return values that are deliberately ignored.
+ *  NOTE: (void) casts mark return values that are deliberately ignored;
+ *  (INT) sizeof casts give message sizes of a few bytes, which fit INT.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -510,6 +511,8 @@ sample_process (vec3_t const * p_acc, vec3_t const * p_mag)
 static void
 run_reset_check (uint8_t nav_state)
 {
+    /* nav_fsm_state_t values are small enum constants, so they fit the
+     * uint8_t the state is passed as. */
     if (((uint8_t) NAV_FAULT == g_ctx.nav_prev) &&
         ((uint8_t) NAV_FAULT != nav_state))
     {
@@ -737,6 +740,8 @@ level_step (vec3_t const * p_acc, vehicle_state_t const * p_state)
 
         if (g_ctx.level_n >= IMU_LEVEL_SAMPLES)
         {
+            /* level_n is IMU_LEVEL_SAMPLES (a small count), exact as a
+             * float32_t. */
             g_ctx.pitch_off    = g_ctx.level_sum_p / (float32_t) g_ctx.level_n;
             g_ctx.roll_off     = g_ctx.level_sum_r / (float32_t) g_ctx.level_n;
             g_ctx.b_level_done = true;

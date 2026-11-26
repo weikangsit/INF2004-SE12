@@ -36,12 +36,6 @@ endif()
 project(robocar_g12 C ASM)
 
 # ---------------------------------------------------------------- settings
-if(DEFINED ENV{USERPROFILE})
-    set(_home "$ENV{USERPROFILE}")
-else()
-    set(_home "$ENV{HOME}")
-endif()
-
 # Major version of a Pico SDK folder (0 if it is not one)
 function(_sdk_major dir out)
     set(_v 0)
@@ -52,36 +46,33 @@ function(_sdk_major dir out)
     set(${out} ${_v} PARENT_SCOPE)
 endfunction()
 
-# The template needs SDK 2.x (its header layout differs from 1.x). Newest
-# ~/.pico-sdk/sdk/<ver> from the Pico VS Code extension is preferred; an
-# environment PICO_SDK_PATH is used only if it is 2.x as well.
-file(GLOB _sdk_guess LIST_DIRECTORIES true "${_home}/.pico-sdk/sdk/*")
-list(SORT _sdk_guess COMPARE NATURAL ORDER DESCENDING)
-set(_sdk_default "")
+# The template needs SDK 2.x (its header layout differs from 1.x): the
+# extension's pinned ${sdkVersion}. An environment PICO_SDK_PATH wins only
+# if it is 2.x too; the old Windows Pico installer sets it to a 1.5.1 SDK.
+# USERHOME is %USERPROFILE% with backslashes, which CMake reads as escapes
+# in source paths: every path built from it is converted first.
+file(TO_CMAKE_PATH "${USERHOME}/.pico-sdk" _pico_home)
+set(_sdk_default "${_pico_home}/sdk/${sdkVersion}")
 if(DEFINED ENV{PICO_SDK_PATH})
     _sdk_major("$ENV{PICO_SDK_PATH}" _env_major)
     if(_env_major GREATER_EQUAL 2)
-        set(_sdk_default "$ENV{PICO_SDK_PATH}")
+        file(TO_CMAKE_PATH "$ENV{PICO_SDK_PATH}" _sdk_default)
     else()
         message(STATUS "Ignoring PICO_SDK_PATH=$ENV{PICO_SDK_PATH} (SDK ${_env_major}.x; need 2.x)")
     endif()
 endif()
-if(_sdk_default STREQUAL "" AND _sdk_guess)
-    list(GET _sdk_guess 0 _sdk_default)
-endif()
 
 set(PICO_SDK_PATH "${_sdk_default}" CACHE PATH "Pico C SDK 2.x (with lib/cyw43-driver, lib/lwip, lib/tinyusb)")
+# The extension's include above also sets a plain PICO_SDK_PATH (with
+# backslashes), which would hide this cache entry from the second
+# configure on: drop it so the cache entry (or -DPICO_SDK_PATH) is used.
+unset(PICO_SDK_PATH)
 
-# A build folder configured earlier may have cached an old 1.x SDK: fix it.
 _sdk_major("${PICO_SDK_PATH}" _major)
 if(_major LESS 2)
-    if(NOT _sdk_default STREQUAL "" AND NOT _sdk_default STREQUAL PICO_SDK_PATH)
-        message(WARNING "PICO_SDK_PATH=${PICO_SDK_PATH} is not a Pico SDK 2.x - using ${_sdk_default}")
-        set(PICO_SDK_PATH "${_sdk_default}" CACHE PATH "Pico C SDK 2.x" FORCE)
-    else()
-        message(FATAL_ERROR "PICO_SDK_PATH=${PICO_SDK_PATH} is not a Pico SDK 2.x.\n"
-            "Install the Raspberry Pi Pico VS Code extension, or pass -DPICO_SDK_PATH=<pico-sdk 2.2/2.3>")
-    endif()
+    message(FATAL_ERROR "PICO_SDK_PATH=${PICO_SDK_PATH} is not a Pico SDK 2.x.\n"
+        "Install the Raspberry Pi Pico VS Code extension, or pass -DPICO_SDK_PATH=<pico-sdk 2.x>.\n"
+        "A build folder from an older setup may have cached it: delete the build folder.")
 endif()
 message(STATUS "Pico SDK: ${PICO_SDK_PATH}")
 
@@ -378,7 +369,7 @@ target_link_options(robocar_g12 PRIVATE
 target_link_libraries(robocar_g12 PRIVATE m)     # sinf / atan2f / sqrtf ...
 
 # ---------------------------------------------------------------- .uf2
-file(GLOB _picotool_guess "${_home}/.pico-sdk/picotool/*/picotool")
+file(GLOB _picotool_guess "${_pico_home}/picotool/*/picotool")
 find_program(PICOTOOL picotool HINTS ${_picotool_guess})
 if(PICOTOOL)
     add_custom_command(TARGET robocar_g12 POST_BUILD

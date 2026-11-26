@@ -18,8 +18,6 @@
  */
 #include <string.h>
 
-#include "port.h"
-
 #include "car_config.h"
 #include "comms.h"
 #include "fault.h"

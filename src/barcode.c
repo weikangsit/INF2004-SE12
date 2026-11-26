@@ -26,7 +26,8 @@
  *  widths go to debug/barcode and a status report to event BAR_STATUS
  *  (Tribunal 1: save the timestamp and decode logs).
  *
- *  NOTE: (void) casts mark return values that are deliberately ignored.
+ *  NOTE: (void) casts mark return values that are deliberately ignored;
+ *  (INT) sizeof casts give message sizes of a few bytes, which fit INT.
  */
 #include <string.h>
 #include <tk/tkernel.h>

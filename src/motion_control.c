@@ -17,6 +17,7 @@
  *
  *  NOTE: (void) casts mark return values that are deliberately ignored;
  *  (UB *) and (int) casts match tm_printf()'s parameter and %d types.
+ *  (INT) sizeof casts give message sizes of a few bytes, which fit INT.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -42,6 +43,8 @@
 #define DT_S                 (PERIOD_MOTION_MS / 1000.0f)
 #define HALF                 (0.5f)
 #define DEG_PER_RAD          (180.0f / PI_F)
+#define HALF_TURN_DEG        (180.0f)
+#define FULL_TURN_DEG        (360.0f)
 #define HALF_DEG             (2.0f)        /* heading is in 0.5 deg       */
 /* Bend detector for the barcode hold: encoder yaw sampled every
  * BEND_SAMPLE_MM, so the window spans BEND_SAMPLES x BEND_SAMPLE_MM. */
@@ -1619,14 +1622,14 @@ wrap180 (float32_t deg)
 {
     float32_t result = deg;
 
-    while (result > 180.0f)
+    while (result > HALF_TURN_DEG)
     {
-        result -= 360.0f;
+        result -= FULL_TURN_DEG;
     }
 
-    while (result <= -180.0f)
+    while (result <= -HALF_TURN_DEG)
     {
-        result += 360.0f;
+        result += FULL_TURN_DEG;
     }
 
     return (result);
