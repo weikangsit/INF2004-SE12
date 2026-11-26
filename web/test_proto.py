@@ -108,7 +108,7 @@ HARNESS = r"""
 #include "obstacle_profile.h"
 #include "proto.h"
 _Static_assert(sizeof(obstacle_ray_t) == 4, "ray size");
-_Static_assert(sizeof(obstacle_limits_t) == 6, "limits size");
+_Static_assert(sizeof(obstacle_limits_t) == 8, "limits size");
 _Static_assert(sizeof(obstacle_profile_t) == 14, "profile size");
 _Static_assert(offsetof(obstacle_profile_t, valid_rays) == 10, "valid");
 /* proto_telem_t layout assumed by test_proto.py */
@@ -429,7 +429,7 @@ NO_ECHO = 0xFFFF
 
 def ref_build(rays, lim):
     """Python reference of obstacle_profile_build()."""
-    scan, half, _ = lim
+    scan, half, _, depth = lim
     prof = dict(closest=NO_ECHO, closest_deg=90, width=0, valid=0, in_path=False,
                 centre=False)
     hits = []
@@ -457,8 +457,9 @@ def ref_build(rays, lim):
                 s += 1
             return s
         cd = prof["closest_deg"]
-        prof["width"] = (max([off(r) for a, r in hits if a > cd], default=0) +
-                         max([off(r) for a, r in hits if a < cd], default=0))
+        face = [(a, r) for a, r in hits if r <= prof["closest"] + depth]   # not background
+        prof["width"] = (max([off(r) for a, r in face if a > cd], default=0) +
+                         max([off(r) for a, r in face if a < cd], default=0))
     prof["left"], prof["right"] = rays[left][1], rays[right][1]
     return prof
 
@@ -501,8 +502,15 @@ def test_obstacle(cpu):
         got = struct.unpack("<i", struct.pack("<I", cpu.call("obstacle_profile_cos1000", ang)))[0]
         check(abs(got - 1000 * math.cos(math.radians(ang))) <= 3, f"cos {ang}: {got}")
     rng = random.Random(9)
-    lim = (40, 12, 30)
-    cpu.write(RAM + 0x400, struct.pack("<HHH", *lim))
+    lim = (40, 12, 30, 6)
+    cpu.write(RAM + 0x400, struct.pack("<HHHH", *lim))
+    # 16 cm box at 15 cm (corners heard at 17 cm) with a wall at 35 cm off
+    # to the left: the wall is background, not a corner (width 16, not 40).
+    box = [(90, 15), (60, 17), (120, 17), (165, 35)]
+    cpu.write(RAM, b"".join(struct.pack("<HH", a, r) for a, r in box))
+    cpu.call("obstacle_profile_build", RAM, len(box), RAM + 0x400, RAM + 0x500)
+    width = struct.unpack("<H", cpu.read(RAM + 0x504, 2))[0]
+    check(width == 16, f"box in front of a wall: width {width}, want 16")
     count = 0
     for trial in range(400):
         n = rng.randint(1, 12)

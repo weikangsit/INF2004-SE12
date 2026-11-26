@@ -369,6 +369,12 @@
 #define ROBOT_WIDTH_CM       (15U)     /* TUNE                          */
 #define CLEAR_MARGIN_CM      (5U)
 #define MIN_SIDE_CLEAR_CM    (30U)
+/* Obstacle width: only echoes at most this far behind the closest point
+ * count as its face; deeper ones are background and made the width too
+ * wide (measured). A flat face 15 cm either side of a closest point at
+ * 15 cm has its edge at ~21 cm, so 6 cm keeps faces up to ~30 cm wide
+ * (wider ones further away). TUNE.                                     */
+#define OBSTACLE_FACE_DEPTH_CM (6U)
 /* Rectangular bypass with 90 deg spot turns: the out-leg runs parallel
  * to the obstacle's face (the sensor stops under US_OBSTACLE_CM).     */
 #define BYPASS_TURN_DEG      (90U)

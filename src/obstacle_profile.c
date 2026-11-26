@@ -214,7 +214,10 @@ sin1000 (uint32_t angle_deg)
  *  (measured: read 30 cm). Every point on the face, corners included,
  *  lies sqrt(range^2 - closest^2) along it from the closest point,
  *  whichever ray heard it. Left of the closest ray (larger angle) and
- *  right of it are summed, widest each.
+ *  right of it are summed, widest each. Only echoes at most
+ *  face_depth_cm behind the closest point count: anything deeper is
+ *  background (a wall, another object) heard by the wide sweep, and
+ *  counted as a corner it made the width far too wide (measured).
  *
  * @param  p_rays    Rays of the sweep, in any order.
  * @param  count     Number of rays.
@@ -235,8 +238,11 @@ width_measure (obstacle_ray_t const * p_rays, uint32_t count,
     {
         obstacle_ray_t const * const p_ray = &p_rays[idx];
 
+        /* Both are uint16_t, so the sum fits a uint32_t. */
         if ((OBSTACLE_NO_ECHO != p_ray->range_cm) &&
-            (p_ray->range_cm < p_limits->scan_range_cm))
+            (p_ray->range_cm < p_limits->scan_range_cm) &&
+            ((uint32_t) p_ray->range_cm <=
+             ((uint32_t) p_prof->closest_cm + p_limits->face_depth_cm)))
         {
             uint32_t const off = face_offset_cm(p_ray->range_cm,
                                                 p_prof->closest_cm);
